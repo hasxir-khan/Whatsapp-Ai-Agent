@@ -8,6 +8,7 @@ import {
 } from '../utils/db.js';
 import { formatMoney } from './geo.js';
 import { ownerClock } from '../core/humanizer.js';
+import { pipelineSummary, priorityMeta } from './leads.js';
 
 const startOfToday = () => {
   const now = new Date();
@@ -53,15 +54,29 @@ export function buildReport() {
   lines.push(`🆕 ${newContacts} new contacts · 💼 ${leads.length} active leads`);
   lines.push(`💰 ${quotes} quotes sent · ⏰ ${followups} follow-ups sent`);
 
-  if (leads.length) {
+  const pipeline = pipelineSummary();
+
+  if (pipeline.total) {
     lines.push('');
-    lines.push('*Leads:*');
-    for (const lead of leads) {
+    lines.push(
+      `*Pipeline:* 🔥 ${pipeline.byPriority.hot} hot · 🌤️ ${pipeline.byPriority.warm} warm · ❄️ ${pipeline.byPriority.cold} cold` +
+        (pipeline.valuePkr ? ` · ≈ ${formatMoney(pipeline.valuePkr, 'PKR')}` : '')
+    );
+    for (const lead of leads.slice(0, 5)) {
       const who = lead.name || `+${lead.number}`;
       const price = lead.quote_min
         ? ` · ${formatMoney(lead.quote_min, lead.quote_currency || 'PKR')}–${formatMoney(lead.quote_max, lead.quote_currency || 'PKR')}`
         : '';
       lines.push(`• ${who} — ${lead.project_type || 'project'}${price} (${lead.status})`);
+    }
+  }
+
+  if (pipeline.needsAction.length) {
+    lines.push('');
+    lines.push('*Do these today:*');
+    for (const lead of pipeline.needsAction.slice(0, 3)) {
+      const meta = priorityMeta(lead.priority);
+      lines.push(`${meta.emoji} ${lead.name || `+${lead.number}`} (${lead.score}) — ${lead.nextAction}`);
     }
   }
 

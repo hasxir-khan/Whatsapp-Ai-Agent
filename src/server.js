@@ -8,9 +8,11 @@ import QRCode from 'qrcode';
 import { config, teamMembers } from './config/env.js';
 import { botState, uptimeMinutes } from './state.js';
 import {
-  dbStats, recentEvents, getUsage, getSetting, listLeads, getContact,
+  dbStats, recentEvents, getUsage, getSetting, getContact,
   teamWorkload, recentCalls, callsToday,
 } from './utils/db.js';
+import { outboxStatus } from './services/outbox.js';
+import { rankLeads, priorityMeta } from './services/leads.js';
 import { formatMoney } from './services/geo.js';
 import { llmStatus } from './core/llm.js';
 import { visionStatus } from './services/vision.js';
@@ -82,6 +84,7 @@ function buildStatus() {
         chats: teamWorkload().find((w) => w.operator === m.name)?.chats || 0,
       })),
     ],
+    outbox: outboxStatus(),
     calls: {
       today: callsToday(),
       recent: recentCalls(5).map((c) => ({
@@ -95,10 +98,13 @@ function buildStatus() {
       enabled: config.calls.enabled,
       delaySeconds: config.calls.delaySeconds,
     },
-    leads: listLeads(null, 6).map((l) => ({
+    leads: rankLeads({ limit: 6 }).map((l) => ({
       name: l.name || `+${l.number}`,
       project: l.project_type || '—',
       status: l.status || 'new',
+      score: l.score,
+      priority: l.priority,
+      nextAction: l.nextAction,
       quote: l.quote_min
         ? `${formatMoney(l.quote_min, l.quote_currency || 'PKR')} – ${formatMoney(l.quote_max, l.quote_currency || 'PKR')}`
         : '',
@@ -176,6 +182,8 @@ function page(data) {
       (l) =>
         `<tr><td>${esc(l.name)}</td><td class="small">${esc(l.project)}</td>
          <td class="small">${esc(l.quote)}</td>
+         <td class="small">${priorityMeta(l.priority).emoji} ${l.score ?? '—'}</td>
+         <td class="small">${esc(l.nextAction || '')}</td>
          <td><span class="tag">${esc(l.status)}</span></td></tr>`
     )
     .join('');
@@ -263,7 +271,7 @@ function page(data) {
   </div>
 
   <div class="card" style="margin-bottom:14px;">
-    <h2>Client pipeline</h2>
+    <h2>Client pipeline <span class="small" style="font-weight:400;">— score · next action</span></h2>
     <table>
       ${leads || '<tr><td class="small">No leads yet — the first real client conversation will appear here.</td></tr>'}
     </table>

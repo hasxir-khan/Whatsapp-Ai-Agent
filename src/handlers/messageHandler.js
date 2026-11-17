@@ -28,6 +28,7 @@ import { analyze as spamAnalyze, applyAction, WARN_MESSAGE } from '../services/s
 import { rememberMessage } from '../services/deletedMessages.js';
 import { handleOwnerCommand, isCommand } from './ownerCommands.js';
 import { saveLeadToSheet } from '../services/sheets.js';
+import { refreshLead } from '../services/leads.js';
 import { lookupNumber } from '../services/geo.js';
 
 // ── per-chat message buffering (humans don't reply to every single line) ──
@@ -760,7 +761,8 @@ async function deliverQuote(sock, jid, number, intake, quote) {
       status: 'quoted',
     };
     db.saveLead(lead);
-    db.logEvent('quote_sent', number, { min: quote.pkrMin, max: quote.pkrMax });
+    const scored = refreshLead(number);
+    db.logEvent('quote_sent', number, { min: quote.pkrMin, max: quote.pkrMax, score: scored?.score });
 
     scheduleFollowUp(number, { attempt: 1 });
     saveLeadToSheet(lead).catch(() => {});
@@ -768,7 +770,7 @@ async function deliverQuote(sock, jid, number, intake, quote) {
     await notifyOperator(sock, number, `💰 A quote went out to your client +${number} (${quote.local.minText} – ${quote.local.maxText}).`);
     await notifyOwner(
       sock,
-      `💰 Quote sent to ${contact.name || `+${number}`}\n` +
+      `💰 Quote sent to ${contact.name || `+${number}`}${scored ? ` · ${scored.score}/100 ${scored.priority.toUpperCase()}` : ''}\n` +
         `${quote.serviceName} — ${quote.local.minText} – ${quote.local.maxText}\n` +
         `${intake.state.fields.goal ? `Goal: ${String(intake.state.fields.goal).slice(0, 160)}\n` : ''}` +
         `Follow-up scheduled in ${config.behavior.followUpHours}h.`

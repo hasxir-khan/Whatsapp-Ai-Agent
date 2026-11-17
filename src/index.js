@@ -25,6 +25,7 @@ import { startFollowUpLoop } from './services/followUps.js';
 import { initSheet } from './services/sheets.js';
 import { restoreSession } from './utils/sessionBackup.js';
 import { registerCalls } from './services/calls.js';
+import { flushOutbox, startOutboxLoop, outboxStatus } from './services/outbox.js';
 import { sweepTemp } from './services/media.js';
 import { hasLLM } from './core/llm.js';
 import { visionEnabled } from './services/vision.js';
@@ -42,7 +43,7 @@ function banner() {
   const line = '─'.repeat(58);
   console.log(`
 ┌${line}┐
-│  🤖  WhatsApp Self-Knowledge Assistant  v8                │
+│  🤖  WhatsApp Self-Knowledge Assistant  v9                │
 │  ${config.bot.name.padEnd(54).slice(0, 54)}  │
 └${line}┘
 ${describeConfig()}
@@ -169,6 +170,14 @@ async function connect() {
         startDailyReport(sock);
         startFollowUpLoop(sock);
         startPendingFlusher(sock);
+        startOutboxLoop(sock);
+      }
+
+      // Anything we could not send while the connection was down goes out now.
+      const queued = outboxStatus().pending;
+      if (queued) {
+        console.log(`📤 Flushing ${queued} queued message${queued === 1 ? '' : 's'} from the outbox…`);
+        flushOutbox(sock).catch((err) => console.error('Outbox flush:', err.message));
       }
 
       if (!bootedAt) {

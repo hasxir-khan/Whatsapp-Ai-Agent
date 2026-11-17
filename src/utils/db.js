@@ -103,6 +103,9 @@ CREATE TABLE IF NOT EXISTS leads (
   quote_max       INTEGER,
   quote_currency  TEXT,
   status          TEXT DEFAULT 'new',  -- new | qualified | quoted | negotiating | won | lost
+  score           INTEGER DEFAULT 0,   -- 0-100 lead intelligence score
+  priority        TEXT,                -- hot | warm | cold
+  next_action     TEXT,                -- what to do next, in plain words
   notes           TEXT,
   created_at      TEXT,
   updated_at      TEXT
@@ -142,6 +145,19 @@ CREATE TABLE IF NOT EXISTS events (
   detail      TEXT,
   created_at  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS outbox (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  jid         TEXT,
+  payload     TEXT,          -- JSON of what we tried to send
+  kind        TEXT,          -- text | audio | document | media
+  tries       INTEGER DEFAULT 0,
+  status      TEXT DEFAULT 'pending',   -- pending | sent | failed
+  error       TEXT,
+  created_at  TEXT,
+  sent_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status, id);
 
 CREATE TABLE IF NOT EXISTS calls (
   id          TEXT PRIMARY KEY,
@@ -218,6 +234,9 @@ function migrate() {
   add('contacts', 'assigned_at', 'TEXT');
   add('calls', 'video', 'INTEGER DEFAULT 0');
   add('calls', 'outcome', 'TEXT');
+  add('leads', 'score', 'INTEGER DEFAULT 0');
+  add('leads', 'priority', 'TEXT');
+  add('leads', 'next_action', 'TEXT');
 }
 
 export function getDB() {
@@ -381,6 +400,55 @@ export function teamWorkload() {
       ORDER BY chats DESC`,
     [new Date(Date.now() - 86400000).toISOString()]
   );
+}
+
+// ════════════════════════════════════════════════════════════
+// Outbox — replies that could not be sent yet (offline / dropped)
+// ════════════════════════════════════════════════════════════
+export function enqueueOutbox(jid, payload, { kind = 'text', error = null } = {}) {
+  run(
+    'INSERT INTO outbox (jid, payload, kind, status, error, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [jid, JSON.stringify(payload), kind, 'pending', error, new Date().toISOString()]
+  );
+  const row = get("SELECT * FROM outbox WHERE status = 'pending' ORDER BY id DESC LIMIT 1");
+  return row;
+}
+
+export function dueOutbox(limit = 25) {
+  return all("SELECT * FROM outbox WHERE status = 'pending' ORDER BY id ASC LIMIT ?", [limit]);
+}
+
+export function updateOutbox(id, { status, error = null, bumpTries = false } = {}) {
+  const sets = [];
+  const values = [];
+  if (status) {
+    sets.push('status = ?');
+    values.push(status);
+  }
+  if (status === 'sent') {
+    sets.push('sent_at = ?');
+    values.push(new Date().toISOString());
+  }
+  if (error !== null) {
+    sets.push('error = ?');
+    values.push(error);
+  }
+  if (bumpTries) sets.push('tries = tries + 1');
+  if (!sets.length) return;
+  values.push(id);
+  run(`UPDATE outbox SET ${sets.join(', ')} WHERE id = ?`, values);
+}
+
+export function outboxStats() {
+  const pending = get("SELECT COUNT(*) AS n FROM outbox WHERE status = 'pending'")?.n || 0;
+  const failed = get("SELECT COUNT(*) AS n FROM outbox WHERE status = 'failed'")?.n || 0;
+  const sent = get("SELECT COUNT(*) AS n FROM outbox WHERE status = 'sent'")?.n || 0;
+  return { pending, failed, sent };
+}
+
+export function pruneOutbox(days = 14) {
+  const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+  run("DELETE FROM outbox WHERE status != 'pending' AND created_at < ?", [cutoff]);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -566,7 +634,7 @@ export function listIntakes(limit = 50) {
 const LEAD_COLUMNS = [
   'number', 'name', 'company', 'country', 'currency', 'project_type', 'goal', 'features',
   'design', 'content', 'timeline', 'budget', 'tech', 'extra', 'quote_min', 'quote_max',
-  'quote_currency', 'status', 'notes',
+  'quote_currency', 'status', 'score', 'priority', 'next_action', 'notes',
 ];
 
 export function saveLead(data) {

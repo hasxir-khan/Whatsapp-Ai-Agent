@@ -13,6 +13,7 @@ import {
 } from '../utils/db.js';
 import { buildReport } from '../services/report.js';
 import { buildOwnerBrief } from '../services/memory.js';
+import { rankLeads, refreshLead, leadLine, pipelineSummary, priorityMeta } from '../services/leads.js';
 import { formatMoney, localTime } from '../services/geo.js';
 import { resetState, getState } from '../core/projectIntake.js';
 import { buildQuote, formatQuote } from '../core/pricing.js';
@@ -23,6 +24,7 @@ import { videoCapabilities } from '../services/video.js';
 import { sttEnabled } from '../services/transcription.js';
 import { hasFfmpeg } from '../services/ffmpeg.js';
 import { pendingFollowUps } from '../utils/db.js';
+import { outboxStatus } from '../services/outbox.js';
 
 const HELP = `*Bot commands*
 
@@ -62,14 +64,6 @@ async function dbNotify(sock, text) {
   } catch {
     /* ignore */
   }
-}
-
-function fmtLead(lead, index) {
-  const who = lead.name || `+${lead.number}`;
-  const price = lead.quote_min
-    ? ` · ${formatMoney(lead.quote_min, lead.quote_currency || 'PKR')}–${formatMoney(lead.quote_max, lead.quote_currency || 'PKR')}`
-    : '';
-  return `${index ? `${index}. ` : ''}${who} — ${lead.project_type || 'unknown'}${price} · ${lead.status}`;
 }
 
 export function isCommand(text = '') {
@@ -165,6 +159,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         `Voice replies: ${voice.enabled ? `${voice.mode} (${voice.providers.join(', ')})` : 'off'}`,
         `ffmpeg: ${hasFfmpeg() ? 'yes (real voice notes)' : 'no (voice sent as audio file)'}`,
         `Pending follow-ups: ${stats.pendingFollowUps}`,
+        `Outbox: ${outboxStatus().pending} queued · ${outboxStatus().failed} failed`,
         `Bot globally: ${getSetting('bot_enabled', true) ? 'ON' : 'OFF'}`,
       ];
       return { handled: true, reply: lines.join('\n') };
@@ -198,11 +193,15 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
 
     case 'leads': {
       const status = args[0] && !target ? args[0].toLowerCase() : null;
-      const leads = listLeads(status, 15);
+      const leads = rankLeads({ status, limit: 12 });
       if (!leads.length) return { handled: true, reply: 'No leads yet.' };
-      const lines = [`*Leads${status ? ` (${status})` : ''}*`];
-      leads.forEach((lead, i) => lines.push(fmtLead(lead, i + 1)));
-      lines.push(`\nTotal open: ${countLeads()}`);
+      const summary = pipelineSummary();
+      const lines = [
+        `*Leads${status ? ` (${status})` : ''}* — 🔥 ${summary.byPriority.hot} hot · 🌤️ ${summary.byPriority.warm} warm · ❄️ ${summary.byPriority.cold} cold`,
+      ];
+      leads.slice(0, 8).forEach((lead) => lines.push(leadLine(lead)));
+      lines.push(`\nTotal open: ${countLeads()} · pipeline value ≈ ${formatMoney(Math.round(summary.valuePkr), 'PKR')}`);
+      lines.push('More detail: .lead 92300…');
       return { handled: true, reply: lines.join('\n') };
     }
 
@@ -211,7 +210,17 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       const lead = getLead(target);
       const brief = buildOwnerBrief(target);
       if (!lead) return { handled: true, reply: brief };
-      const lines = [brief, '', `📁 ${lead.project_type || '—'} · ${lead.status}`];
+      const scored = refreshLead(target) || {};
+      const meta = priorityMeta(scored.priority || 'cold');
+      const lines = [brief, ''];
+      if (scored.score !== undefined) {
+        lines.push(`${meta.emoji} *${scored.score}/100 — ${meta.label}*`);
+        if (scored.reasons?.length) lines.push(`Good: ${scored.reasons.slice(0, 3).join(', ')}`);
+        if (scored.risks?.length) lines.push(`Watch: ${scored.risks.slice(0, 3).join(', ')}`);
+        if (scored.nextAction) lines.push(`👉 Next: ${scored.nextAction}`);
+        lines.push('');
+      }
+      lines.push(`📁 ${lead.project_type || '—'} · ${lead.status}`);
       if (lead.quote_min) lines.push(`💰 ${formatMoney(lead.quote_min, lead.quote_currency || 'PKR')}–${formatMoney(lead.quote_max, lead.quote_currency || 'PKR')}`);
       if (lead.budget) lines.push(`🗒️ Their budget: ${lead.budget}`);
       const followups = pendingFollowUps(target);

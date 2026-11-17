@@ -6,9 +6,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import dotenv from 'dotenv';
 
-dotenv.config();
+// A tenant may point at its own env file; the default install uses ./.env
+dotenv.config({ path: process.env.ENV_FILE || '.env' });
 
 const ROOT = process.cwd();
+
+// ── tenant (multi-user) ─────────────────────────────────────
+// Every user of this bot can run completely isolated: their own .env (keys),
+// their own config/owner.json (business knowledge), their own WhatsApp session
+// and their own database. The default install is tenant "default".
+const TENANT = (process.env.TENANT || 'default').trim();
+const CONFIG_DIR = path.resolve(ROOT, process.env.CONFIG_DIR || './config');
 
 // ── tiny parsers ────────────────────────────────────────────
 const toBool = (v, def = false) =>
@@ -70,10 +78,16 @@ function readJsonIfExists(file) {
  * so the user can keep personal details out of git.
  */
 export function loadOwnerProfile() {
-  const dir = path.join(ROOT, 'config');
-  const base = readJsonIfExists(path.join(dir, 'owner.example.json')) || {};
+  // The schema always comes from the repo; the business knowledge comes from
+  // whichever config directory this tenant uses.
+  const schemaDir = path.join(ROOT, 'config');
+  const dir = CONFIG_DIR;
+  const base = readJsonIfExists(path.join(schemaDir, 'owner.example.json')) || {};
   const custom = readJsonIfExists(path.join(dir, 'owner.json')) || {};
-  const local = readJsonIfExists(path.join(dir, 'owner.local.json')) || {};
+  const local =
+    readJsonIfExists(path.join(dir, 'owner.local.json')) ||
+    (dir !== schemaDir ? null : readJsonIfExists(path.join(schemaDir, 'owner.local.json'))) ||
+    {};
   const profile = deepMerge(deepMerge(base, custom), local);
 
   // Env overrides for the handful of things people change most often
@@ -95,6 +109,12 @@ const ownerName = ownerProfile.owner?.name || 'Hashir';
 
 export const config = {
   root: ROOT,
+
+  tenant: {
+    slug: TENANT,
+    isTenant: TENANT !== 'default',
+    configDir: CONFIG_DIR,
+  },
 
   owner: {
     number: ownerNumber,
@@ -120,10 +140,14 @@ export const config = {
   },
 
   paths: {
+    config: CONFIG_DIR,
     data: path.resolve(ROOT, process.env.DATA_DIR || './data'),
     sessions: path.resolve(ROOT, process.env.SESSION_FOLDER || './sessions'),
     tmp: path.resolve(ROOT, process.env.TMP_DIR || './tmp'),
-    qr: path.resolve(ROOT, './qr.png'),
+    qr: path.resolve(
+      ROOT,
+      process.env.QR_PATH || (TENANT === 'default' ? './qr.png' : `./qr-${TENANT}.png`)
+    ),
   },
 
   server: {
@@ -344,6 +368,7 @@ export function can(number, permission) {
 export function describeConfig() {
   const has = (v) => (v ? '✅' : '—');
   return [
+    `Tenant       : ${config.tenant.slug}${config.tenant.isTenant ? ` (${path.relative(ROOT, config.tenant.configDir)})` : ' (owner install)'}`,
     `Owner        : ${config.owner.name} (+${config.owner.number})`,
     `Groq key     : ${has(config.keys.groq)}   (chat + Whisper)`,
     `Gemini key   : ${has(config.keys.gemini)}   (images + video)`,

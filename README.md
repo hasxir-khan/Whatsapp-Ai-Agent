@@ -1,191 +1,324 @@
-# 🤖 WhatsApp Self-Knowledge Assistant
+# 🤖 WhatsApp AI Assistant — multi-user edition
 
-**An assistant that actually knows your business, remembers every client, listens to voice notes, looks at photos and videos, and sounds like a person typing — for ₹0 / $0 per month.**
+**A WhatsApp assistant that knows your business, remembers every client, hears voice notes, watches videos, scores leads, answers missed calls in chat, and survives bad internet. For $0/month — and one install can serve many different people, each with their own keys.**
 
-Built for one specific job: running your client conversations on WhatsApp while you build. Configured for **Hashir (+923169896229)** and the **HasDevs** services, but everything about the business is in one JSON file you can edit.
+Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but built so **anyone can be a user**: their own API keys, their own business profile, their own WhatsApp number, their own clients — fully isolated from everyone else's.
+
+---
+
+## Contents
+
+1. [What it does](#what-it-does)
+2. [Enable the bot — step by step](#enable-the-bot--step-by-step)
+3. [Add your own API keys](#add-your-own-api-keys)
+4. [Run it for several users (multi-user)](#run-it-for-several-users-multi-user)
+5. [Make it *your* business](#make-it-your-business)
+6. [Lead intelligence](#lead-intelligence)
+7. [Languages](#languages)
+8. [Missed calls](#missed-calls)
+9. [Offline & bad internet](#offline--bad-internet)
+10. [Team (several people, one inbox)](#team-several-people-one-inbox)
+11. [Commands](#commands)
+12. [Dashboard](#dashboard)
+13. [Deploy for free](#deploy-for-free)
+14. [Troubleshooting](#troubleshooting)
+15. [Honest limitations](#honest-limitations)
 
 ---
 
 ## What it does
 
-| Your requirement | How it's handled |
+| Capability | How it works |
 |---|---|
-| **Self-knowledge** | Reads `config/owner.json` — your services, prices, policies, portfolio, availability, FAQs. Answers about you accurately instead of guessing. Knows its own limits too, and says "I can't do that" when it can't. |
-| **Manages foreign clients** | Detects the client's country, timezone and currency from their number. Quotes in **GBP / USD / AED / SAR / EUR / PKR**, and schedules follow-ups inside *their* working hours. |
-| **Feels like a real human** | Typing indicator, human-paced delays, answers split into 1–3 short bubbles, waits for a burst of messages before replying, read receipts, no "As an AI language model", no menus, no signature. |
-| **Hears voice messages** | Whisper (Groq, free) transcribes them with **automatic language detection** — Urdu, English, Arabic, Spanish… no forced language. |
-| **Views images** | Gemini vision (free tier) reads screenshots, mockups, designs, error screens, invoices. Falls back to OpenRouter if configured. |
-| **Watches videos** | Native video understanding on Gemini (free tier); if that's unavailable it extracts frames with ffmpeg + transcribes the audio and describes both. |
-| **Takes project details wisely** | A real discovery flow: one question at a time, never repeats, remembers what was already answered, can ingest a PDF/DOCX brief, scores completeness, and only quotes when the picture is clear. |
-| **Sends voice messages** | On request ("send me a voice note"), or matching the client's habit — neural voices in 100+ languages, delivered as a real WhatsApp voice note. |
-| **Sees previous chats** | SQLite memory with three layers: last ~16 turns, a rolling summary, and structured facts (company, budget, timeline, preferences). Restarts don't lose anything. |
-| **Cannot access groups or channels** | Hard-blocked at the router: groups (`@g.us`), channels (`@newsletter`), broadcasts and status updates never reach the AI. |
-| **Friends stay friends** | Numbers in `owner.friends` get a casual, no-sales persona — no discovery questions, no quotes. |
-| **Speaks every language** | 80+ languages and scripts — Urdu, Hindi, Arabic, Persian, Pashto, Bengali, Tamil, Turkish, Russian, Chinese, Japanese, Korean, Spanish, French, German, Portuguese, Vietnamese, Swahili… It also matches **register**: formal (aap/vous/Sie/usted) or casual (tu/yaar/bhai). |
-| **Catches missed calls** | If a client calls and you don't pick up within 60s, the assistant answers **in chat** — a voice note and/or message in their language, then keeps the conversation going. |
-| **Multi-user (team)** | Add teammates with roles (sales, support, manager). They DM the bot, take chats over, see their own queue, and get pinged when their client needs a human. |
-
-Plus the boring-but-essential bits: scam filtering that doesn't punish normal clients, "delete for everyone" alerts, daily brief to you, lead pipeline, Google Sheets export, and a live dashboard.
+| **Self-knowledge** | Reads `config/owner.json` — services, prices, policies, portfolio, availability, FAQs, team. Answers about the business accurately and knows its own limits. |
+| **Feels like a human** | Typing indicator, human pauses, 1–3 short bubbles, waits for a burst before replying, read receipts, no menus, no signatures, no "as an AI language model". |
+| **86 languages** | Urdu, Hindi, Arabic, Persian, Bengali, Turkish, Russian, Chinese, Japanese, Spanish, French, German, Vietnamese, Swahili… detected from script + vocabulary, with register matching (formal vs casual). |
+| **Hears voice messages** | Whisper transcribes with automatic language detection. |
+| **Sees images and video** | Gemini vision for screenshots, mockups, invoices; native video understanding (or frames + audio track via ffmpeg). |
+| **Takes project details** | A real discovery flow — one question at a time, never repeats, ingests PDF/DOCX briefs, scores completeness. |
+| **Talks back** | Neural voice replies in the client's language on request, or when they use voice notes. |
+| **Remembers everything** | SQLite: recent turns, rolling summary, structured facts, project state, quotes. Survives restarts. |
+| **Scores leads** | 0–100 with reasons and a *next action* — who to call, who needs a budget question, who has gone cold. |
+| **Catches missed calls** | Call rings out → after 60s the assistant answers **in chat**, in their language, by voice note or text. |
+| **Never loses a reply** | Every outgoing message goes through an outbox: if the connection drops, it is queued and delivered when the line is back. |
+| **Multi-user** | One install can run many businesses side by side — separate keys, config, sessions, databases, dashboards. |
+| **Blocks groups & channels** | Hard rule in the router: groups, channels, broadcasts, status updates never reach the AI. |
 
 ---
 
-## The $0 stack
+## Enable the bot — step by step
 
-| Piece | Service | Free tier (enough for a solo business) |
-|---|---|---|
-| Chat brain | **Groq** (`gpt-oss-120b`, `llama-3.3-70b`) | ~1,000 requests/day, very fast |
-| Speech-to-text | **Groq Whisper** | ~2,000 requests/day |
-| Images + video | **Google Gemini** (AI Studio) | Free tier, generous daily requests |
-| Voice replies | **Microsoft Edge neural TTS** | Free, no key |
-| WhatsApp | **Baileys** (WhatsApp Web protocol) | Free |
-| Memory | **SQLite** (sql.js) | Local file |
-| Hosting | Your PC, or Railway/Render/Koyeb free tier | $0 |
+This is the "just me" path: one business, one WhatsApp number, about 10 minutes.
 
-You only need **one** key to start (`GROQ_API_KEY`). Add `GEMINI_API_KEY` for images/video.
+### 0. What you need
 
----
-
-## Quick start (10 minutes)
+- A computer that can stay on (laptop, PC, Raspberry Pi, or a free host later)
+- **Node.js 20 or newer** — check with `node -v`
+- A WhatsApp number for the bot (your own is fine; a spare number is safer)
+- Free API keys ([next section](#add-your-own-api-keys))
 
 ### 1. Install
 
 ```bash
+git clone https://github.com/hasxir-khan/Whatsapp-Ai-Agent.git
+cd Whatsapp-Ai-Agent
+git checkout arena/7e3e34a9-whatsapp-ai-agent   # or main, once merged
 npm install
 ```
 
-> `ffmpeg-static` is an optional dependency. If it installs, voice replies go out as real voice notes and videos get frame-level analysis. If not, install ffmpeg yourself (`sudo apt install ffmpeg`) or use a host that has it.
+> `ffmpeg-static` is optional. If it installs, voice replies go out as real voice notes and videos get frame extraction. If not, install ffmpeg yourself (`sudo apt install ffmpeg`, `brew install ffmpeg`, or `winget install ffmpeg` on Windows).
 
-### 2. Add your keys
+### 2. Create your secrets file
 
 ```bash
-cp .env.example .env
+cp .env.example .env      # Windows: copy .env.example .env
 ```
 
-Open `.env` and paste at least:
+Open `.env` and set **at minimum**:
 
 ```env
-MY_NUMBER=923169896229
-GROQ_API_KEY=gsk_...           # https://console.groq.com/keys  (free)
-GEMINI_API_KEY=AQ...           # https://aistudio.google.com/api-keys  (free)
+MY_NUMBER=923169896229          # your WhatsApp number, international, no +
+MY_NAME=Hashir
+MY_BRAND=HasDevs
+GROQ_API_KEY=gsk_...            # free — chat + voice transcription
+GEMINI_API_KEY=AQ...            # free — images + video
 ```
 
-Gemini specifics:
+### 3. Describe your business
 
-```env
-# Model used for images, video and (as a fallback) chat.
-GEMINI_VISION_MODEL=gemini-4-hydrogen
-GEMINI_MODEL=gemini-4-hydrogen
-# If Google hands you a key that only works as a bearer token, say so:
-# GEMINI_AUTH_STYLE=bearer      (default: key → x-goog-api-key header)
-```
+Open **`config/owner.json`** and fill in your services, price ranges, payment terms, policies and FAQs. This file *is* the assistant's knowledge — the more real it is, the better every reply gets. ([details](#make-it-your-business))
 
-New AI Studio keys start with `AQ.` (the legacy `AIza…` format still works). The key always travels in a header, never in the URL. `npm run doctor -- gemini` checks it against the live API and tells you whether the key was rejected, the model is missing, or you hit a free-tier limit.
-
-### 3. Check everything
+### 4. Check everything
 
 ```bash
 npm run doctor
 ```
 
-It verifies Node, config, both keys (against the live APIs), ffmpeg, the database and the session. Anything red comes with the exact fix.
+Green ticks = ready. It verifies the config, your keys (live API calls), ffmpeg, the database and the session, and prints exactly what to fix.
 
-### 4. Start
+### 5. Start it
 
 ```bash
 npm start
 ```
 
-A QR appears in the terminal **and** on the dashboard (`http://localhost:3000`). On WhatsApp: **Linked devices → Link a device → scan**.
+- A QR code appears in the terminal **and** at `http://localhost:3000`
+- On your phone: **WhatsApp → Settings → Linked devices → Link a device → scan**
+- Prefer a code? Put `PAIRING_NUMBER=923169896229` in `.env`, restart, and type the 8-digit code WhatsApp shows
 
-Prefer no QR? Put `PAIRING_NUMBER=923169896229` in `.env`, start the bot, and type the 8-digit code WhatsApp gives you.
+### 6. Try it
 
-### 5. Talk to it
+From another phone, send a normal message, a voice note, a screenshot, then *"how much for a store?"*.
 
-Send a message from another phone. Try a voice note, a screenshot and a video. From your own number (message yourself) type:
+From your own chat (message yourself): `.help`
 
-```
-.help
-```
+### 7. Keep it running
 
----
-
-## First-run checklist
-
-- [ ] `npm run doctor` is green
-- [ ] Bot shows **online** on the dashboard
-- [ ] A message from another number gets a human-sounding reply
-- [ ] A voice note gets transcribed (check the log: `[voice note transcribed]`)
-- [ ] An image gets described
-- [ ] Typing "how much for a website?" produces a price range, not a guess
-- [ ] Your own manual reply pauses the bot in that chat
-- [ ] A group message is ignored (dashboard logs `ignored_chat`)
+- Leave the terminal open, or run it as a service:
+  ```bash
+  npm i -g pm2 && pm2 start src/index.js --name assistant && pm2 save
+  ```
+- Free hosts that wipe the disk: run `npm run session`, paste the output as `WA_SESSION`
+- **Only ever run one copy per WhatsApp number** — two instances fight over the session and you get a QR loop
 
 ---
 
-## Make it *yours* (this is the "self-knowledge" part)
+## Add your own API keys
 
-Everything factual lives in **`config/owner.json`** (it overrides `config/owner.example.json`, which documents every field).
+Every user brings their own keys. Nothing is shared, nothing is billed, all three providers have free tiers.
+
+| Key | What it powers | Where to get it (free) | Required? |
+|---|---|---|---|
+| `GROQ_API_KEY` | Chat brain + **voice-note transcription** | https://console.groq.com/keys | **Yes** — without it, voice notes can't be read and chat falls back to a placeholder |
+| `GEMINI_API_KEY` | **Images, video, PDFs**, and chat fallback | https://aistudio.google.com/api-keys | Strongly recommended — without it the bot can't *see* |
+| `OPENROUTER_API_KEY` | Backup vision models | https://openrouter.ai/keys | Optional |
+
+How to add them:
+
+1. Open `.env` in the project root.
+2. Paste each key after the `=`, no quotes, no spaces.
+3. Run `npm run doctor` — it calls each API and tells you if the key works, is rejected, or the model is missing.
+4. Restart the bot (`Ctrl+C`, then `npm start`).
+
+Model names (optional):
+
+```env
+GEMINI_MODEL=gemini-4-hydrogen            # images/video model chain starts here
+GEMINI_VISION_MODEL=gemini-4-hydrogen
+# GEMINI_AUTH_STYLE=bearer                # only if Google gives you a bearer-style key
+```
+
+Google now issues keys starting with `AQ.`; older `AIza…` keys still work. The key is always sent in a header, never in a URL.
+
+> **Never commit `.env`.** It is gitignored. If you paste a key anywhere public, rotate it.
+
+---
+
+## Run it for several users (multi-user)
+
+This is the part that makes the bot a *product*: one installation, many users. Each user gets their own folder with their own keys, business profile, WhatsApp session and database — they never see each other's clients.
+
+### Create a user
+
+```bash
+node scripts/tenant.js new "Ayesha Designs" --number 923001112233
+```
+
+That creates:
+
+```
+tenants/ayesha-designs/
+  .env                ← that user's API keys + number (private, gitignored)
+  tenant.json         ← name, port, enabled flag
+  config/owner.json   ← their services, prices, policies (starter file)
+  data/               ← their database: clients, leads, memory
+  sessions/           ← their WhatsApp login
+  tmp/                ← media scratch
+```
+
+### Add their keys
+
+```bash
+node scripts/tenant.js keys ayesha-designs GROQ_API_KEY=gsk_...
+node scripts/tenant.js keys ayesha-designs GEMINI_API_KEY=AQ...
+node scripts/tenant.js keys ayesha-designs            # show what's set (masked)
+```
+
+Or edit `tenants/ayesha-designs/.env` directly — same result.
+
+### Edit their business knowledge
+
+`tenants/ayesha-designs/config/owner.json` — same schema as the main `config/owner.json`. The starter file ships with three example services; replace them with their real ones. **Prices the bot quotes come only from this file.**
+
+### Start one user
+
+```bash
+node scripts/tenant.js show ayesha-designs          # status, paths, keys
+node scripts/tenant.js show ayesha-designs --start  # start and scan the QR
+```
+
+### Start everybody at once
+
+```bash
+node scripts/run-all.js
+```
+
+- Each user runs in its own process, on its own dashboard port (`3001`, `3002`, …)
+- Output is prefixed with the user's slug so logs stay readable
+- One user crashing or being logged out does **not** touch the others — each restarts independently with backoff
+
+### Manage users
+
+```bash
+node scripts/tenant.js list                 # who exists, keys, session, port
+npm run users                               # same thing
+node scripts/tenant.js show <slug>
+node scripts/tenant.js rm <slug> --yes      # deletes their clients + session too
+```
+
+### Things worth knowing
+
+- **One WhatsApp number per user.** Two installs on one number will disconnect each other.
+- `tenants/` is gitignored — keys, sessions and client data never reach the repository.
+- Each user has their own daily quota (`DAILY_LLM_CALLS`), their own outbox, their own follow-ups and their own daily brief.
+- Running 5 users on one 1 GB box is fine; memory per process is mostly sql.js (~60–100 MB).
+- To move a user to another machine: copy their `tenants/<slug>` folder (it contains everything, including the session).
+
+---
+
+## Make it *your* business
+
+Everything factual lives in **`config/owner.json`** (per user: `tenants/<slug>/config/owner.json`). The schema — with every option documented — is `config/owner.example.json`.
 
 ```jsonc
 {
   "owner": {
-    "name": "Hashir",
-    "brand": "HasDevs",
-    "role": "Full-stack developer & AI automation engineer",
-    "availability": "Mon–Sat, 10:00–22:00 PKT",
-    "bio": "I build websites, apps and AI automation...",
-
+    "name": "Ayesha",
+    "brand": "Ayesha Designs",
+    "role": "Brand designer",
+    "timezone": "Asia/Karachi",
+    "bio": "I design and build online stores for clothing brands.",
+    "availability": "Mon–Sat, 11:00–20:00",
     "services": [
-      { "id": "ecommerce", "name": "E-commerce store",
-        "keywords": ["ecommerce", "store", "shop", "cart"],
-        "min": 25000, "max": 75000, "days": "10–20",
-        "includes": ["product catalogue", "cart + checkout", "payments"] }
+      { "id": "store", "name": "Online store",
+        "keywords": ["store", "shop", "ecommerce"],
+        "min": 40000, "max": 120000, "days": "14–25",
+        "includes": ["catalogue", "cart + checkout", "payments"] }
     ],
-    "addons":  [ { "id": "payments", "name": "Payment gateway", "min": 8000, "max": 18000, "keywords": ["stripe","jazzcash"] } ],
-    "payment": { "terms": "50% advance, 50% on delivery", "methods": ["Bank","JazzCash","Wise","USDT"] },
-    "policies": { "revisions": "...", "support": "...", "refund": "..." },
-    "portfolio": [ { "name": "...", "desc": "...", "result": "..." } ],
-    "faqs": [ { "q": "Do you work with international clients?", "a": "Yes..." } ]
-  }
+    "addons":      [ { "id": "seo", "name": "SEO setup", "min": 8000, "max": 15000, "keywords": ["seo"] } ],
+    "payment":     { "terms": "50% advance, 50% on delivery", "methods": ["Bank", "JazzCash"] },
+    "policies":    { "revisions": "2 rounds", "support": "30 days" },
+    "portfolio":   [ { "name": "…", "desc": "…", "result": "…" } ],
+    "faqs":        [ { "q": "Do you work internationally?", "a": "Yes…" } ],
+    "escalateTopics": ["refund", "legal", "discount"],
+    "friends":     [ { "number": "923001234567", "name": "Ali" } ],
+    "team":        [ { "number": "923004445566", "name": "Bilal", "role": "support" } ]
+  },
+  "bot": {
+    "name": "Ayesha's Assistant",
+    "formality": "auto",          // auto | formal | casual
+    "persona": "Warm, sharp, slightly informal…"
+  },
+  "currency": { "base": "PKR", "fxToPkr": { "USD": 280, "GBP": 355, "EUR": 305 } }
 }
 ```
 
 Rules that keep it safe:
 
-- **Prices come from this file, never from the AI.** The model collects requirements, the code computes the range (`src/core/pricing.js`), the model only phrases it.
-- **Add-ons** are added to the quote when their keywords appear in the request.
-- **Discounts** are capped by `owner.maxDiscountPercent` (default 10%). Anything beyond that is escalated to you.
-- **`escalateTopics`** (`refund`, `legal`, `discount`, `partnership`…) make the bot hand the chat to you instead of negotiating.
+- **The AI never invents a price.** It collects requirements; `src/core/pricing.js` computes the range from this file.
+- **Add-ons** are attached when their keywords appear in the request.
+- **Discounts** are capped by `maxDiscountPercent` (default 10%) — beyond that the chat is escalated to a human.
+- **`escalateTopics`** hands the conversation to you instead of negotiating.
+- **`friends`** get a casual, no-sales persona.
+- **`team`** gets role-based access (see [Team](#team-several-people-one-inbox)).
 
-**Friends and family** go in the same file — they get a casual persona instead of the client/sales flow:
+---
 
-```jsonc
-"friends": [
-  { "number": "923001234567", "name": "Ali" }
-]
+## Lead intelligence
+
+Every lead gets a **0–100 score**, the reasons behind it, and **one next action**.
+
+What it measures:
+
+| Signal | Weight | Why |
+|---|---|---|
+| Scope completeness | up to 30 | project type, goal, features, timeline, design, content |
+| Budget stated + fits your range | up to 25 | the single best predictor of a real deal |
+| Engagement | up to 10 | message count — do they actually talk? |
+| Commitment | up to 14 | quote sent, negotiating, closed |
+| Recency | +7 … −12 | silence is the biggest killer |
+| Context | up to 3 | country/company known |
+
+Bands: 🔥 **hot** ≥ 65 · 🌤️ **warm** 35–64 · ❄️ **cold** < 35.
+
+The *next action* is deliberately concrete — not "follow up":
+
+```
+🔥 78 Emma Clarke — E-commerce Store · £220–£430 · quoted
+    → Lock the start date and take the advance
+
+🌤️ 52 Omar Al-Farsi — Mobile app · AED 8,000–15,000
+    → Ask for a budget range
+
+❄️ 21 Cold Guy — website
+    → Nudge with one useful idea (no pitch)
 ```
 
-Your existing friends from the previous version are already carried over in `config/owner.json`.
+Where it shows up:
 
-Tune the human feel in `.env`:
-
-```env
-DEBOUNCE_MS=2200        # how long it waits for the client to finish typing
-HANDOFF_MINUTES=45      # after you reply yourself, the bot stays quiet this long
-VOICE_REPLY_MODE=on_request   # off | on_request | match_voice | always
-```
-
-Language is automatic: the assistant mirrors whatever the client writes — English, Urdu script, Roman Urdu, Arabic, Spanish, Turkish, Hindi… (`src/services/language.js`).
+- `.leads` — ranked, with scores and next actions
+- `.lead 92300…` — full breakdown (what's good, what's risky)
+- `.report` — "Do these today" list
+- Dashboard — score and next action per lead
+- Quote notifications — the score is attached the moment a quote goes out
 
 ---
 
 ## Languages
 
-Detection is three-layered: Unicode script first (a message in Thai or Hebrew is
-identifiable with certainty), then common-word voting (short WhatsApp messages
-are too short for statistics), then `franc` for anything long and ambiguous.
+Detection is three-layered: Unicode script first (a Thai or Hebrew message is certain), then common-word voting (short WhatsApp messages are too short for statistics), then `franc` for long ambiguous text.
 
-**86 language profiles**, all with a neural voice for replies:
+**86 language profiles**, each with a neural voice for replies:
 
 - **South Asia** — Urdu, Hindi, Bengali, Punjabi, Gujarati, Marathi, Nepali, Sinhala, Tamil, Telugu, Kannada, Malayalam, Sindhi
 - **Middle East / Central Asia** — Arabic, Persian, Pashto, Hebrew, Turkish, Azerbaijani, Kazakh, Uzbek, Kyrgyz, Tajik, Kurdish
@@ -194,8 +327,7 @@ are too short for statistics), then `franc` for anything long and ambiguous.
 - **Africa** — Swahili, Amharic, Somali, Hausa, Yoruba, Igbo, Zulu, Xhosa, Afrikaans
 - **Roman Urdu / Hinglish** — special-cased, because it borrows English tech words constantly
 
-Register matters as much as language. The bot reads whether the client is being
-formal or casual and mirrors it:
+Register matters as much as language:
 
 | Client writes | Bot answers |
 |---|---|
@@ -204,259 +336,155 @@ formal or casual and mirrors it:
 | "Bonjour madame, pourriez-vous…" | vous |
 | "hey du, was kostet das?" | du |
 
-Prefer a fixed register regardless of the client? Set `bot.formality` in
-`config/owner.json` to `formal` or `casual` (default `auto` = mirror theirs).
-Voice replies follow the same rules — Urdu gets an Urdu voice, German a German
-one — so a voice note never arrives in the wrong language.
+Force one register with `bot.formality` if you prefer.
 
 ---
 
 ## Missed calls
 
-**The honest version:** WhatsApp's Web protocol — the only free way in — lets a
-bot *see* calls (ringing, accepted, rejected, timed out) but **not carry the
-audio**. So no bot on Baileys can literally pick up and talk; that needs the
-official Cloud API calling product, which isn't part of the $0 stack.
+**Honest version:** WhatsApp's Web protocol — the only free way in — lets a bot *see* calls but **not carry the audio**. Picking up and talking needs the official Cloud API, which is not part of the $0 stack.
 
-What this bot does instead, and it works well:
+What this bot does instead:
 
-1. A client calls. You get a WhatsApp notification instantly: *"📞 Incoming call from Emma."*
-2. If you don't answer within `CALL_FALLBACK_SECONDS` (default **60**), the assistant messages the caller:
+1. A client calls → you get *"📞 Incoming call from Emma."* instantly
+2. Nobody answers within **60s** → the assistant messages them in **their** language and register:
    > "Hey — saw your call just now, sorry I couldn't pick up. This is HasDevs' assistant. Tell me here what you need and Hashir can call you back."
-3. The message is written in **their** language and register, sent as a **voice note** (default; sounds like a person picking up) or text.
-4. They reply → normal conversation continues, with all the intake, quoting and memory behaviour.
-5. You get a summary: *"☎️ Missed call from Emma — assistant replied by voice note in English."*
+3. Sent as a **voice note** by default (feels like someone picked up) or text
+4. They reply → the full intake/quote/memory flow continues
+5. You get *"☎️ Missed call from Emma — assistant replied by voice note."*
 
 ```env
 CALLS_ENABLED=true
 CALL_FALLBACK_SECONDS=60          # 0 = instant, 600 = give yourself 10 minutes
 CALL_FALLBACK_MODE=auto           # auto | voice_note | text
 CALL_FALLBACK_TONE=auto           # auto | formal | casual
-CALL_FALLBACK_MAX_PER_DAY=3       # never spam someone who butt-dials you
+CALL_FALLBACK_MAX_PER_DAY=3       # never spam a butt-dial
 ```
 
-Accepted calls are left alone, groups and channels are excluded, and `.calls`
-lists what happened.
+Answered calls are left alone, groups are excluded, `.calls` lists what happened.
 
 ---
 
-## Team (multi-user)
+## Offline & bad internet
 
-The bot is one WhatsApp account, but the work doesn't have to be one person.
+Two different problems, two honest answers.
+
+**1. WhatsApp drops the connection for a minute.** This is the common one, and it is now handled:
+
+- Every outgoing message goes through an **outbox** (`src/services/outbox.js`).
+- If the send fails with a network/socket error, the message is stored in SQLite and retried automatically: right after reconnect, then every 25 seconds.
+- Up to 5 attempts within 30 minutes; after that it is marked failed and logged, never silently lost.
+- Permanent errors (blocked, logged out, invalid JID) are **not** retried — they surface immediately.
+- Messages that arrived while the socket was down are delivered by WhatsApp when it reconnects, and the bot answers them then.
+
+Check it any time: `.status` shows `Outbox: N queued`, and the dashboard has the same number.
+
+**2. The whole process is off / the machine has no internet at all.** Nothing can answer while the bot isn't running — no software can reply from a powered-off laptop. What happens: the client's messages stay unread, and when the bot comes back online WhatsApp delivers them and the assistant replies in order. For 24/7 coverage, run it on a host that stays up (a $0 VPS or a Raspberry Pi).
+
+---
+
+## Team (several people, one inbox)
+
 Add people in `config/owner.json`:
 
 ```jsonc
-"owner": {
-  "team": [
-    { "number": "923001112233", "name": "Ayesha", "role": "sales" },
-    { "number": "923004445566", "name": "Bilal", "role": "support", "permissions": ["quotes"] }
-  ]
-}
+"team": [
+  { "number": "923001112233", "name": "Ayesha", "role": "sales" },
+  { "number": "923004445566", "name": "Bilal", "role": "support", "permissions": ["quotes"] }
+]
 ```
 
 | Role | Can do |
 |---|---|
-| `owner` | everything (you) |
+| `owner` | everything |
 | `admin` | everything |
 | `manager` | leads, chats, quotes, pause/resume, assign, reports, calls |
 | `sales` | leads, chats, quotes, pause/resume, calls |
 | `support` | chats, pause/resume, calls |
 
-How it works in practice:
-
-- A teammate messages the bot on WhatsApp — it answers as their assistant, not as a client bot, and knows their queue.
-- `.takeover 92300…` → the chat is assigned to them and the bot goes quiet there for 45 minutes.
-- `.assign 92300… Ayesha` (owner/manager) → hands a chat over and pings Ayesha.
-- `.mine` → their queue. `.release 92300…` → back to the bot.
-- Escalations and quotes in an assigned chat also ping **that** teammate, not just you.
-- Permissions are enforced in code: support can't quote, sales can't `.export` or `.ai off`, strangers get nothing.
-
-Every chat can be handled by a different person and the memory stays shared —
-whoever opens it next sees the full history, facts and stage.
+- A teammate messages the bot from their own WhatsApp → it answers as *their* assistant, not as a client bot
+- `.takeover 92300…` assigns a chat to them and silences the bot there for 45 minutes
+- `.assign 92300… Ayesha` (owner/manager) hands a chat over and pings her
+- `.mine` → their queue · `.release 92300…` → back to the bot
+- Escalations and quotes ping the **assigned** person, not just the owner
+- Permissions are enforced in code; strangers get nothing
 
 ---
 
-## What a real conversation looks like
+## Commands
 
-```
-Emma (UK, +44…):  Hi! I saw your GitHub. I need an online store for my jackets brand.
-Bot:              Hey 👋 Nice one. Are you selling within the UK only, or international too?
-
-Emma:             UK for now. I need Stripe and a way to see orders without touching code.
-Bot:              Got it — store + Stripe + an orders dashboard. Roughly how many products
-                  to start, and when do you want it live?
-
-Emma:             [voice note 0:14]  → transcribed: "Six products, six weeks, budget about £3,000."
-Bot:              That fits. Let me put the scope and price together.
-
-Bot:  ── quote card ──
-      *E-commerce store*
-      Sell jackets online in the UK
-
-      *Included*
-      • product catalogue
-      • cart + checkout
-      • payment gateway (Stripe)
-      • order dashboard
-      • Login / signup & roles
-
-      *Price:* £220 (≈ PKR 61,600) – £430 (≈ PKR 120,400)
-      *Timeline:* 10–20 days (a little longer with the extra features)
-      *Stack:* Next.js · Node.js · PostgreSQL · Stripe
-
-      Payment: 50% to start, 50% on delivery. Two revision rounds included.
-
-Emma:             [screenshot of a competitor site] Can it look like this?
-Bot:              That layout works well. Dark header, product grid of three, sticky cart —
-                  all doable. Want me to match it closely or just take the ideas?
-```
-
-Meanwhile the owner gets:
-
-```
-🆕 New chat: Emma Clarke
-+447700900123 · United Kingdom · GBP
-“Hi! I saw your GitHub. I need an online store…”
-
-💰 Quote sent to Emma Clarke
-E-commerce store — £220 – £430
-Goal: sell jackets online in the UK
-Follow-up scheduled in 20h.
-```
-
----
-
-## Commands (type in your own WhatsApp chat)
+Type in your own WhatsApp chat (message yourself):
 
 | Command | What it does |
 |---|---|
-| `.help` | list everything |
+| `.help` | everything below |
 | `.chats` | recent conversations with local time |
-| `.leads [status]` | pipeline view |
-| `.lead 92300…` | full dossier: memory, facts, project, quote, follow-up |
-| `.pause 92300… 60` | bot goes quiet in that chat for 60 min (works inside the chat too) |
+| `.leads [status]` | pipeline ranked by score, with next actions |
+| `.lead 92300…` | full dossier: score, reasons, memory, project, quote |
+| `.pause 92300… 60` | bot quiet in that chat for 60 min (works inside the chat too) |
 | `.resume 92300…` | hand the chat back to the bot |
 | `.block` / `.unblock` | spam control |
-| `.reset 92300…` | clear the project intake |
+| `.reset 92300…` | clear project intake |
 | `.quote 92300…` | rebuild and send a quote |
-| `.team` | roster + how many chats each person has |
-| `.mine` | chats assigned to you (teammates) |
-| `.takeover 92300…` | assign a chat to yourself; bot steps back |
+| `.team` | roster + workload |
+| `.mine` | chats assigned to you |
+| `.takeover 92300…` | assign a chat to yourself |
 | `.release 92300…` | give it back to the bot |
 | `.assign 92300… Ayesha` | hand a chat to a teammate |
-| `.calls` | recent incoming calls and what the bot did |
-| `.report` | today's brief right now |
+| `.calls` | recent calls and what the bot did |
+| `.report` | today's brief now |
 | `.usage` | free-tier usage today |
-| `.status` | providers, memory, ffmpeg, pending follow-ups |
-| `.voice off\|request\|match\|always` | change voice-reply behaviour live |
+| `.status` | providers, memory, outbox, ffmpeg, follow-ups |
+| `.voice off\|request\|match\|always` | voice-reply behaviour |
 | `.ai on\|off` | global kill switch |
-| `.export` | JSON backup of contacts + leads sent to you |
+| `.export` | JSON backup of contacts + leads |
 | `.sync` | push leads to Google Sheets |
-| `.id` | chat JID (debugging) |
+| `.id` / `.ping` | debugging |
 
-Commands typed inside a client's chat are deleted right after they run, so the client never sees them. Anything more sensitive than `.pause` is refused outside your self-chat.
-
----
-
-## How it's built
-
-```
-WhatsApp ──▶ src/index.js (connection, reconnect, session)
-                │
-                ▼
-        src/handlers/messageHandler.js
-        ├── guards: groups / channels / status / owner / paused / spam
-        ├── debounce burst → one turn
-        ├── media pipeline
-        │     ├── voice → services/transcription.js (Whisper, auto-language)
-        │     ├── image → services/vision.js (Gemini → OpenRouter → Groq)
-        │     ├── video → services/video.js (native → frames+audio → audio)
-        │     └── doc   → services/documents.js (PDF/DOCX/TXT → brief)
-        ├── core/projectIntake.js  (what we know, what to ask next)
-        ├── core/pricing.js        (deterministic quote, multi-currency)
-        ├── core/brain.js          (self-knowledge + memory + language mirroring)
-        └── core/humanizer.js      (typing, delays, bubbles, quiet hours)
-                │
-                ▼
-        utils/db.js  (SQLite: contacts, messages, facts, summaries,
-                      intake, leads, follow-ups, usage, events)
-```
-
-Supporting services: follow-ups (`services/followUps.js`), daily brief (`services/report.js`), deleted-message watchdog (`services/deletedMessages.js`), Google Sheets (`services/sheets.js`), dashboard (`server.js`).
+Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
 
 ---
 
 ## Dashboard
 
-`http://localhost:3000` (or your host's URL):
+Each user gets their own dashboard (`http://localhost:<port>`):
 
 - connection status, QR / pairing code
-- contacts, messages, leads, pending follow-ups
-- **client pipeline** with quotes
+- contacts, messages, leads, follow-ups, **outbox queue**
+- **client pipeline with score + next action**
+- **team** card and **calls** card
 - today's AI / vision / voice quota
-- capability chips (chat, vision, voice in/out, video, ffmpeg)
-- recent activity feed
+- capability chips and a recent-activity feed
 
 Endpoints: `/health`, `/api/status`, `/qr.png`.
 
-Want to see it with sample data before connecting WhatsApp?
+See it with sample data before connecting anything:
 
 ```bash
-npm run demo     # seeds ./data/demo and opens the dashboard in dry-run
-```
-
----
-
-## Testing without WhatsApp
-
-```bash
-npm run chat           # talk to the brain from your terminal
-npm run chat -- --mock # no API keys needed at all
-```
-
-Inside the simulator: `/image photo.jpg`, `/voice note.ogg`, `/video demo.mp4`, `/doc brief.pdf`, `/state`, `/leads`, `/reset`.
-
-```bash
-npm test               # 108 tests: language, memory, intake, pricing, guards, router
-npm run doctor         # environment + live API checks
+npm run demo
 ```
 
 ---
 
 ## Deploy for free
 
-### Option A — your own PC (most reliable, $0)
+**Your own PC** — `npm start`, keep the terminal open. Simplest and most reliable.
 
-```bash
-npm start
-```
+**Railway / Render / Koyeb / Fly free tier**
 
-Keep the terminal open (or run it as a service). Your session lives in `./sessions`.
+1. Push the repo to GitHub, create a **Web Service**
+2. Build `npm install`, start `node src/index.js` (the `Procfile` says so)
+3. Add env vars: `MY_NUMBER`, `GROQ_API_KEY`, `GEMINI_API_KEY`, optionally `PAIRING_NUMBER`, `PORT`
+4. No persistent disk? Add `WA_SESSION` (from `npm run session`) so restarts don't need a QR
+5. Multiple users on one host: either run `node scripts/run-all.js` (needs a persistent disk for `tenants/`), or deploy one service per user with their own env vars
 
-### Option B — Railway / Render / Koyeb free tier
+**Raspberry Pi / old laptop** — ideal for 1–5 users; needs only outbound HTTPS.
 
-1. Push this repo to GitHub, create a **Web Service**.
-2. Build: `npm install` · Start: `node src/index.js` (the `Procfile` already says this).
-3. Add environment variables: `MY_NUMBER`, `GROQ_API_KEY`, `GEMINI_API_KEY`, and optionally `PAIRING_NUMBER` + `PORT`.
-4. If the host has no persistent disk, add `WA_SESSION` so you never re-pair:
+Notes:
 
-   ```bash
-   npm run session      # locally, after you're logged in → prints a blob
-   ```
-
-   Paste the blob as `WA_SESSION`. On boot the bot restores the session before connecting.
-
-   ⚠️ That blob is full access to your WhatsApp account. Treat it like a password.
-
-### Option C — anything with Node 20+
-
-A Raspberry Pi, an old laptop, a $0 VPS. It only needs outbound HTTPS.
-
-### Hosting notes
-
-- Free tiers **sleep**. Use `PAIRING_NUMBER` + `WA_SESSION` so restarts are painless.
-- Set `ENABLE_WEB=true` if the host requires an open port (most do).
-- `data/assistant.db` is your memory. On hosts without a disk, add `.export` to your weekly routine.
+- Free tiers **sleep**; `PAIRING_NUMBER` + `WA_SESSION` make restarts painless
+- `data/assistant.db` (or `tenants/<slug>/data/assistant.db`) is the memory — back it up with `.export`
+- ffmpeg is what makes voice replies arrive as *voice notes*; install it on the host
 
 ---
 
@@ -464,38 +492,40 @@ A Raspberry Pi, an old laptop, a $0 VPS. It only needs outbound HTTPS.
 
 | Symptom | Fix |
 |---|---|
-| QR keeps appearing | Another WhatsApp Web session took over; delete `./sessions` and re-link one device only. |
-| Connection loop / `405` right after scanning | WhatsApp changed its protocol. Update the client: `npm i @whiskeysockets/baileys@latest` (the code works with 6.x and the 7.x release candidates). |
-| "Connection closed (401)" | Logged out. Delete `./sessions`, restart, scan again. |
-| Replies but no images described | `GEMINI_API_KEY` missing or the model name is retired → `npm run doctor -- gemini`, then set `GEMINI_VISION_MODEL`. |
-| "Gemini rejected the API key" | The key was refused, not the model: revoked, deleted, restricted to other APIs, or its project has no Gemini API enabled. Mint a fresh `AQ.…` key at https://aistudio.google.com/api-keys. |
-| Gemini says model not found | Your key doesn't have that model. `npm run doctor -- gemini` lists what it does have; put one of those in `GEMINI_VISION_MODELS`. |
-| Voice notes not understood | `GROQ_API_KEY` missing, or the note is longer than `MAX_AUDIO_SECONDS`. |
-| Voice reply arrives as a file, not a voice note | No ffmpeg → install it, or `npm i ffmpeg-static`. |
-| Bot talks over me | It shouldn't: your manual reply pauses it for `HANDOFF_MINUTES`. Check `.resume` wasn't needed. |
-| Quotes look wrong | Edit prices in `config/owner.json`; the AI never invents numbers. |
-| Everything is rate-limited | Free tiers reset daily; raise `DAILY_LLM_CALLS` only if your provider allows it. |
-| Group chatter | It is blocked by design — check `/api/status` → `ignored_chat` events are expected. |
+| QR keeps appearing | Another WhatsApp Web session took the account; delete `sessions/` (or `tenants/<slug>/sessions/`) and link once |
+| Connection loop / `405` after scanning | `npm i @whiskeysockets/baileys@latest` |
+| "Connection closed (401)" | Logged out — delete the session folder and re-link |
+| Replies but no images described | `npm run doctor -- gemini`; check the key, then `GEMINI_VISION_MODEL` |
+| "Gemini rejected the API key" | Revoked or restricted — mint a fresh `AQ.…` key |
+| Voice notes not understood | `GROQ_API_KEY` missing, or the note exceeds `MAX_AUDIO_SECONDS` |
+| Voice reply arrives as a file | No ffmpeg — install it |
+| `.status` shows outbox queued | Normal during a dropout; it flushes on reconnect. Stuck? Check the number isn't logged out |
+| Two users disconnect each other | They share a WhatsApp number — one number per user |
+| Bot talks over me | It pauses 45 min after your manual reply; check `.resume` |
+| Everything rate-limited | Free tiers reset daily; raise `DAILY_LLM_CALLS` only if your provider allows |
 
 ---
 
 ## Honest limitations
 
-- **Baileys is an unofficial WhatsApp client.** Automating a personal account can get it banned. For anything business-critical, use a spare number or the official WhatsApp Cloud API. This project uses Baileys because it's the only $0 option.
-- **AI can be wrong.** Prices, dates and policies are injected from config so the boring facts stay correct, but free models occasionally phrase things clumsily. Read the chats for the first week.
-- **Free-tier data:** Google's free Gemini tier and Groq may use your inputs to improve their services. Don't paste anything confidential into a chat.
-- **Edge TTS is an unofficial endpoint.** If Microsoft changes it, voice output fails gracefully to text.
-- **Groups/channels are impossible by design**, not a bug.
-- **Not a legal contract.** Quotes are ranges marked as estimates; final scope should be confirmed by you.
+- **Baileys is an unofficial WhatsApp client.** Automating a personal number can get it banned. Use a spare number for anything valuable, or move to the official Cloud API.
+- **Calls are answered in chat, not with audio.** WhatsApp Web carries no call audio; that requires the paid Cloud API.
+- **The bot must be running.** Downloads, sleep and dead batteries mean unanswered messages until it's back — then they're answered in order.
+- **AI can be wrong.** Facts and prices come from config, but free models occasionally phrase things badly. Watch the first week.
+- **Free-tier data:** Gemini's free tier and Groq may use inputs to improve their services. Don't paste confidential material.
+- **Edge TTS is an unofficial endpoint**; if Microsoft changes it, voice output degrades to text automatically.
+- **Groups and channels are impossible by design** — not a bug.
+- **Quotes are estimates**, not contracts.
 
 ---
 
 ## Privacy
 
-- All conversations, facts and leads live in `data/assistant.db` on your machine.
-- Media is downloaded to `./tmp` only while processing and swept every 30 minutes.
-- Nothing is sent anywhere except your chosen AI providers (Groq / Google / OpenRouter).
-- `.env`, `sessions/`, `data/` and `config/owner.local.json` are gitignored.
+- Everything lives on the machine running the bot: `data/` (or `tenants/<slug>/data/`).
+- Media is downloaded to `tmp/` only while processing, and swept regularly.
+- Nothing leaves the machine except the calls to your chosen AI providers.
+- `.env`, `sessions/`, `data/`, `tenants/` and `config/owner.local.json` are gitignored.
+- Each user's data is in their own folder — there is no cross-tenant query path.
 
 ---
 
@@ -503,40 +533,56 @@ A Raspberry Pi, an old laptop, a $0 VPS. It only needs outbound HTTPS.
 
 ```
 config/
-  owner.json            your business knowledge (edit this)
   owner.example.json    full schema + defaults
+  owner.json            your business knowledge (edit this)
   countries.json        phone prefix → country / timezone / currency
 src/
   index.js              boot, WhatsApp connection, reconnect, session restore
-  server.js             dashboard + /qr.png + /api/status
-  state.js              shared runtime state
-  config/env.js         validated configuration
+  server.js             dashboard + /api/status
+  config/env.js         validated configuration, tenants, team, calls
   handlers/
     messageHandler.js   router: guards, media, intake, reply, quote, escalation
-    ownerCommands.js    .help .leads .pause .quote .report …
+    ownerCommands.js    .help .leads .team .takeover …
   core/
     llm.js              Groq / Gemini / OpenRouter with model + quota fallback
-    brain.js            self-knowledge prompt, mood, escalation rules
+    brain.js            persona, self-knowledge, language + register rules
     projectIntake.js    discovery state machine (persisted)
     pricing.js          deterministic multi-currency quotes
     humanizer.js        typing, delays, bubbles, quiet hours
   services/
+    leads.js            lead scoring, next actions, pipeline summary
+    outbox.js           offline queue: never lose a reply
+    calls.js            missed-call rescue
+    language.js         86 languages + register detection
     transcription.js  vision.js  video.js  documents.js
     tts.js  edgeTts.js  ffmpeg.js  media.js
     memory.js  followUps.js  report.js  sheets.js
-    spamGuard.js  deletedMessages.js  geo.js  language.js
+    spamGuard.js  deletedMessages.js  geo.js
   utils/
-    db.js  sessionBackup.js
-  dev/mockLlm.js        offline fake provider for demos and tests
+    db.js               SQLite (sql.js): contacts, messages, leads, outbox, calls
+    gemini.js           Gemini auth + error classification
+    sessionBackup.js
 scripts/
+  tenant.js             create / inspect / delete users
+  run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   108 tests (node:test, no dependencies)
+test/                   129 tests (node:test, no dependencies)
+```
+
+---
+
+## Tests
+
+```bash
+npm test          # 129 tests: languages, leads, outbox, tenants, calls, router…
+npm run doctor    # environment + live API checks
+npm run chat -- --mock   # talk to the brain with no keys
 ```
 
 ---
 
 ## License
 
-MIT. Do what you want — but use it on people who know a bot may be answering.
+MIT. Use it for your own business or for other people's — but the people talking to it should know a bot may be answering.
 
-Built for Hashir / HasDevs. Powered by free tiers and a lot of patience with WhatsApp's protocol.
+Built for Hashir / HasDevs, and now for anyone who needs it.

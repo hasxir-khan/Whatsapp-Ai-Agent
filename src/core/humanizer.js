@@ -4,6 +4,7 @@
 // optional quiet-hours window so it never replies like a machine at 3 a.m.
 
 import { config } from '../config/env.js';
+import { sendReliable } from '../services/outbox.js';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -140,14 +141,15 @@ export async function sendHuman(sock, jid, text, { incomingText = '', voice = nu
       await setPresence(sock, jid, 'recording');
       await sleep(rand(900, 1800));
       try {
-        const msg = await sock.sendMessage(jid, voice.payload);
+        const msg = await sendReliable(sock, jid, voice.payload);
         sent.push(msg);
       } catch {
-        await sock.sendMessage(jid, { text: bubble });
+        // Voice note refused (permanent) — fall back to the same text
+        await sendReliable(sock, jid, { text: bubble }).catch(() => {});
       }
     } else {
       await setPresence(sock, jid, 'paused');
-      const msg = await sock.sendMessage(jid, { text: bubble });
+      const msg = await sendReliable(sock, jid, { text: bubble });
       sent.push(msg);
     }
 
@@ -164,10 +166,10 @@ export async function sendTyping(sock, jid, text, { delay = 600 } = {}) {
     await setPresence(sock, jid, 'composing');
     await sleep(delay);
     await setPresence(sock, jid, 'paused');
-    return await sock.sendMessage(jid, { text });
+    return await sendReliable(sock, jid, { text });
   } catch {
     try {
-      return await sock.sendMessage(jid, { text });
+      return await sendReliable(sock, jid, { text });
     } catch {
       return null;
     }
