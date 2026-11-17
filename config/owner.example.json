@@ -1,0 +1,724 @@
+{
+  "owner": {
+    "name": "Hashir",
+    "preferredName": "Hashir",
+    "brand": "HasDevs",
+    "role": "Full-stack developer & AI automation engineer",
+    "location": "Pakistan",
+    "timezone": "Asia/Karachi",
+    "languages": [
+      "English",
+      "Urdu",
+      "Roman Urdu",
+      "Hinglish"
+    ],
+    "email": "",
+    "website": "",
+    "github": "",
+    "linkedin": "",
+    "availability": "Mon–Sat, 10:00–22:00 PKT. Deep-work blocks: 12:00–16:00.",
+    "responsePromise": "usually replies within a few hours",
+    "bio": "I build websites, mobile apps, dashboards, AI bots and automation for small businesses. I work solo, so you always talk to the person writing the code — no account managers, no hand-offs.",
+    "skills": [
+      "React / Next.js",
+      "Node.js + Express",
+      "Python",
+      "Flutter / React Native",
+      "PostgreSQL / MongoDB / SQLite",
+      "AI agents, chatbots & LLM integrations (OpenAI, Groq, Gemini)",
+      "WhatsApp automation",
+      "n8n / Make automations",
+      "Vercel, Railway, VPS deployment",
+      "UI/UX with Figma"
+    ],
+    "services": [
+      {
+        "id": "landing",
+        "name": "Landing page / portfolio",
+        "keywords": [
+          "landing",
+          "portfolio",
+          "one page",
+          "onepage",
+          "single page",
+          "resume",
+          "personal site",
+          "brochure"
+        ],
+        "min": 8000,
+        "max": 15000,
+        "days": "2–4",
+        "includes": [
+          "1 page",
+          "mobile responsive",
+          "contact form",
+          "basic SEO",
+          "deployment"
+        ]
+      },
+      {
+        "id": "business_site",
+        "name": "Business website",
+        "keywords": [
+          "business site",
+          "company website",
+          "corporate",
+          "business website",
+          "5 pages",
+          "agency site"
+        ],
+        "min": 15000,
+        "max": 35000,
+        "days": "5–10",
+        "includes": [
+          "up to 6 pages",
+          "responsive design",
+          "contact + WhatsApp integration",
+          "basic SEO",
+          "deployment"
+        ]
+      },
+      {
+        "id": "ecommerce",
+        "name": "E-commerce store",
+        "keywords": [
+          "ecommerce",
+          "e-commerce",
+          "store",
+          "shop",
+          "shopify",
+          "woocommerce",
+          "products",
+          "cart",
+          "checkout"
+        ],
+        "min": 25000,
+        "max": 75000,
+        "days": "10–20",
+        "includes": [
+          "product catalogue",
+          "cart + checkout",
+          "payment gateway",
+          "order dashboard",
+          "courier/COD support"
+        ]
+      },
+      {
+        "id": "webapp",
+        "name": "Full-stack web app / dashboard",
+        "keywords": [
+          "web app",
+          "webapp",
+          "dashboard",
+          "crm",
+          "saas",
+          "portal",
+          "erp",
+          "admin panel",
+          "inventory",
+          "booking system"
+        ],
+        "min": 50000,
+        "max": 180000,
+        "days": "3–7 weeks",
+        "includes": [
+          "custom backend",
+          "database",
+          "auth & roles",
+          "admin panel",
+          "API integrations",
+          "deployment"
+        ]
+      },
+      {
+        "id": "mobile",
+        "name": "Mobile app",
+        "keywords": [
+          "mobile app",
+          "android",
+          "ios",
+          "flutter",
+          "react native",
+          "play store",
+          "app store"
+        ],
+        "min": 30000,
+        "max": 150000,
+        "days": "2–6 weeks",
+        "includes": [
+          "cross-platform app",
+          "API integration",
+          "notifications",
+          "store-ready build"
+        ]
+      },
+      {
+        "id": "ai_bot",
+        "name": "AI bot / AI tool",
+        "keywords": [
+          "ai",
+          "chatbot",
+          "bot",
+          "gpt",
+          "llm",
+          "assistant",
+          "automation bot",
+          "whatsapp bot",
+          "rag"
+        ],
+        "min": 15000,
+        "max": 60000,
+        "days": "1–3 weeks",
+        "includes": [
+          "prompt/system design",
+          "API integration",
+          "conversation memory",
+          "deployment",
+          "usage guardrails"
+        ]
+      },
+      {
+        "id": "automation",
+        "name": "Automation / integrations",
+        "keywords": [
+          "automation",
+          "n8n",
+          "make.com",
+          "zapier",
+          "scraper",
+          "scraping",
+          "integration",
+          "workflow",
+          "google sheets"
+        ],
+        "min": 5000,
+        "max": 30000,
+        "days": "2–7",
+        "includes": [
+          "workflow mapping",
+          "API connections",
+          "error handling",
+          "documentation"
+        ]
+      }
+    ],
+    "addons": [
+      {
+        "id": "payments",
+        "name": "Payment gateway",
+        "keywords": [
+          "payment",
+          "stripe",
+          "paypal",
+          "jazzcash",
+          "easypaisa",
+          "card",
+          "checkout"
+        ],
+        "min": 8000,
+        "max": 18000
+      },
+      {
+        "id": "admin",
+        "name": "Admin panel",
+        "keywords": [
+          "admin",
+          "panel",
+          "cms",
+          "manage",
+          "backend dashboard"
+        ],
+        "min": 10000,
+        "max": 25000
+      },
+      {
+        "id": "auth",
+        "name": "Login / signup & roles",
+        "keywords": [
+          "login",
+          "signup",
+          "auth",
+          "user accounts",
+          "roles",
+          "otp"
+        ],
+        "min": 6000,
+        "max": 15000
+      },
+      {
+        "id": "chat",
+        "name": "Live chat / support inbox",
+        "keywords": [
+          "live chat",
+          "support chat",
+          "inbox",
+          "messaging"
+        ],
+        "min": 8000,
+        "max": 20000
+      },
+      {
+        "id": "notifications",
+        "name": "Email / SMS / push notifications",
+        "keywords": [
+          "notification",
+          "email",
+          "sms",
+          "push",
+          "alerts"
+        ],
+        "min": 4000,
+        "max": 12000
+      },
+      {
+        "id": "multilang",
+        "name": "Multi-language support",
+        "keywords": [
+          "multi language",
+          "multilanguage",
+          "translation",
+          "urdu",
+          "arabic",
+          "localization"
+        ],
+        "min": 6000,
+        "max": 15000
+      },
+      {
+        "id": "animations",
+        "name": "Custom animations & motion design",
+        "keywords": [
+          "animation",
+          "motion",
+          "gsap",
+          "3d",
+          "effects"
+        ],
+        "min": 5000,
+        "max": 15000
+      },
+      {
+        "id": "seo",
+        "name": "SEO & speed optimisation",
+        "keywords": [
+          "seo",
+          "speed",
+          "optimisation",
+          "optimization",
+          "lighthouse",
+          "ranking"
+        ],
+        "min": 4000,
+        "max": 12000
+      },
+      {
+        "id": "ai_features",
+        "name": "AI features inside the app",
+        "keywords": [
+          "ai feature",
+          "recommendation",
+          "summarise",
+          "summarize",
+          "generate",
+          "ocr"
+        ],
+        "min": 12000,
+        "max": 30000
+      },
+      {
+        "id": "maintenance",
+        "name": "Monthly maintenance & support",
+        "keywords": [
+          "maintenance",
+          "support plan",
+          "monthly maintenance",
+          "retainer",
+          "monthly retainer",
+          "maintenance plan"
+        ],
+        "min": 5000,
+        "max": 15000,
+        "monthly": true
+      }
+    ],
+    "process": [
+      "You tell me the goal and features in chat",
+      "I send a fixed scope + price (no surprise bills)",
+      "50% advance to book the slot, 50% on delivery",
+      "You get a staging link and weekly progress updates",
+      "Delivery with 2 weeks of free bug fixes"
+    ],
+    "payment": {
+      "currency": "PKR",
+      "methods": [
+        "Bank transfer",
+        "JazzCash",
+        "Easypaisa",
+        "Wise (USD)",
+        "Payoneer",
+        "USDT"
+      ],
+      "terms": "50% advance, 50% on delivery. For projects above 100,000 PKR I can split into 3 milestones."
+    },
+    "policies": {
+      "revisions": "Two rounds of revisions are included in every package; extra rounds are billed hourly.",
+      "support": "2 weeks of free bug fixes after delivery. New features are quoted separately.",
+      "ownership": "You own the code and all accounts after final payment.",
+      "refund": "Advance is refundable minus work already done, if the project is cancelled in the first week.",
+      "nda": "Happy to sign an NDA — send it over and I'll review.",
+      "timeline": "Timelines start after the advance and after you provide content/assets."
+    },
+    "portfolio": [
+      {
+        "name": "Client portal with invoicing",
+        "desc": "React + Node dashboard where a UK agency tracks client invoices and payments.",
+        "stack": [
+          "React",
+          "Node.js",
+          "PostgreSQL"
+        ],
+        "result": "Cut their manual invoicing time from 3 hours to 15 minutes a week"
+      },
+      {
+        "name": "WhatsApp AI receptionist",
+        "desc": "Answers client enquiries, qualifies leads and books appointments on WhatsApp.",
+        "stack": [
+          "Baileys",
+          "Groq",
+          "SQLite"
+        ],
+        "result": "Handles first-response for a 4-person agency 24/7"
+      },
+      {
+        "name": "Shopify-to-WhatsApp order bot",
+        "desc": "Sends order updates and handles COD confirmations automatically.",
+        "stack": [
+          "Node.js",
+          "Shopify API",
+          "WhatsApp Cloud API"
+        ],
+        "result": "Reduced RTO (return-to-origin) by 18% in two months"
+      }
+    ],
+    "faqs": [
+      {
+        "q": "How do we start?",
+        "a": "Send me the goal, the main features and your timeline. I'll reply with a fixed scope and price, then we start after the advance."
+      },
+      {
+        "q": "Do you work with international clients?",
+        "a": "Yes — most of my work is for clients in the UK, US, UAE and Saudi Arabia. I invoice in USD/GBP/AED too and I keep calls inside your timezone."
+      },
+      {
+        "q": "How do I pay from abroad?",
+        "a": "Wise, Payoneer or USDT. I can also invoice in USD, GBP or AED."
+      },
+      {
+        "q": "Can you sign an NDA?",
+        "a": "Yes, send it over."
+      },
+      {
+        "q": "Do you provide the content and images?",
+        "a": "I can write the copy and source stock media, or you provide it — either works, it just changes the timeline slightly."
+      },
+      {
+        "q": "What if I need changes after delivery?",
+        "a": "Two revision rounds are included. After that, small changes are billed hourly or covered by a monthly maintenance plan."
+      }
+    ],
+    "escalateTopics": [
+      "refund",
+      "legal",
+      "contract",
+      "lawyer",
+      "court",
+      "discount",
+      "custom price",
+      "partnership",
+      "hiring",
+      "job",
+      "invoice dispute",
+      "complaint",
+      "urgent"
+    ],
+    "doNotSay": [
+      "Never claim to have signed a contract or to have received a payment.",
+      "Never promise a delivery date before the advance is paid.",
+      "Never give a final price above the configured ranges without asking the owner.",
+      "Never share the owner's personal address or phone number with strangers."
+    ],
+    "maxDiscountPercent": 10,
+    "friends": [
+      {
+        "number": "923000000000",
+        "name": "Example friend"
+      }
+    ],
+    "team": [
+      {
+        "number": "923001112233",
+        "name": "Ayesha",
+        "role": "sales",
+        "permissions": []
+      }
+    ]
+  },
+  "bot": {
+    "name": "Hashir's Assistant",
+    "persona": "Warm, sharp, slightly informal. You talk like a busy but friendly human on WhatsApp — short messages, natural rhythm, no corporate script. You never sound like a chatbot or a call-centre.",
+    "formality": "auto",
+    "maxBubbles": 3,
+    "pretendHuman": false,
+    "disclosure": "You are Hashir's AI assistant. Never invent being a human, but keep it light: if someone asks if you're a bot, say yes — you're Hashir's assistant and can pass anything on to him.",
+    "voice": {
+      "enabled": true,
+      "voiceByLanguage": {
+        "en": "en-US-AriaNeural",
+        "en-GB": "en-GB-SoniaNeural",
+        "ur": "ur-PK-UzmaNeural",
+        "hi": "hi-IN-SwaraNeural",
+        "ar": "ar-SA-ZariyahNeural",
+        "es": "es-ES-ElviraNeural",
+        "fr": "fr-FR-DeniseNeural",
+        "de": "de-DE-KatjaNeural",
+        "pt": "pt-BR-FranciscaNeural",
+        "id": "id-ID-GadisNeural",
+        "tr": "tr-TR-EmelNeural",
+        "ru": "ru-RU-SvetlanaNeural",
+        "zh": "zh-CN-XiaoxiaoNeural",
+        "ja": "ja-JP-NanamiNeural",
+        "ko": "ko-KR-SunHiNeural",
+        "bn": "bn-BD-NabanitaNeural",
+        "fa": "fa-IR-DilaraNeural",
+        "sw": "sw-KE-ZuriNeural"
+      }
+    }
+  },
+  "currency": {
+    "base": "PKR",
+    "displayForForeignClients": true,
+    "fxToPkr": {
+      "PKR": 1,
+      "USD": 280,
+      "GBP": 355,
+      "EUR": 305,
+      "AED": 76,
+      "SAR": 75,
+      "QAR": 77,
+      "KWD": 910,
+      "BHD": 742,
+      "OMR": 728,
+      "CAD": 200,
+      "AUD": 184,
+      "NZD": 168,
+      "INR": 3.35,
+      "BDT": 2.35,
+      "TRY": 8,
+      "MYR": 63,
+      "SGD": 208,
+      "IDR": 0.0175,
+      "PHP": 4.9,
+      "ZAR": 15,
+      "NGN": 0.18,
+      "KES": 2.2,
+      "EGP": 5.8,
+      "CNY": 39,
+      "JPY": 1.85,
+      "KRW": 0.2,
+      "BRL": 50,
+      "MXN": 15,
+      "RUB": 3.1
+    },
+    "symbols": {
+      "PKR": "PKR",
+      "USD": "$",
+      "GBP": "£",
+      "EUR": "€",
+      "AED": "AED",
+      "SAR": "SAR",
+      "QAR": "QAR",
+      "KWD": "KWD",
+      "CAD": "C$",
+      "AUD": "A$",
+      "INR": "₹",
+      "BDT": "৳",
+      "TRY": "₺",
+      "MYR": "RM",
+      "SGD": "S$",
+      "IDR": "Rp",
+      "PHP": "₱",
+      "ZAR": "R",
+      "NGN": "₦",
+      "KES": "KSh",
+      "EGP": "E£",
+      "CNY": "¥",
+      "JPY": "¥",
+      "KRW": "₩",
+      "BRL": "R$",
+      "MXN": "MX$",
+      "RUB": "₽"
+    }
+  },
+  "intake": {
+    "required": [
+      "projectType",
+      "goal",
+      "features"
+    ],
+    "fields": [
+      {
+        "id": "projectType",
+        "ask": "what exactly you want built",
+        "label": "Project type"
+      },
+      {
+        "id": "goal",
+        "ask": "what the project should achieve and who it's for",
+        "label": "Goal & audience"
+      },
+      {
+        "id": "features",
+        "ask": "the main features or pages you need",
+        "label": "Features"
+      },
+      {
+        "id": "design",
+        "ask": "design preferences — any reference site, colours or brand style",
+        "label": "Design"
+      },
+      {
+        "id": "content",
+        "ask": "whether you'll provide the content/images or I should create them",
+        "label": "Content"
+      },
+      {
+        "id": "timeline",
+        "ask": "your timeline or launch date",
+        "label": "Timeline"
+      },
+      {
+        "id": "budget",
+        "ask": "your budget range so I can match the scope to it",
+        "label": "Budget"
+      },
+      {
+        "id": "tech",
+        "ask": "any technical preference — hosting, platform, integrations",
+        "label": "Tech preference"
+      },
+      {
+        "id": "extra",
+        "ask": "anything else important — integrations, languages, maintenance",
+        "label": "Extra requirements"
+      }
+    ]
+  },
+  "business": {
+    "//": "Universal profile (Phase 1). Used only when features.businessProfile is true. Fill it from scripts/tenant.js setup, a template, or .set from WhatsApp.",
+    "name": "",
+    "type": "",
+    "city": "",
+    "address": "",
+    "languages": [
+      "en"
+    ],
+    "hours": "",
+    "closed": "",
+    "delivery": "",
+    "about": "",
+    "bookingService": "Appointment",
+    "reviewLink": "",
+    "review": {
+      "//": "Hours to wait after .done before asking for feedback. 24 by default.",
+      "afterHours": 24
+    },
+    "referral": {
+      "//": "Code tracking works with this empty. Set reward to promise something.",
+      "reward": "",
+      "message": ""
+    },
+    "analyst": {
+      "//": "Weekly report for the owner, in this timezone.",
+      "day": "mon",
+      "time": "09:00"
+    },
+    "payment": {
+      "//": "Only what is filled in is ever mentioned to a customer.",
+      "bank": {
+        "name": "",
+        "title": "",
+        "number": ""
+      },
+      "jazzcash": {
+        "title": "",
+        "number": ""
+      },
+      "easypaisa": {
+        "title": "",
+        "number": ""
+      },
+      "stripeLink": "",
+      "cod": false
+    },
+    "policies": {
+      "//": "maxDiscountPercent is the only discount the closer may offer. Remove it and every discount request goes to you.",
+      "maxDiscountPercent": null,
+      "refund": "",
+      "guarantee": ""
+    },
+    "offers": [],
+    "content": {
+      "//": "Weekly content pack schedule.",
+      "day": "wed",
+      "time": "10:00"
+    }
+  },
+  "catalog": {
+    "//": "The price list the bot may quote. Each item: { name, kind: service|product, price OR min/max, duration (minutes), stock, keywords }.",
+    "items": []
+  },
+  "tone": {
+    "//": "Free-form house style. Example: { style, emoji, address, avoid }.",
+    "style": "",
+    "emoji": "",
+    "address": "",
+    "avoid": []
+  },
+  "goals": {
+    "//": "What the bot should push these chats toward.",
+    "primary": "",
+    "secondary": [],
+    "target": ""
+  },
+  "escalation": {
+    "//": "When and how to hand over to a human.",
+    "when": "",
+    "number": "",
+    "whatsapp": "",
+    "email": "",
+    "topics": []
+  },
+  "features": {
+    "//": "Every new capability is opt-in and false by default. See README > Feature flags.",
+    "businessProfile": false,
+    "catalog": false,
+    "knowledge": false,
+    "ownerEditing": false,
+    "toolCalling": false,
+    "rag": false,
+    "managerAgent": false,
+    "cloudApi": false,
+    "reactivation": false,
+    "content": false,
+    "injectionGuard": false,
+    "bookingAgent": false,
+    "followUpAgent": false,
+    "growthApproval": true,
+    "closerAgent": false,
+    "reviewAgent": false,
+    "analystAgent": false,
+    "//aliases": "closer / reviews / analyst still work — they map to closerAgent / reviewAgent / analystAgent.",
+    "reactivationAgent": false,
+    "contentAgent": false
+  }
+}

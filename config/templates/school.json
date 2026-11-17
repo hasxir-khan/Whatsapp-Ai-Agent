@@ -1,0 +1,111 @@
+{
+  "_template": {
+    "id": "school",
+    "label": "School / Academy",
+    "emoji": "🎓",
+    "description": "Admissions, fee structure, timings, parent FAQs.",
+    "goodFor": "schools, tuition centres, academies, training institutes"
+  },
+  "business": {
+    "name": "",
+    "type": "School",
+    "city": "",
+    "languages": [
+      "en",
+      "ur"
+    ],
+    "hours": "Mon–Fri 08:00–14:00, office until 16:00",
+    "closed": "Saturday and Sunday",
+    "about": "Registered institution. Admissions open for the new session."
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "Admission form",
+        "kind": "product",
+        "price": 1000
+      },
+      {
+        "name": "Monthly fee — Primary",
+        "kind": "product",
+        "price": 8000
+      },
+      {
+        "name": "Monthly fee — Secondary",
+        "kind": "product",
+        "price": 11000
+      },
+      {
+        "name": "Van / transport (monthly)",
+        "kind": "product",
+        "price": 5000
+      },
+      {
+        "name": "Annual charges (one time)",
+        "kind": "product",
+        "price": 15000
+      }
+    ]
+  },
+  "policies": {
+    "admission": "Admission requires a form, a birth certificate copy and a placement assessment.",
+    "fee": "Fees are due by the 10th of each month.",
+    "transport": "Van service is subject to route availability.",
+    "attendance": "75% attendance is required to sit the annual exam."
+  },
+  "faqs": [
+    {
+      "q": "What are the fees?",
+      "a": "8,000/month primary and 11,000/month secondary, plus a 1,000 admission form."
+    },
+    {
+      "q": "When do admissions open?",
+      "a": "They are open now. Share your child's class so I can guide you further."
+    },
+    {
+      "q": "Is transport available in my area?",
+      "a": "Send your area and I'll confirm whether the van covers it."
+    }
+  ],
+  "tone": {
+    "style": "respectful and clear, reassuring for parents",
+    "emoji": "none",
+    "address": "sir/madam",
+    "avoid": [
+      "promising seats",
+      "discussing another student"
+    ]
+  },
+  "goals": {
+    "primary": "start the admission process",
+    "secondary": [
+      "capture the child's class and the parent's area",
+      "explain the fee structure"
+    ],
+    "target": "admission form filled or office visit booked"
+  },
+  "escalation": {
+    "when": "fee dispute, complaint about staff, or anything about a specific child",
+    "topics": [
+      "complaint",
+      "fee dispute",
+      "staff",
+      "result"
+    ]
+  },
+  "features": {
+    "businessProfile": true,
+    "catalog": true,
+    "knowledge": true,
+    "ownerEditing": true,
+    "managerAgent": false,
+    "bookingAgent": false,
+    "followUpAgent": false,
+    "growthApproval": true,
+    "closerAgent": false,
+    "reviewAgent": false,
+    "analystAgent": false,
+    "reactivationAgent": false,
+    "contentAgent": false
+  }
+}

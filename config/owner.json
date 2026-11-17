@@ -1,0 +1,79 @@
+{
+  "//": "Live business knowledge for this bot. Every key here overrides config/owner.example.json (which documents the full schema). Edit freely — no code changes needed. Keep secrets in .env, not here.",
+  "owner": {
+    "name": "Hashir",
+    "preferredName": "Hashir",
+    "brand": "HasDevs",
+    "role": "Full-stack developer & AI automation engineer",
+    "location": "Pakistan",
+    "timezone": "Asia/Karachi",
+    "email": "",
+    "website": "",
+    "github": "https://github.com/hasxir-khan",
+    "availability": "Mon–Sat, 10:00–22:00 PKT (GMT+5). Deep-work blocks: 12:00–16:00 — replies can be slower then.",
+    "responsePromise": "usually replies within a few hours",
+    "bio": "I build websites, mobile apps, dashboards, AI bots and automations for small businesses. I work solo, so you always talk to the person actually writing the code.",
+    "maxDiscountPercent": 10,
+    "friends": [
+      {
+        "number": "923169895286",
+        "name": "Koor"
+      },
+      {
+        "number": "923195804102",
+        "name": "Shayan"
+      },
+      {
+        "number": "923225293560",
+        "name": "Afaq"
+      },
+      {
+        "number": "923369779724",
+        "name": "CyberWolf"
+      },
+      {
+        "number": "923165797989",
+        "name": "Doctor Saib"
+      },
+      {
+        "number": "923228359053",
+        "name": "AJ Prince"
+      },
+      {
+        "number": "923179783085",
+        "name": "Fahad Khan"
+      },
+      {
+        "number": "923120872051",
+        "name": "Abdullah"
+      },
+      {
+        "number": "923025575040",
+        "name": "Waleed"
+      },
+      {
+        "number": "923175882062",
+        "name": "Imad"
+      }
+    ],
+    "team": []
+  },
+  "bot": {
+    "name": "Hashir's Assistant",
+    "pretendHuman": false,
+    "voice": {
+      "enabled": true,
+      "voiceByLanguage": {
+        "en": "en-US-AriaNeural",
+        "ur": "ur-PK-UzmaNeural",
+        "hi": "hi-IN-SwaraNeural",
+        "ar": "ar-SA-ZariyahNeural"
+      }
+    },
+    "formality": "auto"
+  },
+  "currency": {
+    "base": "PKR",
+    "displayForForeignClients": true
+  }
+}
