@@ -1727,7 +1727,7 @@ test/                   551 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test                 # 551 tests, ~37s, no network, no keys
+npm test                 # 551 tests, ~37s, no network, no keys, no config/owner.json
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys
