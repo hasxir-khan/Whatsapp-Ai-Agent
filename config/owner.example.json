@@ -619,18 +619,18 @@
     "type": "",
     "city": "",
     "address": "",
-    "languages": ["en"],
+    "languages": [
+      "en"
+    ],
     "hours": "",
     "closed": "",
     "delivery": "",
     "about": ""
   },
-
   "catalog": {
     "//": "The price list the bot may quote. Each item: { name, kind: service|product, price OR min/max, duration (minutes), stock, keywords }.",
     "items": []
   },
-
   "tone": {
     "//": "Free-form house style. Example: { style, emoji, address, avoid }.",
     "style": "",
@@ -638,14 +638,12 @@
     "address": "",
     "avoid": []
   },
-
   "goals": {
     "//": "What the bot should push these chats toward.",
     "primary": "",
     "secondary": [],
     "target": ""
   },
-
   "escalation": {
     "//": "When and how to hand over to a human.",
     "when": "",
@@ -654,7 +652,6 @@
     "email": "",
     "topics": []
   },
-
   "features": {
     "//": "Every new capability is opt-in and false by default. See README > Feature flags.",
     "businessProfile": false,
@@ -665,13 +662,14 @@
     "rag": false,
     "managerAgent": false,
     "cloudApi": false,
-    "booking": false,
-    "followUps": false,
     "closer": false,
     "reactivation": false,
     "reviews": false,
     "content": false,
     "analyst": false,
-    "injectionGuard": false
+    "injectionGuard": false,
+    "bookingAgent": false,
+    "followUpAgent": false,
+    "growthApproval": true
   }
 }

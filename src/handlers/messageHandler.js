@@ -17,6 +17,9 @@ import * as media from '../services/media.js';
 import { detectLanguage, detectTone, fromWhisperLanguage } from '../services/language.js';
 import { generateReply, detectMood, needsOwner } from '../core/brain.js';
 import { routeMessage, managerEnabled } from '../core/manager.js';
+import { detectOptOut, detectOptIn, recordOptOut, recordOptIn, optOutConfirmation } from '../services/growth.js';
+import { bookingAgentEnabled, handleBookingTurn } from '../services/bookingAgent.js';
+import { cancelFor as cancelFollowUpDrafts } from '../services/followUpAgent.js';
 import {
   toolCallingEnabled, hasPendingConfirmation, confirmPending, cancelPending,
   isAffirmative, isNegative,
@@ -122,6 +125,30 @@ export async function handleIncoming(transport, rawIncoming) {
 
     if (contact?.is_blocked) return;
     if (db.getSetting('bot_enabled', true) !== true) return;
+
+    // ── "stop" means stop ──────────────────────────────────
+    // Checked before the AI, before intake, before anything can decide to be
+    // clever. It is honoured instantly: pending drafts die here.
+    const said = (info.text || info.caption || '').trim();
+    if (said && detectOptOut(said)) {
+      recordOptOut(number, { reason: said.slice(0, 80) });
+      cancelFollowUpDrafts(number, 'opted_out');
+      const lang = detectLanguage(said).code;
+      const reply = optOutConfirmation(lang);
+      memory.saveUserTurn(number, said, info.kind, { lang, optOut: true });
+      memory.saveAssistantTurn(number, reply, 'text');
+      await sendTyping(transport, jid, reply, { delay: 400 });
+      return;
+    }
+
+    if (said && detectOptIn(said) && db.isOptedOut(number)) {
+      recordOptIn(number);
+      const reply = 'Welcome back — reminders are on again.';
+      memory.saveUserTurn(number, said, info.kind, { optIn: true });
+      memory.saveAssistantTurn(number, reply, 'text');
+      await sendTyping(transport, jid, reply, { delay: 300 });
+      return;
+    }
 
     if (isPaused(contact)) {
       // The owner is handling this chat. Stay out of it, but keep listening so
@@ -416,8 +443,10 @@ async function processBatch(sock, jid, number, items) {
   if (!contact || contact.is_blocked) return;
   if (isPaused(contact) || db.getSetting('bot_enabled', true) !== true) return;
 
-  // The client replied → stop any scheduled nudge
+  // The client replied → stop any scheduled nudge, and drop any draft the
+  // growth agent was waiting to send. Silence means silence.
   cancelFor(number);
+  cancelFollowUpDrafts(number, 'replied');
 
   const parts = [];
   const problems = [];
@@ -464,6 +493,26 @@ async function processBatch(sock, jid, number, items) {
 
   // Long-term context BEFORE this turn is stored, so it isn't duplicated
   const dossier = { ...memory.getDossier(number), mood };
+
+  // ── the booking agent's turn ───────────────────────────
+  // Deterministic: real free slots, a confirmation, a written booking. No
+  // tokens are spent and no slot can be invented.
+  if (bookingAgentEnabled()) {
+    try {
+      const turn = await handleBookingTurn({ number, text: humanText, lang: langInfo.code, now: new Date() });
+      if (turn.handled) {
+        memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, booking: true });
+        const sentB = await sendTyping(sock, jid, turn.reply, { delay: 500 });
+        memory.saveAssistantTurn(number, turn.reply, 'text');
+        noteSent([sentB?.key?.id]);
+        db.logEvent('booking_turn', number, { booked: !!turn.booking, id: turn.booking?.id || null });
+        return;
+      }
+    } catch (err) {
+      db.logEvent('booking_turn_error', number, err.message);
+      // fall through to the normal brain — a booking bug must not silence the bot
+    }
+  }
 
   const explicitPriceQuestion = /\b(price|pricing|cost|charge|rate|quote|estimate|how much|kitna|kitne|budget)\b/i.test(humanText);
   let intake;

@@ -16,17 +16,18 @@ Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but bu
 6. [Business setup — three ways](#business-setup--three-ways)
 7. [Actions the bot can take](#actions-the-bot-can-take)
 8. [Who answers: the manager agent](#who-answers-the-manager-agent)
-9. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
-10. [Lead intelligence](#lead-intelligence)
-11. [Languages](#languages)
-12. [Missed calls](#missed-calls)
-13. [Offline & bad internet](#offline--bad-internet)
-14. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
-15. [Commands](#commands)
-16. [Dashboard](#dashboard)
-17. [Deploy for free](#deploy-for-free)
-18. [Troubleshooting](#troubleshooting)
-19. [Honest limitations](#honest-limitations)
+9. [Bookings and follow-ups (Phase 3)](#bookings-and-follow-ups-phase-3)
+10. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
+11. [Lead intelligence](#lead-intelligence)
+12. [Languages](#languages)
+13. [Missed calls](#missed-calls)
+14. [Offline & bad internet](#offline--bad-internet)
+15. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
+16. [Commands](#commands)
+17. [Dashboard](#dashboard)
+18. [Deploy for free](#deploy-for-free)
+19. [Troubleshooting](#troubleshooting)
+20. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -469,8 +470,9 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `rag` | 2 | Hybrid retrieval: excerpts from learned documents in every reply |
 | `managerAgent` | 2 | Intent router with specialist agents |
 | `cloudApi` | 2 | WhatsApp Cloud API transport alongside Baileys (see [Switching to the official Cloud API](#switching-to-the-official-cloud-api)) |
-| `booking` | 3 | Appointment slots, reminders, no-show rebooking |
-| `followUps` | 3 | Automatic nudges for quiet leads |
+| `bookingAgent` | 3 | Booking agent: real free slots, confirmations, reminders, reschedules, no-show rescue (alias `booking`) |
+| `followUpAgent` | 3 | Follow-up agent: 24h/72h nudges, personalised, in the customer's language (alias `followUps`) |
+| `growthApproval` | 3 | **On by default.** Drafts wait for `.approve` / `.skip`; turn off for auto-send |
 | `closer` | 3 | Objection handling, payment links |
 | `reactivation` | 3 | Monthly win-back for old clients |
 | `reviews` | 3 | Review and referral requests |
@@ -648,6 +650,69 @@ the `message_intents` table if you want to look at it later.
 Back to one brain, immediately. Nothing is lost — the log stays, the tools stay,
 the flag is the only switch.
 
+
+---
+
+## Bookings and follow-ups (Phase 3)
+
+Two agents that act on their own — carefully, and only when you switch them on.
+
+```json
+"features": { "bookingAgent": true, "followUpAgent": true }
+```
+
+`growthApproval` is **true** by default: the follow-up agent writes the message but sends it to *you* first, and nothing reaches the customer until you type `.approve 12`. When you trust it, `.set features.growthApproval false` and it sends directly.
+
+### The booking agent
+
+A customer says *"kal 8 baje table chahiye"* or *"can I come in on Tuesday at 3?"* and the agent:
+
+- reads their day and time in **their** language — Roman Urdu, Urdu, English, and "tomorrow"/"kal"/"کل" all work;
+- checks the day against your opening hours (`.set business.hours Mon–Sat 10:00–21:00`), your timezone, and every slot already booked;
+- offers **2–3 real free slots** as a numbered list when the time they asked for is taken or closed;
+- confirms in one line and writes the booking down — SQLite, plus your Google Sheet if it's connected;
+- sends a reminder **24 hours** and **2 hours** before;
+- if they don't turn up, sends **one** polite "want to try another time?" and then leaves them alone;
+- lets them reschedule or cancel by chat — the slot is free the same second.
+
+```
+you: can I get a table tomorrow at 8?
+bot: Done — Table for 4, Wed 4/6 at 20:00. See you then! 🙌
+```
+
+Owner side: `.bookings` for today and tomorrow, `.cancel 12` to kill one. Times are always shown in your business timezone, never UTC.
+
+Optional: mirror bookings into Google Calendar. Add `GOOGLE_CALENDAR_ID` plus either a service-account JSON file (`GOOGLE_SERVICE_ACCOUNT_FILE`) or the OAuth trio (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`). **Without credentials nothing breaks** — the booking is written to SQLite and the Sheets sync as usual, and the calendar step is simply skipped.
+
+### The follow-up agent
+
+A lead goes quiet after a quote or a question. After **24 hours**, and once more after **72**, this agent writes one short message that proves someone was listening:
+
+> Hi Ali — you asked about delivery to F-7 and the Zinger Burger is PKR 650. Shall I put an order aside for you?
+
+The rules it cannot break:
+
+- only leads scoring at or above `GROWTH_MIN_SCORE` (default 40);
+- **at most two** follow-ups, then the lead is marked cold — permanently;
+- it quotes a price **only** if that item is in your catalogue;
+- it writes in the customer's language, using their history — never a template;
+- it stops instantly if they reply, opt out, or you pause / take over the chat.
+
+### The safety layer (both agents)
+
+Every proactive message — reminders, nudges, win-backs — goes through one gate before it can leave:
+
+| Check | Default | Where to change it |
+|---|---|---|
+| Opt-out is honoured forever | — | they type "stop" / "band karo" / "مت بھیجو" |
+| Quiet hours, in *your* timezone | 21:00–09:00 | `GROWTH_QUIET_START` / `GROWTH_QUIET_END` |
+| Per person | 1 message / 24 h | `GROWTH_CONTACT_CAP` |
+| Per day, whole assistant | 30 (12 on Baileys) | `GROWTH_DAILY_CAP` / `GROWTH_BAILEYS_CAP` |
+| Cloud API 24-hour window | templates only | [see above](#4-the-24-hour-rule-the-part-that-surprises-people) |
+
+Anything blocked is **logged with the reason** (`quiet_hours`, `contact_cap`, `window_closed`, …) — `.growth` shows today's sends per agent and `.status` shows the window. Nothing ever fails silently.
+
+Booking reminders count as transactional: they ignore the one-per-24h limit, but never quiet hours, an opt-out, or the daily ceiling.
 
 ---
 
@@ -979,6 +1044,11 @@ Type in your own WhatsApp chat (message yourself):
 | `.knowledge` | learned documents, chunks and vector status |
 | `.tools` | the last 10 actions the bot took, with arguments |
 | `.intents` | who answered what today: sales, support, booking, complaint — and how it was decided |
+| `.bookings` | today's and tomorrow's bookings, with ids |
+| `.cancel 12` | cancel a booking by id — the slot is free again immediately |
+| `.growth` | proactive messages sent today per agent, with caps and any opt-outs |
+| `.optouts` | everyone who asked to stop, and when |
+| `.approve 12` / `.skip 12` | send or drop a follow-up draft |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
@@ -1056,6 +1126,8 @@ Notes:
 - **Edge TTS is an unofficial endpoint**; if Microsoft changes it, voice output degrades to text automatically.
 - **Groups and channels are impossible by design** — not a bug.
 - **Quotes are estimates**, not contracts.
+- **Booking reminders and follow-ups only go out if the process is running** at the right moment; a reminder that falls due while the bot is down is sent on the next start, still inside quiet hours and caps.
+- **Google Calendar sync is optional and unverified in this repo's tests** (no credentials in CI). Bookings themselves are fully tested; the calendar call is best-effort and never blocks a booking.
 
 ---
 
@@ -1099,6 +1171,10 @@ src/
     tools.js            the five actions: schemas, validation, confirmations
     hours.js            opening hours parsed and checked in the business timezone
     manager.js          intent rules, the model router, specialist agents
+    growth.js           the safety layer: opt-outs, quiet hours, caps, logging
+    bookingAgent.js     bookings: parse, offer slots, reminders, no-shows
+    followUpAgent.js    quiet-lead nudges: 24h/72h, personalised, draft-first
+    calendar.js         optional Google Calendar mirror (never blocks)
   transport/            how the bot talks to WhatsApp, behind one interface
     base.js             the interface + the internal message shape
     baileys.js          Baileys (default), wrapped unchanged
@@ -1124,7 +1200,7 @@ scripts/
   learn.js              ingest one document into a tenant's knowledge base
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   323 tests (node:test, no dependencies)
+test/                   379 tests (node:test, no dependencies)
 ```
 
 ---

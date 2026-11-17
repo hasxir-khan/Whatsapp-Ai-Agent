@@ -180,6 +180,36 @@ export const config = {
     openrouter: process.env.OPENROUTER_API_KEY || '',
   },
 
+  // ── growth agents (Phase 3) ──────────────────────────────
+  // Everything proactive goes through one safety layer; these are its limits.
+  growth: {
+    // Max proactive messages to one person in a rolling 24 hours.
+    contactCap: toInt(process.env.GROWTH_CONTACT_CAP, 1),
+    // Max proactive messages per process per day. Meta's Cloud API tolerates
+    // more; Baileys is an unofficial client and a burst is how numbers get
+    // flagged, so the default is deliberately lower there.
+    dailyCap: toInt(process.env.GROWTH_DAILY_CAP, 30),
+    baileysCap: toInt(process.env.GROWTH_BAILEYS_CAP, 12),
+    // Default quiet window, in the business's timezone.
+    quietStart: process.env.GROWTH_QUIET_START || '21:00',
+    quietEnd: process.env.GROWTH_QUIET_END || '09:00',
+    // Follow-up agent
+    followUpMinScore: toInt(process.env.GROWTH_MIN_SCORE, 40),
+    followUpAfterHours: toList(process.env.GROWTH_FOLLOWUP_HOURS, ['24', '72']).map((n) => toInt(n, 24)),
+    followUpMax: toInt(process.env.GROWTH_FOLLOWUP_MAX, 2),
+  },
+
+  // Optional: push bookings into a Google Calendar. Both are best-effort —
+  // with no credentials, bookings simply live in SQLite.
+  calendar: {
+    id: process.env.GOOGLE_CALENDAR_ID || '',
+    serviceAccountFile: process.env.GOOGLE_SERVICE_ACCOUNT_FILE || '',
+    // Optional shared secret for a personal OAuth refresh-token setup.
+    clientId: process.env.GOOGLE_CLIENT_ID || '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+    refreshToken: process.env.GOOGLE_REFRESH_TOKEN || '',
+  },
+
   // ── how the bot talks to WhatsApp ────────────────────────
   // "baileys" (default, unchanged, free, needs a phone) or "cloud" (Meta's
   // official API, no phone needed, requires a Meta app + a public webhook).

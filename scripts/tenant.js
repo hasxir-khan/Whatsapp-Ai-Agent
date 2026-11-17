@@ -201,6 +201,26 @@ TRANSPORT=baileys
 # CLOUD_VERIFY_TOKEN=
 # CLOUD_APP_SECRET=
 
+# ── Growth agents (Phase 3) — off until you switch them on ──
+# In config/owner.json: features.bookingAgent, features.followUpAgent,
+# features.growthApproval (true = drafts wait for .approve).
+# GROWTH_CONTACT_CAP=1           # proactive messages per person per 24h
+# GROWTH_DAILY_CAP=30            # per day, whole assistant
+# GROWTH_BAILEYS_CAP=12          # lower ceiling when running on Baileys
+# GROWTH_QUIET_START=21:00       # no proactive messages in this window
+# GROWTH_QUIET_END=09:00
+# GROWTH_MIN_SCORE=40            # follow up only above this lead score
+# GROWTH_FOLLOWUP_HOURS=24,72    # silence, in hours
+# GROWTH_FOLLOWUP_MAX=2
+
+# ── Google Calendar (optional) ──────────────────────────────
+# Bookings live in SQLite either way; this only mirrors them.
+# GOOGLE_CALENDAR_ID=
+# GOOGLE_SERVICE_ACCOUNT_FILE=./secrets/service-account.json
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+# GOOGLE_REFRESH_TOKEN=
+
 # ── Dashboard ───────────────────────────────────────────────
 ENABLE_WEB=true
 PORT=${port}

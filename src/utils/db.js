@@ -181,6 +181,55 @@ CREATE TABLE IF NOT EXISTS cloud_windows (
   updated_at   TEXT
 );
 
+-- ── Phase 3: proactive growth ──────────────────────────────
+-- One row per person who asked us to stop. Permanent until they say "start".
+CREATE TABLE IF NOT EXISTS growth_optouts (
+  number      TEXT PRIMARY KEY,
+  reason      TEXT,
+  source      TEXT,          -- message | owner | command
+  created_at  TEXT
+);
+
+-- Every proactive message we tried, whether it went out or was refused.
+CREATE TABLE IF NOT EXISTS growth_sends (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent       TEXT,          -- booking | followup | reminder | rebook
+  number      TEXT,
+  reason      TEXT,
+  result      TEXT,          -- sent | skipped | held | blocked | failed
+  detail      TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_growth_sends_at ON growth_sends(created_at, agent);
+
+-- Drafts waiting for the owner (.approve / .skip) — or sent immediately when
+-- approval mode is off.
+CREATE TABLE IF NOT EXISTS growth_drafts (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      TEXT,
+  agent       TEXT,
+  kind        TEXT,          -- followup | reminder | rebook
+  text        TEXT,
+  reason      TEXT,
+  status      TEXT DEFAULT 'pending',   -- pending | sent | skipped | cancelled | expired
+  due_at      TEXT,
+  created_at  TEXT,
+  sent_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_growth_drafts_status ON growth_drafts(status, id);
+
+-- Reminders for a booking, so a restart does not forget them.
+CREATE TABLE IF NOT EXISTS booking_reminders (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  booking_id  INTEGER,
+  number      TEXT,
+  kind        TEXT,          -- 24h | 2h | noshow
+  due_at      TEXT,
+  status      TEXT DEFAULT 'pending',   -- pending | sent | cancelled
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_booking_reminders_due ON booking_reminders(status, due_at);
+
 CREATE TABLE IF NOT EXISTS calls (
   id          TEXT PRIMARY KEY,
   number      TEXT,
@@ -1347,4 +1396,243 @@ export function cloudWindowTouch(number, at = new Date().toISOString()) {
 
 export function cloudWindowGet(number) {
   return get('SELECT * FROM cloud_windows WHERE number = ?', [number]);
+}
+
+// ════════════════════════════════════════════════════════════
+// Opt-outs — the strongest promise in the system
+// ════════════════════════════════════════════════════════════
+
+export function optOut(number, { reason = null, source = 'message' } = {}) {
+  if (!number) return null;
+  run(
+    `INSERT INTO growth_optouts (number, reason, source, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(number) DO UPDATE SET reason = excluded.reason, source = excluded.source`,
+    [number, reason, source, new Date().toISOString()]
+  );
+  saveDB(true);
+  return get('SELECT * FROM growth_optouts WHERE number = ?', [number]);
+}
+
+export function optIn(number) {
+  run('DELETE FROM growth_optouts WHERE number = ?', [number]);
+  return true;
+}
+
+export function isOptedOut(number) {
+  return !!get('SELECT * FROM growth_optouts WHERE number = ?', [number]);
+}
+
+export function optOutList(limit = 50) {
+  return all('SELECT * FROM growth_optouts ORDER BY created_at DESC LIMIT ?', [limit]);
+}
+
+export function optOutCount() {
+  return get('SELECT COUNT(*) AS n FROM growth_optouts')?.n || 0;
+}
+
+// ════════════════════════════════════════════════════════════
+// Proactive sends — every attempt is on the record
+// ════════════════════════════════════════════════════════════
+
+export function logGrowthSend({ agent, number, reason = null, result = 'sent', detail = null, at = null } = {}) {
+  // `at` exists so a fake clock and the log agree — the caps read this table.
+  run('INSERT INTO growth_sends (agent, number, reason, result, detail, created_at) VALUES (?,?,?,?,?,?)', [
+    agent,
+    number,
+    reason,
+    result,
+    detail,
+    at || new Date().toISOString(),
+  ]);
+  return true;
+}
+
+/** How many proactive messages this person got since `sinceIso`. */
+export function growthCountFor(number, sinceIso) {
+  return (
+    get("SELECT COUNT(*) AS n FROM growth_sends WHERE number = ? AND result = 'sent' AND created_at >= ?", [
+      number,
+      sinceIso,
+    ])?.n || 0
+  );
+}
+
+/** Tenant-wide daily count, and the per-agent breakdown the owner sees. */
+export function growthStatsSince(sinceIso) {
+  return all(
+    `SELECT agent, result, COUNT(*) AS count
+       FROM growth_sends
+      WHERE created_at >= ?
+      GROUP BY agent, result
+      ORDER BY count DESC`,
+    [sinceIso]
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// Drafts (owner approval)
+// ════════════════════════════════════════════════════════════
+
+export function addDraft({ number, agent, kind, text, reason = null, dueAt = null } = {}) {
+  run(
+    'INSERT INTO growth_drafts (number, agent, kind, text, reason, status, due_at, created_at) VALUES (?,?,?,?,?,?,?,?)',
+    [number, agent, kind, text, reason, 'pending', dueAt, new Date().toISOString()]
+  );
+  return get("SELECT * FROM growth_drafts WHERE status = 'pending' ORDER BY id DESC LIMIT 1");
+}
+
+export function getDraft(id) {
+  return get('SELECT * FROM growth_drafts WHERE id = ?', [id]);
+}
+
+export function pendingDrafts(limit = 20) {
+  return all("SELECT * FROM growth_drafts WHERE status = 'pending' ORDER BY id ASC LIMIT ?", [limit]);
+}
+
+export function pendingDraftFor(number, agent = null) {
+  return agent
+    ? get("SELECT * FROM growth_drafts WHERE number = ? AND agent = ? AND status = 'pending' ORDER BY id DESC LIMIT 1", [number, agent])
+    : get("SELECT * FROM growth_drafts WHERE number = ? AND status = 'pending' ORDER BY id DESC LIMIT 1", [number]);
+}
+
+export function setDraftStatus(id, status, { sentAt = null } = {}) {
+  run('UPDATE growth_drafts SET status = ?, sent_at = ? WHERE id = ?', [status, sentAt, id]);
+  return getDraft(id);
+}
+
+/** Any pending draft for this person — used when they reply or opt out. */
+export function cancelDraftsFor(number, reason = 'cancelled') {
+  const rows = all("SELECT * FROM growth_drafts WHERE number = ? AND status = 'pending'", [number]);
+  if (rows.length) run("UPDATE growth_drafts SET status = ? WHERE number = ? AND status = 'pending'", [reason, number]);
+  return rows.length;
+}
+
+export function draftStatsSince(sinceIso) {
+  return all(
+    `SELECT agent, status, COUNT(*) AS count FROM growth_drafts WHERE created_at >= ? GROUP BY agent, status`,
+    [sinceIso]
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// Bookings — the parts the agent needs beyond createBooking
+// ════════════════════════════════════════════════════════════
+
+export function getBooking(id) {
+  return get('SELECT * FROM bookings WHERE id = ?', [id]);
+}
+
+export function isSlotTaken(service, date, time) {
+  return !!get("SELECT * FROM bookings WHERE service = ? AND date = ? AND time = ? AND status = 'booked'", [
+    service,
+    date,
+    time,
+  ]);
+}
+
+/** Is this person already booked at that date/time, whatever the service? */
+export function contactHasSlot(chat, date, time) {
+  return !!get("SELECT * FROM bookings WHERE chat = ? AND date = ? AND time = ? AND status IN ('booked','confirmed')", [
+    chat,
+    date,
+    time,
+  ]);
+}
+
+export function cancelBooking(id, { by = 'customer', reason = null } = {}) {
+  const booking = getBooking(id);
+  if (!booking) return { ok: false, problem: 'not_found' };
+  if (booking.status === 'cancelled') return { ok: true, booking, already: true };
+  run("UPDATE bookings SET status = 'cancelled', notes = COALESCE(notes, '') || ? WHERE id = ?", [
+    ` [cancelled by ${by}${reason ? `: ${reason}` : ''}]`,
+    id,
+  ]);
+  run("UPDATE booking_reminders SET status = 'cancelled' WHERE booking_id = ? AND status = 'pending'", [id]);
+  saveDB(true);
+  return { ok: true, booking: getBooking(id) };
+}
+
+/**
+ * Move a booking to a new slot. The old slot is freed at the same instant, so
+ * two customers can never end up holding it.
+ */
+export function rescheduleBooking(id, { date, time } = {}) {
+  const booking = getBooking(id);
+  if (!booking) return { ok: false, problem: 'not_found' };
+  if (booking.status === 'cancelled') return { ok: false, problem: 'cancelled' };
+
+  const taken = get(
+    "SELECT * FROM bookings WHERE service = ? AND date = ? AND time = ? AND status IN ('booked','confirmed') AND id <> ?",
+    [booking.service, date, time, id]
+  );
+  if (taken) return { ok: false, problem: 'slot_taken', booking: taken };
+
+  run("UPDATE bookings SET date = ?, time = ?, status = 'booked' WHERE id = ?", [date, time, id]);
+  run("UPDATE booking_reminders SET status = 'cancelled' WHERE booking_id = ? AND status = 'pending'", [id]);
+  saveDB(true);
+  return { ok: true, booking: getBooking(id) };
+}
+
+export function bookingsOn(date, { statuses = ['booked', 'confirmed'] } = {}) {
+  const marks = statuses.map(() => '?').join(',');
+  return all(`SELECT * FROM bookings WHERE date = ? AND status IN (${marks}) ORDER BY time`, [date, ...statuses]);
+}
+
+export function bookingsBetween(fromDate, toDate) {
+  return all(
+    "SELECT * FROM bookings WHERE date >= ? AND date <= ? AND status IN ('booked','confirmed') ORDER BY date, time",
+    [fromDate, toDate]
+  );
+}
+
+/** The next booking this person has, if any. */
+export function nextBookingFor(chat) {
+  return get(
+    "SELECT * FROM bookings WHERE chat = ? AND status IN ('booked','confirmed') ORDER BY date, time LIMIT 1",
+    [chat]
+  );
+}
+
+export function setBookingStatus(id, status) {
+  run('UPDATE bookings SET status = ? WHERE id = ?', [status, id]);
+  return getBooking(id);
+}
+
+/**
+ * Bookings whose time has passed but that were never confirmed or closed.
+ * @param {string} localCutoff wall-clock "YYYY-MM-DDTHH:MM" in the business's
+ * timezone — bookings store wall-clock times, so the comparison has to as well.
+ */
+export function staleBookings(localCutoff) {
+  return all("SELECT * FROM bookings WHERE status IN ('booked','confirmed') AND (date || 'T' || time) < ?", [
+    String(localCutoff).slice(0, 16),
+  ]);
+}
+
+// ── reminders ───────────────────────────────────────────────
+export function addReminder({ bookingId, number, kind, dueAt }) {
+  run('INSERT INTO booking_reminders (booking_id, number, kind, due_at, status, created_at) VALUES (?,?,?,?,?,?)', [
+    bookingId,
+    number,
+    kind,
+    dueAt,
+    'pending',
+    new Date().toISOString(),
+  ]);
+  return get("SELECT * FROM booking_reminders WHERE status = 'pending' ORDER BY id DESC LIMIT 1");
+}
+
+export function dueReminders(nowIso, limit = 20) {
+  return all("SELECT * FROM booking_reminders WHERE status = 'pending' AND due_at <= ? ORDER BY due_at LIMIT ?", [
+    nowIso,
+    limit,
+  ]);
+}
+
+export function setReminderStatus(id, status) {
+  run('UPDATE booking_reminders SET status = ? WHERE id = ?', [status, id]);
+}
+
+export function remindersFor(bookingId) {
+  return all('SELECT * FROM booking_reminders WHERE booking_id = ? ORDER BY due_at', [bookingId]);
 }

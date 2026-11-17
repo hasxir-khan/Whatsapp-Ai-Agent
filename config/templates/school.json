@@ -98,6 +98,9 @@
     "catalog": true,
     "knowledge": true,
     "ownerEditing": true,
-    "managerAgent": false
+    "managerAgent": false,
+    "bookingAgent": false,
+    "followUpAgent": false,
+    "growthApproval": true
   }
 }

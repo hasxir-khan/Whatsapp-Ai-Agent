@@ -26,6 +26,10 @@ import { hasFfmpeg } from '../services/ffmpeg.js';
 import { pendingFollowUps, intentStatsForDay } from '../utils/db.js';
 import { intentSummary, managerEnabled, AGENTS } from '../core/manager.js';
 import { getTransport } from '../transport/index.js';
+import { growthSummary, optOutList, recordOptOut, recordOptIn, quietWindow } from '../services/growth.js';
+import { bookingsForOwner, cancelByChat } from '../services/bookingAgent.js';
+import { pendingDrafts, approveDraft, skipDraft } from '../services/followUpAgent.js';
+import { getBooking, cancelBooking, isOptedOut } from '../utils/db.js';
 import { describeCapabilities } from '../transport/base.js';
 import { outboxStatus } from '../services/outbox.js';
 import { knowledgeSources, knowledgeStats, knowledgeEmbeddingStats, recentToolCalls, toolCallStats } from '../utils/db.js';
@@ -69,6 +73,11 @@ const HELP = `*Bot commands*
 .knowledge – learned documents + vector status
 .tools – last 10 actions the bot took
 .intents – who answered what today (sales / support / booking / complaint)
+.growth – proactive messages sent today, per agent, with caps
+.optouts – everyone who asked to stop
+.bookings – today and tomorrow
+.cancel <id> – cancel a booking (frees the slot)
+.approve <id> / .skip <id> – follow-up drafts waiting for you
 .ping`;
 
 /** What this process is talking to, and what that transport cannot do. */
@@ -129,7 +138,10 @@ const COMMAND_PERMISSION = {
   team: 'chats',
 };
 
-const OWNER_ONLY = new Set(['export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq', 'features', 'knowledge', 'tools', 'intents']);
+const OWNER_ONLY = new Set([
+  'export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq',
+  'features', 'knowledge', 'tools', 'intents', 'growth', 'optouts', 'bookings', 'cancel', 'approve', 'skip',
+]);
 
 /**
  * @returns {Promise<{handled:boolean, reply?:string, voice?:object}>}
@@ -331,6 +343,106 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         lines.push(`${call.status === 'ok' ? '✅' : call.status === 'needs_confirmation' ? '⏳' : '⚠️'} ${when} · ${who} · *${call.tool}* ${args}${call.ms !== null ? ` (${call.ms}ms)` : ''}`);
       }
       return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'growth': {
+      const summary = growthSummary();
+      const lines = [`*Growth today* — ${summary.sent}/${summary.cap} proactive sent`];
+      lines.push(`Transport: ${summary.transport} · quiet ${summary.quiet}${summary.inQuiet ? ' (now)' : ''}`);
+      lines.push('');
+      const agents = Object.entries(summary.byAgent);
+      if (!agents.length) {
+        lines.push('Nothing sent yet today.');
+      } else {
+        for (const [agent, counts] of agents) {
+          const bits = [];
+          if (counts.sent) bits.push(`${counts.sent} sent`);
+          if (counts.skipped) bits.push(`${counts.skipped} skipped`);
+          if (counts.held) bits.push(`${counts.held} held (24h window)`);
+          if (counts.failed) bits.push(`${counts.failed} failed`);
+          lines.push(`• ${agent}: ${bits.join(' · ') || '0'}`);
+        }
+      }
+      const drafts = pendingDrafts(5);
+      if (drafts.length) {
+        lines.push('');
+        lines.push(`*${drafts.length} draft(s) waiting*`);
+        for (const d of drafts) lines.push(`#${d.id} → +${d.number}: "${String(d.text).slice(0, 70)}…"`);
+        lines.push('.approve <id> · .skip <id>');
+      }
+      lines.push('');
+      lines.push(`${summary.optOuts} opt-out${summary.optOuts === 1 ? '' : 's'} on file (.optouts)`);
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'optouts': {
+      const list = optOutList(30);
+      if (!list.length) {
+        return { handled: true, reply: 'Nobody has opted out. Good — or nobody has asked yet.' };
+      }
+      const lines = [`*Opted out* (${optOutList(200).length}) — no proactive messages, ever`];
+      for (const row of list) {
+        const when = new Date(row.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+        lines.push(`• +${row.number} — ${when}${row.reason ? ` (${String(row.reason).slice(0, 40)})` : ''}`);
+      }
+      lines.push('');
+      lines.push('They can return with "start". You can force one back with .set — but please don\'t.');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'bookings': {
+      const { today, tomorrow, todayRows, tomorrowRows } = bookingsForOwner();
+      const fmt = (b) => `• ${b.time} — ${b.service}${b.name ? ` · ${b.name}` : ''} · #${b.id} (${b.status})`;
+      const lines = [`*Bookings*`];
+      lines.push(`Today (${today}): ${todayRows.length}`);
+      for (const b of todayRows) lines.push(fmt(b));
+      lines.push('');
+      lines.push(`Tomorrow (${tomorrow}): ${tomorrowRows.length}`);
+      for (const b of tomorrowRows) lines.push(fmt(b));
+      if (!todayRows.length && !tomorrowRows.length) lines.push('', 'Nothing booked. The agent offers slots when someone asks.');
+      lines.push('', '.cancel <id> frees a slot instantly.');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'cancel': {
+      const id = Number(String(arg).match(/\d+/)?.[0]);
+      if (!id) return { handled: true, reply: 'Usage: .cancel 12  (the id from .bookings)' };
+      const booking = getBooking(id);
+      if (!booking) return { handled: true, reply: `No booking #${id}.` };
+      const res = cancelBooking(id, { by: 'owner' });
+      return {
+        handled: true,
+        reply: res.ok
+          ? `✔ Booking #${id} cancelled — ${booking.service} ${booking.date} ${booking.time} is free again.`
+          : `Couldn't cancel #${id}: ${res.problem}`,
+      };
+    }
+
+    case 'approve': {
+      const id = Number(String(arg).match(/\d+/)?.[0]);
+      if (!id) return { handled: true, reply: 'Usage: .approve 12  (see .growth for drafts)' };
+      const res = await approveDraft({ id, transport: sock, now: new Date() });
+      if (res.ok) return { handled: true, reply: `✔ Draft #${id} sent to +${res.draft.number}.` };
+      const why = {
+        not_found: `No draft #${id}.`,
+        opted_out: 'That person opted out — the draft stays unsent.',
+        quiet_hours: 'It is quiet hours there. Try after 09:00.',
+        contact_cap: 'They already got a proactive message in the last 24h.',
+        daily_cap: "Today's proactive cap is reached.",
+        window_closed: 'The Cloud API 24-hour window is closed — they must write first.',
+        send_failed: 'Sending failed — check .status and the log.',
+      }[res.problem] || `Couldn't send: ${res.problem}`;
+      return { handled: true, reply: `⏸ ${why}` };
+    }
+
+    case 'skip': {
+      const id = Number(String(arg).match(/\d+/)?.[0]);
+      if (!id) return { handled: true, reply: 'Usage: .skip 12' };
+      const res = skipDraft(id);
+      return {
+        handled: true,
+        reply: res.ok ? `✔ Draft #${id} dropped.` : `Couldn't skip #${id}: ${res.problem}`,
+      };
     }
 
     case 'intents': {

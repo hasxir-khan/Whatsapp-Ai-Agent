@@ -21,6 +21,9 @@ import { visionEnabled } from './services/vision.js';
 import { hasFfmpeg } from './services/ffmpeg.js';
 import { sttEnabled } from './services/transcription.js';
 import { buildReport } from './services/report.js';
+import { featureOn } from './services/profile.js';
+import { startBookingLoop } from './services/bookingAgent.js';
+import { startFollowUpAgentLoop, followUpAgentEnabled } from './services/followUpAgent.js';
 import { createTransport } from './transport/index.js';
 import { describeCapabilities } from './transport/base.js';
 
@@ -44,7 +47,17 @@ function startServices(t) {
   if (servicesStarted) return;
   servicesStarted = true;
   startDailyReport(t);
-  startFollowUpLoop(t);
+
+  // Phase 3: the follow-up agent supersedes the older generic nudge loop when
+  // its flag is on. Running both would double-message people.
+  if (followUpAgentEnabled()) {
+    startFollowUpAgentLoop(t);
+  } else {
+    startFollowUpLoop(t);
+  }
+
+  if (featureOn('bookingAgent')) startBookingLoop(t);
+
   startPendingFlusher(t);
   startOutboxLoop(t);
 }

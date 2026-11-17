@@ -29,8 +29,11 @@ export const FEATURE_KEYS = [
   'manager', // deprecated alias of managerAgent
   'cloudApi',
   // phase 3
-  'booking',
-  'followUps',
+  'bookingAgent',
+  'followUpAgent',
+  'growthApproval', // default ON: drafts wait for the owner until they say otherwise
+  'booking', // deprecated alias of bookingAgent
+  'followUps', // deprecated alias of followUpAgent
   'closer',
   'reactivation',
   'reviews',
@@ -48,6 +51,9 @@ export const FEATURE_LABELS = {
   toolCalling: 'Structured actions (book, stock, order, quote, handoff)',
   rag: 'Vector search over learned documents',
   managerAgent: 'Intent router with specialist agents',
+  bookingAgent: 'Books, reminds, reschedules and cancels appointments by chat',
+  followUpAgent: 'Personalised nudges for quiet leads, with owner approval',
+  growthApproval: 'Growth drafts wait for the owner (.approve / .skip) — on by default',
   manager: 'Deprecated alias of managerAgent',
   cloudApi: 'WhatsApp Cloud API transport',
   booking: 'Appointment slots, reminders, no-show rebooking',
@@ -76,8 +82,24 @@ export function features() {
   return out;
 }
 
+/** Old names keep working; new names are the source of truth. */
+export const FEATURE_ALIASES = {
+  booking: 'bookingAgent',
+  followUps: 'followUpAgent',
+  manager: 'managerAgent',
+};
+
+/** Flags that are ON unless explicitly turned off. */
+export const FEATURE_DEFAULT_ON = new Set(['growthApproval']);
+
 export function featureOn(name) {
-  return features()[name] === true;
+  const f = features();
+  const key = FEATURE_ALIASES[name] || name;
+  if (f[key] === true) return true;
+  // A tenant may still have only the old key set.
+  if (f[name] === true) return true;
+  if (FEATURE_DEFAULT_ON.has(key)) return f[key] !== false;
+  return false;
 }
 
 export function business() {
