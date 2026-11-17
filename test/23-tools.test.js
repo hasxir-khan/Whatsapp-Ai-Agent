@@ -208,11 +208,14 @@ test('an item that is not on the price list cannot be ordered', async () => {
   assert.equal(orders(), before);
 });
 
-test('a booking in the past is refused', async () => {
+test('a booking in the past is refused before we ask anyone to confirm', async () => {
   const res = await T.executeTool('book_slot', { service: 'Table for 4', date: '2020-01-01', time: '19:00' }, ctx());
-  assert.equal(res.status, 'needs_confirmation');
-  const confirmed = await T.confirmPending(CHAT, ctx());
-  assert.equal(confirmed.status, 'error');
+  // Phase 2 step 3: impossible slots are refused outright, with alternatives,
+  // instead of asking the customer to confirm a booking that cannot happen.
+  assert.equal(res.status, 'error');
+  assert.equal(res.result.problem, 'in_the_past');
+  assert.ok(res.result.suggestions.length > 0);
+  assert.equal(T.hasPendingConfirmation(CHAT), false);
 });
 
 // ── confirmation language ──────────────────────────────────

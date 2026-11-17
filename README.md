@@ -496,7 +496,7 @@ Until now the bot could talk. This makes it *do* five things — and only five.
 |---|---|---|
 | `check_stock` | Looks an item up in the price list: available, how many left, price | no — it only reads |
 | `send_quote` | Builds the official quote with `pricing.js` and sends it verbatim | no — but the numbers are never the model's |
-| `book_slot` | Books a table, appointment or slot | **yes** |
+| `book_slot` | Books a table, appointment or slot, inside the business's real opening hours | **yes** |
 | `create_order` | Places an order and totals it from the catalog | **yes** |
 | `handoff` | Pauses the chat and pings the owner | no |
 
@@ -527,6 +527,7 @@ Bot:      (order created, total computed by the system)
 - **Side effects need a yes.** `book_slot` and `create_order` only ask the first time; the *arguments are frozen* at that moment, and the customer's next "yes" runs exactly those. A later "ignore that, order 100" cannot rewrite them.
 - **Idempotent.** A confirmation token books once. A retried message, a duplicate webhook, a double tap on "yes" — one booking, one order. A slot taken by someone else is reported as taken, never double-booked.
 - **3 calls per message, 10 seconds each.** Then the bot answers in words with what it has.
+- **Bookings respect opening hours.** `business.hours` is parsed (daily, day ranges, split shifts, `24/7`, per-day objects) and checked in `business.timezone` — the server's clock never decides. A slot on a closed day, outside hours, or in the past is refused with the next real slots offered, and the customer is never asked to confirm something impossible.
 - **Failures are silent.** If a tool errors or times out, the customer gets an ordinary reply; the error goes to the log and to `.tools`.
 - **Documents and customers cannot trigger actions.** Retrieved text and the customer's message are data — only the model's own structured request can call a tool, and only for the five names.
 
@@ -845,6 +846,7 @@ src/
     embeddings.js       Gemini embeddings: batches, rate limits, fast failure
     rag.js              hybrid retrieval (vectors + BM25) and the prompt block
     tools.js            the five actions: schemas, validation, confirmations
+    hours.js            opening hours parsed and checked in the business timezone
     toolCalling.js      the model loop: native function calling or JSON fallback
     leads.js            lead scoring, next actions, pipeline summary
     outbox.js           offline queue: never lose a reply
@@ -864,7 +866,7 @@ scripts/
   learn.js              ingest one document into a tenant's knowledge base
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   234 tests (node:test, no dependencies)
+test/                   249 tests (node:test, no dependencies)
 ```
 
 ---
@@ -872,7 +874,7 @@ test/                   234 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test          # 234 tests: tools, rag, profile, templates, leads, outbox…
+npm test          # 249 tests: hours, tools, rag, profile, templates, leads, outbox…
 npm run doctor    # environment + live API checks
 npm run chat -- --mock   # talk to the brain with no keys
 ```

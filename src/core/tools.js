@@ -12,7 +12,8 @@
 //      throws at the caller, and no internal error text reaches the customer.
 
 import crypto from 'node:crypto';
-import { effectiveCatalog, profile, featureOn } from '../services/profile.js';
+import { effectiveCatalog, profile, featureOn, business } from '../services/profile.js';
+import { parseHours, isOpen, nextSlots, explainClosed, zonedToUtc, formatTime } from '../services/hours.js';
 import { buildQuote, formatQuote } from './pricing.js';
 import {
   logToolCall,
@@ -287,6 +288,67 @@ export function findCatalogItem(query = '') {
   return bestScore >= 10 ? best : null;
 }
 
+// ── opening hours ──────────────────────────────────────────
+
+/** The business's hours and timezone, with sane fallbacks. */
+export function businessHours() {
+  const b = business();
+  const owner = profile().owner || {};
+  // business.hours is the canonical field. We deliberately do not fall back to
+  // owner.availability: that is prose ("Mon–Sat 10–22, deep work 12–16"), and
+  // guessing opening hours from prose is how a bot books a table at 3 a.m.
+  return {
+    hours: b.hours || '',
+    timeZone: b.timezone || owner.timezone || 'Asia/Karachi',
+    parsed: parseHours(b.hours || ''),
+  };
+}
+
+/**
+ * Is this slot real? Checks the business clock, not the server clock.
+ * @returns {{ok:boolean, problem?:string, message?:string, suggestions?:Array, when?:Date}}
+ */
+export function validateSlot({ date, time }, { now = new Date() } = {}) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return { ok: false, problem: 'invalid_date' };
+  if (!/^\d{2}:\d{2}$/.test(String(time || ''))) return { ok: false, problem: 'invalid_time' };
+
+  const { hours, timeZone, parsed } = businessHours();
+  const [year, month, day] = date.split('-').map(Number);
+  const [hour, minute] = time.split(':').map(Number);
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) {
+    return { ok: false, problem: 'invalid_datetime' };
+  }
+
+  const when = zonedToUtc(year, month, day, hour, minute, timeZone);
+  const from = when.getTime() > now.getTime() ? when : now;
+
+  if (when.getTime() < now.getTime() - 60_000) {
+    const slots = nextSlots({ hours: parsed, timeZone, from: now, count: 3 });
+    return {
+      ok: false,
+      problem: 'in_the_past',
+      message: `That time has already passed.${slots.length ? ` Next available: ${slots.map((s) => s.label).join(', ')}.` : ''}`,
+      suggestions: slots.map(({ date: d, time: t, label }) => ({ date: d, time: t, label })),
+    };
+  }
+
+  const verdict = isOpen(when, { hours: parsed, timeZone });
+  if (!verdict.open) {
+    const slots = nextSlots({ hours: parsed, timeZone, from, count: 3 });
+    return {
+      ok: false,
+      problem: verdict.reason,
+      message: explainClosed(verdict, slots),
+      suggestions: slots.map(({ date: d, time: t, label }) => ({ date: d, time: t, label })),
+      hours: verdict.hours || null,
+      day: verdict.day || null,
+      timeZone,
+    };
+  }
+
+  return { ok: true, when, timeZone };
+}
+
 // ── the tools themselves ────────────────────────────────────
 
 async function runCheckStock(args, ctx) {
@@ -315,12 +377,10 @@ async function runCheckStock(args, ctx) {
 async function runBookSlot(args, ctx) {
   const { service, date, time, name = null, notes = null } = args;
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, problem: 'invalid_date' };
-  if (!/^\d{2}:\d{2}$/.test(time)) return { ok: false, problem: 'invalid_time' };
-
-  const when = new Date(`${date}T${time}:00`);
-  if (Number.isNaN(when.getTime())) return { ok: false, problem: 'invalid_datetime' };
-  if (when.getTime() < Date.now() - 60_000) return { ok: false, problem: 'in_the_past' };
+  // Checked again here: the confirmation may be replayed hours later, and the
+  // business clock is the authority either way.
+  const slot = validateSlot({ date, time });
+  if (!slot.ok) return slot;
 
   const { booking, created, duplicate, conflict } = createBooking({
     chat: ctx.chat,
@@ -489,6 +549,15 @@ export async function executeTool(name, rawArgs, ctx = {}) {
     return { status: 'rejected', errors };
   }
 
+  // Impossible slots are refused before we ask the customer to confirm one.
+  if (name === 'book_slot' && !ctx.confirmed) {
+    const slot = validateSlot(value);
+    if (!slot.ok) {
+      log('error', { error: slot.problem, result: slot });
+      return { status: 'error', result: slot };
+    }
+  }
+
   // Side effects wait for the customer's yes.
   if (SIDE_EFFECT_TOOLS.has(name) && !ctx.confirmed) {
     const token = newToken();
@@ -642,4 +711,6 @@ export default {
   findCatalogItem,
   summarise,
   stripMoneyFields,
+  validateSlot,
+  businessHours,
 };
