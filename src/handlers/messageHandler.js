@@ -14,6 +14,10 @@ import * as db from '../utils/db.js';
 import * as media from '../services/media.js';
 import { detectLanguage, detectTone, fromWhisperLanguage } from '../services/language.js';
 import { generateReply, detectMood, needsOwner } from '../core/brain.js';
+import {
+  toolCallingEnabled, hasPendingConfirmation, confirmPending, cancelPending,
+  isAffirmative, isNegative,
+} from '../core/tools.js';
 import { ingest, markAsked, markQuoted, getState, mergeExternalFields } from '../core/projectIntake.js';
 import { buildQuote, formatQuote } from '../core/pricing.js';
 import * as memory from '../services/memory.js';
@@ -482,6 +486,17 @@ async function processBatch(sock, jid, number, items) {
     extraNote += ` The ${[...new Set(unreadable)].join(' and ')} could not be processed on our side. Say that briefly and honestly in one line, and ask them to resend it or describe it in text — do not pretend you saw it.`;
   }
 
+  // ── the customer answering "shall I confirm?" ────────────
+  // Arguments were frozen when we asked, so this cannot be re-pointed by the
+  // new message — only confirmed or cancelled.
+  const confirmationReply = await handleToolConfirmation(sock, jid, number, humanText, langInfo);
+  if (confirmationReply) {
+    await sendHuman(sock, jid, confirmationReply, { incomingText: humanText });
+    memory.saveUserTurn(number, humanText, 'text', { lang: langInfo.code, mood });
+    memory.saveAssistantTurn(number, confirmationReply, 'text');
+    return;
+  }
+
   const reply = await generateReply({
     number,
     text: modelText,
@@ -492,6 +507,9 @@ async function processBatch(sock, jid, number, items) {
     features,
     extraNote,
     tone: toneInfo.tone !== 'neutral' ? toneInfo.tone : contact.tone || 'neutral',
+    chatId: jid,
+    send: (t) => sendHuman(sock, jid, t, { incomingText: humanText }),
+    notifyOwner: (t) => notifyOwner(sock, t),
   });
 
   const replyText = (reply?.text || '').trim();
@@ -805,3 +823,63 @@ export async function notifyOwner(sock, text) {
 }
 
 export default { handleIncoming, notifyOwner, noteSent, startPendingFlusher };
+
+// ════════════════════════════════════════════════════════════
+// Tool confirmations (phase 2, opt-in)
+// ════════════════════════════════════════════════════════════
+
+/**
+ * If this chat has a pending booking/order and the customer just said yes or
+ * no, finish it here and return the reply text. Null means "carry on normally".
+ */
+async function handleToolConfirmation(sock, jid, number, text, langInfo) {
+  if (!toolCallingEnabled() || !hasPendingConfirmation(jid)) return null;
+
+  if (isNegative(text)) {
+    const cancelled = cancelPending(jid, { tenant: config.tenant.slug });
+    if (cancelled.status !== 'cancelled') return null;
+    db.logEvent('tool_cancelled', number, { tool: cancelled.tool });
+    return 'No problem — cancelled that. Anything you want to change?';
+  }
+
+  if (!isAffirmative(text)) return null;
+
+  const outcome = await confirmPending(jid, {
+    tenant: config.tenant.slug,
+    number,
+    notifyOwner: (t) => notifyOwner(sock, t),
+    who: number,
+  });
+
+  if (outcome.status !== 'ok') {
+    db.logEvent('tool_confirm_failed', number, { tool: outcome.tool, status: outcome.status });
+    // Never surface the reason; keep the conversation moving.
+    return 'That one didn\'t go through on my side — let me get the owner to sort it out. Anything else I can help with meanwhile?';
+  }
+
+  const result = outcome.result || {};
+  db.logEvent('tool_confirmed', number, { tool: outcome.tool });
+
+  if (outcome.tool === 'book_slot' && result.booking) {
+    const b = result.booking;
+    const already = result.alreadyBooked ? ' (this was already booked, so nothing changed)' : '';
+    return `✅ Booked — ${b.service} on ${b.date} at ${b.time}${b.name ? ` for ${b.name}` : ''}.${already}\n\nYou'll get a reminder a day before.`;
+  }
+
+  if (outcome.tool === 'create_order' && result.total !== undefined) {
+    const lines = (result.items || []).map((i) => `• ${i.qty}× ${i.name} — ${i.unit?.toLocaleString?.() ?? i.unit}`);
+    return [
+      `✅ Order confirmed — #${result.orderId}`,
+      '',
+      ...lines,
+      '',
+      `*Total: ${result.total.toLocaleString()} ${result.currency}*`,
+      '',
+      'The owner has it. Pay on delivery unless you already paid online.',
+    ].join('\n');
+  }
+
+  return '✅ Done — the owner has it.';
+}
+
+export { handleToolConfirmation };

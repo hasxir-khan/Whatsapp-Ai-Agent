@@ -73,7 +73,7 @@ function isModelProblem(status, bodyText = '') {
 }
 
 // ── OpenAI-compatible chat (Groq + OpenRouter) ──────────────
-async function openAiCompatible({ provider, model, system, messages, temperature, maxTokens, json, signal }) {
+async function openAiCompatible({ provider, model, system, messages, temperature, maxTokens, json, tools, toolChoice, signal }) {
   const isGroq = provider === 'groq';
   const url = isGroq
     ? 'https://api.groq.com/openai/v1/chat/completions'
@@ -87,6 +87,10 @@ async function openAiCompatible({ provider, model, system, messages, temperature
     max_tokens: maxTokens,
   };
   if (json) body.response_format = { type: 'json_object' };
+  if (tools?.length) {
+    body.tools = tools.map((t) => ({ type: 'function', function: t }));
+    if (toolChoice) body.tool_choice = toolChoice;
+  }
 
   const headers = {
     'Content-Type': 'application/json',
@@ -118,7 +122,13 @@ async function openAiCompatible({ provider, model, system, messages, temperature
   // Some free models wrap their answer in reasoning fields
   const msg = data.choices?.[0]?.message || {};
   const text = (msg.content ?? msg.reasoning_content ?? '').toString().trim();
-  return { text, tokens: data.usage?.total_tokens || 0, model };
+  const toolCalls = (msg.tool_calls || []).map((call, index) => ({
+    id: call.id || `call_${index}`,
+    name: call.function?.name || '',
+    args: safeParse(call.function?.arguments),
+    raw: call.function?.arguments,
+  }));
+  return { text, toolCalls, tokens: data.usage?.total_tokens || 0, model };
 }
 
 // ── Gemini (native API) ─────────────────────────────────────
@@ -131,7 +141,35 @@ function toGeminiContents(messages) {
   }));
 }
 
-async function gemini({ model, system, messages, temperature, maxTokens, json, signal }) {
+function safeParse(value) {
+  if (value === undefined || value === null) return {};
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+/** Gemini wants its own flavour of JSON-schema: upper-case types, no extras. */
+export function toGeminiSchema(schema = {}) {
+  const out = {};
+  const type = String(schema.type || 'string').toUpperCase();
+  out.type = type === 'INTEGER' ? 'NUMBER' : type;
+  if (schema.description) out.description = schema.description;
+  if (Array.isArray(schema.enum)) out.enum = schema.enum.map(String);
+  if (schema.items) out.items = toGeminiSchema(schema.items);
+  if (schema.properties) {
+    out.properties = {};
+    for (const [key, value] of Object.entries(schema.properties)) {
+      out.properties[key] = toGeminiSchema(value);
+    }
+  }
+  if (Array.isArray(schema.required) && schema.required.length) out.required = schema.required;
+  return out;
+}
+
+async function gemini({ model, system, messages, temperature, maxTokens, json, tools, signal }) {
   const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`;
 
   const body = {
@@ -143,6 +181,17 @@ async function gemini({ model, system, messages, temperature, maxTokens, json, s
     },
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
+  if (tools?.length) {
+    body.tools = [
+      {
+        functionDeclarations: tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          parameters: toGeminiSchema(t.parameters || { type: 'object', properties: {} }),
+        })),
+      },
+    ];
+  }
 
   const res = await fetchImpl(url, {
     method: 'POST',
@@ -165,7 +214,15 @@ async function gemini({ model, system, messages, temperature, maxTokens, json, s
   const data = JSON.parse(raw);
   const parts = data.candidates?.[0]?.content?.parts || [];
   const text = parts.map((p) => p.text || '').join('').trim();
-  return { text, tokens: data.usageMetadata?.totalTokenCount || 0, model };
+  const toolCalls = parts
+    .filter((p) => p.functionCall)
+    .map((p, index) => ({
+      id: `gemini_${index}`,
+      name: p.functionCall.name || '',
+      args: safeParse(p.functionCall.args),
+      raw: p.functionCall.args,
+    }));
+  return { text, toolCalls, tokens: data.usageMetadata?.totalTokenCount || 0, model };
 }
 
 async function callProvider(provider, args) {
@@ -188,6 +245,8 @@ export async function chat({
   maxTokens = config.llm.maxTokens,
   json = false,
   small = false,
+  tools = null,
+  toolChoice = null,
   timeoutMs = 45000,
 } = {}) {
   checkQuota();
@@ -216,9 +275,12 @@ export async function chat({
       const signal = AbortSignal.timeout(timeoutMs);
       try {
         const result = await callProvider(provider, {
-          model, system, messages, temperature, maxTokens, json, signal,
+          model, system, messages, temperature, maxTokens, json, tools, toolChoice, signal,
         });
-        if (!result.text) throw new Error(`${provider}/${model}: empty response`);
+        // An empty text is fine when the model asked for a tool instead.
+        if (!result.text && !result.toolCalls?.length) {
+          throw new Error(`${provider}/${model}: empty response`);
+        }
 
         sticky[mode] = { provider, model };
         bumpUsage('llm_calls', 1);

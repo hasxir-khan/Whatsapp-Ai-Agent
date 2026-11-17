@@ -17,6 +17,8 @@ import { ownerClock } from './humanizer.js';
 import { localTime } from '../services/geo.js';
 import { featureOn, business, effectiveCatalog, tone as toneConfig, goals as goalConfig, escalation as escalationConfig } from '../services/profile.js';
 import { knowledgeContext } from '../services/rag.js';
+import { featureOn as featureFlag } from '../services/profile.js';
+import { generateWithTools } from './toolCalling.js';
 
 const P = config.owner.profile || {};
 const OWNER = P.owner || {};
@@ -361,6 +363,11 @@ export async function generateReply({
   chatType = 'client',
   extraNote = '',
   tone = 'neutral',
+  // Tool calling needs a way to reach the chat and the owner. Both are
+  // optional: without them the assistant simply cannot use actions.
+  chatId = null,
+  send = null,
+  notifyOwner = null,
 }) {
   if (!hasLLM()) {
     return {
@@ -386,6 +393,40 @@ export async function generateReply({
 
   const userContent = extraNote ? `${text}\n\n[system note: ${extraNote}]` : text;
 
+  // ── actions (phase 2, opt-in) ───────────────────────────
+  // Owner chats keep the plain path: the owner does things with commands.
+  if (featureFlag('toolCalling') && chatId && chatType !== 'owner') {
+    try {
+      const tooled = await generateWithTools({
+        system,
+        messages: [...history, { role: 'user', content: userContent }],
+        ctx: {
+          chat: chatId,
+          tenant: config.tenant.slug,
+          number,
+          send,
+          notifyOwner,
+          who: dossier?.name || number,
+        },
+      });
+
+      if (tooled.status === 'needs_confirmation') {
+        return {
+          text: await confirmationQuestion(tooled.confirmation?.summary || '', langInfo),
+          provider: tooled.provider,
+          model: tooled.model,
+          toolCalls: tooled.calls,
+        };
+      }
+      if (tooled.text) {
+        return { text: tooled.text, provider: tooled.provider, model: tooled.model, toolCalls: tooled.calls };
+      }
+    } catch (err) {
+      // A broken tool layer must never cost the customer a reply.
+      console.error('Tool loop failed, answering normally:', err.message);
+    }
+  }
+
   try {
     const result = await chat({
       system,
@@ -397,6 +438,28 @@ export async function generateReply({
   } catch (err) {
     console.error('Brain error:', err.message);
     return { text: fallbackReply({ langInfo, chatType, error: err }), provider: 'error', model: 'none' };
+  }
+}
+
+/**
+ * One short sentence asking the customer to confirm a concrete action.
+ * Falls back to a fixed bilingual-safe line if the model is unavailable.
+ */
+async function confirmationQuestion(summary, langInfo) {
+  const fallback = `Just to confirm: ${summary}.\n\nReply *yes* and I'll lock it in — or *no* to change something.`;
+  if (!summary) return fallback;
+  try {
+    const res = await chat({
+      system:
+        'You are a WhatsApp assistant. Write ONE short sentence asking the customer to confirm the action below, in the language of their last message. Do not invent prices, times or details. Output only the sentence.',
+      messages: [{ role: 'user', content: `Action: ${summary}\nTheir language: ${langInfo?.name || langInfo?.code || 'English'}` }],
+      maxTokens: 80,
+      small: true,
+    });
+    const line = (res?.text || '').trim();
+    return line ? `${line}\n\n_Reply yes to confirm, no to cancel._` : fallback;
+  } catch {
+    return fallback;
   }
 }
 

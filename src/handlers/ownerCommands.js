@@ -25,7 +25,8 @@ import { sttEnabled } from '../services/transcription.js';
 import { hasFfmpeg } from '../services/ffmpeg.js';
 import { pendingFollowUps } from '../utils/db.js';
 import { outboxStatus } from '../services/outbox.js';
-import { knowledgeSources, knowledgeStats, knowledgeEmbeddingStats } from '../utils/db.js';
+import { knowledgeSources, knowledgeStats, knowledgeEmbeddingStats, recentToolCalls, toolCallStats } from '../utils/db.js';
+import { toolNames, toolCallingEnabled } from '../core/tools.js';
 import {
   featureOn, business, effectiveCatalog, effectiveServices, faqList, tone as toneConfig,
   goals as goalConfig, escalation as escalationConfig, setPath, addService, addFaq, coerceValue,
@@ -63,6 +64,7 @@ const HELP = `*Bot commands*
 .set business.hours Daily 12:00–23:00 – edit any setting
 .features – which capabilities are on
 .knowledge – learned documents + vector status
+.tools – last 10 actions the bot took
 .ping`;
 
 function parseTarget(raw = '') {
@@ -107,7 +109,7 @@ const COMMAND_PERMISSION = {
   team: 'chats',
 };
 
-const OWNER_ONLY = new Set(['export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq', 'features', 'knowledge']);
+const OWNER_ONLY = new Set(['export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq', 'features', 'knowledge', 'tools']);
 
 /**
  * @returns {Promise<{handled:boolean, reply?:string, voice?:object}>}
@@ -288,6 +290,27 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       } catch (err) {
         return { handled: true, reply: `Couldn't set that: ${err.message}` };
       }
+    }
+
+    case 'tools': {
+      const calls = recentToolCalls(10);
+      const stats = toolCallStats();
+      const lines = [`*Tools* ${toolCallingEnabled() ? '✅ on' : '⏸ off (.set features.toolCalling true)'}`];
+      lines.push(`Available: ${toolNames().join(', ')}`);
+      lines.push(`Calls logged: ${stats.total}${stats.errors ? ` · ${stats.errors} error(s)` : ''}`);
+      if (!calls.length) {
+        lines.push('');
+        lines.push('Nothing yet — the log fills up as the bot books, checks stock or quotes.');
+        return { handled: true, reply: lines.join('\n') };
+      }
+      lines.push('');
+      for (const call of calls) {
+        const when = new Date(call.created_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
+        const who = call.chat ? `+${String(call.chat).split('@')[0]}` : '—';
+        const args = call.args ? Object.entries(call.args).slice(0, 3).map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' ') : '';
+        lines.push(`${call.status === 'ok' ? '✅' : call.status === 'needs_confirmation' ? '⏳' : '⚠️'} ${when} · ${who} · *${call.tool}* ${args}${call.ms !== null ? ` (${call.ms}ms)` : ''}`);
+      }
+      return { handled: true, reply: lines.join('\n') };
     }
 
     case 'knowledge': {

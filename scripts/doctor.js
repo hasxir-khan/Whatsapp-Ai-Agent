@@ -125,6 +125,15 @@ async function checkBusiness() {
     warn('No templates found in config/templates');
   }
 
+  // tool calling
+  if (featureOn('toolCalling')) {
+    const { toolNames, SIDE_EFFECT_TOOLS } = await import('../src/core/tools.js');
+    ok(`Tool calling on: ${toolNames().join(', ')}`);
+    info(`Side effects (need a customer "yes"): ${[...SIDE_EFFECT_TOOLS].join(', ')}`);
+  } else {
+    info('Tool calling is off (.set features.toolCalling true to let it book and order)');
+  }
+
   // learned documents
   const dbFile = path.join(config.paths.data, 'assistant.db');
   if (fs.existsSync(dbFile)) {

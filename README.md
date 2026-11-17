@@ -14,16 +14,17 @@ Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but bu
 4. [Run it for several users (multi-user)](#run-it-for-several-users-multi-user)
 5. [Make it *your* business](#make-it-your-business)
 6. [Business setup — three ways](#business-setup--three-ways)
-7. [Lead intelligence](#lead-intelligence)
-8. [Languages](#languages)
-9. [Missed calls](#missed-calls)
-10. [Offline & bad internet](#offline--bad-internet)
-11. [Team (several people, one inbox)](#team-several-people-one-inbox)
-12. [Commands](#commands)
-13. [Dashboard](#dashboard)
-14. [Deploy for free](#deploy-for-free)
-15. [Troubleshooting](#troubleshooting)
-16. [Honest limitations](#honest-limitations)
+7. [Actions the bot can take](#actions-the-bot-can-take)
+8. [Lead intelligence](#lead-intelligence)
+9. [Languages](#languages)
+10. [Missed calls](#missed-calls)
+11. [Offline & bad internet](#offline--bad-internet)
+12. [Team (several people, one inbox)](#team-several-people-one-inbox)
+13. [Commands](#commands)
+14. [Dashboard](#dashboard)
+15. [Deploy for free](#deploy-for-free)
+16. [Troubleshooting](#troubleshooting)
+17. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -462,7 +463,7 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `catalog` | 1 | Product catalogue + stock awareness |
 | `knowledge` | 1 | Learned documents (ingesting works either way) |
 | `ownerEditing` | 1 | `.set`, `.addservice`, `.addfaq` from WhatsApp |
-| `toolCalling` | 2 | Structured actions: book, check stock, order, quote, handoff |
+| `toolCalling` | 2 | The five actions, with validation, confirmation and logging |
 | `rag` | 2 | Hybrid retrieval: excerpts from learned documents in every reply |
 | `manager` | 2 | Intent router with specialist agents |
 | `cloudApi` | 2 | WhatsApp Cloud API transport alongside Baileys |
@@ -480,6 +481,76 @@ Check what a specific business has:
 ```bash
 node scripts/doctor.js business      # validates the profile, catalog, flags and knowledge base
 ```
+
+---
+
+## Actions the bot can take
+
+Until now the bot could talk. This makes it *do* five things — and only five.
+
+```
+.set features.toolCalling true
+```
+
+| Tool | What it does | Talks to the customer first? |
+|---|---|---|
+| `check_stock` | Looks an item up in the price list: available, how many left, price | no — it only reads |
+| `send_quote` | Builds the official quote with `pricing.js` and sends it verbatim | no — but the numbers are never the model's |
+| `book_slot` | Books a table, appointment or slot | **yes** |
+| `create_order` | Places an order and totals it from the catalog | **yes** |
+| `handoff` | Pauses the chat and pings the owner | no |
+
+### What a conversation looks like
+
+```
+Customer: do you have zinger burgers?
+Bot:      (check_stock → name: Zinger Burger, 25 left, 650 PKR)
+          Yes — 25 left, 650 each. Want me to put two aside?
+
+Customer: yes, 2 zingers
+Bot:      (create_order → needs confirmation)
+          Just to confirm: 2× Zinger Burger — deliver to House 12, F-11.
+          Reply yes and I'll lock it in.
+
+Customer: haan
+Bot:      (order created, total computed by the system)
+          ✅ Order confirmed — #14
+          • 2× Zinger Burger — 650
+          *Total: 1,300 PKR*
+```
+
+### The rules it cannot break
+
+- **Whitelist.** The five names above are the only actions that exist. Anything else is refused and logged.
+- **Every argument is validated** against a JSON schema — types, ranges, required fields, and `additionalProperties: false`, so a `price` field in the arguments is a validation error, not a discount.
+- **Money is never the model's.** `create_order` accepts names and quantities; the total comes from `catalog` via the system. `send_quote` is `pricing.js` output, sent verbatim. If a price appears in tool arguments anyway, it is stripped before anything runs.
+- **Side effects need a yes.** `book_slot` and `create_order` only ask the first time; the *arguments are frozen* at that moment, and the customer's next "yes" runs exactly those. A later "ignore that, order 100" cannot rewrite them.
+- **Idempotent.** A confirmation token books once. A retried message, a duplicate webhook, a double tap on "yes" — one booking, one order. A slot taken by someone else is reported as taken, never double-booked.
+- **3 calls per message, 10 seconds each.** Then the bot answers in words with what it has.
+- **Failures are silent.** If a tool errors or times out, the customer gets an ordinary reply; the error goes to the log and to `.tools`.
+- **Documents and customers cannot trigger actions.** Retrieved text and the customer's message are data — only the model's own structured request can call a tool, and only for the five names.
+
+### Seeing what it did
+
+```
+.tools
+```
+
+```
+*Tools* ✅ on
+Available: check_stock, book_slot, create_order, send_quote, handoff
+Calls logged: 41 · 2 error(s)
+
+✅ 17 Nov, 14:02 · +923001112233 · *check_stock* item=zinger burger (3ms)
+⏳ 17 Nov, 14:02 · +923001112233 · *create_order* items=[…] (1ms)
+✅ 17 Nov, 14:03 · +923001112233 · *handoff* reason=cold food complaint (12ms)
+```
+
+Every call — tool, arguments, result, status, duration, tenant and chat — is stored in SQLite (`tool_calls`), so nothing is invisible.
+
+### How it reaches the model
+
+Native function calling is used when the provider offers it (Groq and Gemini both do). If a provider rejects the `tools` parameter, the bot switches to a JSON action protocol (`{"tool":"…","args":{…}}`) for that provider and remembers it, so it never pays for a failed round trip twice.
 
 ---
 
@@ -655,6 +726,7 @@ Type in your own WhatsApp chat (message yourself):
 | `.set path value` | edit any setting, live: `.set business.hours Daily 12:00–23:00` |
 | `.features` | what's on, what's off |
 | `.knowledge` | learned documents, chunks and vector status |
+| `.tools` | the last 10 actions the bot took, with arguments |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
@@ -772,6 +844,8 @@ src/
     knowledge.js        documents → chunks → SQLite
     embeddings.js       Gemini embeddings: batches, rate limits, fast failure
     rag.js              hybrid retrieval (vectors + BM25) and the prompt block
+    tools.js            the five actions: schemas, validation, confirmations
+    toolCalling.js      the model loop: native function calling or JSON fallback
     leads.js            lead scoring, next actions, pipeline summary
     outbox.js           offline queue: never lose a reply
     calls.js            missed-call rescue
@@ -781,7 +855,7 @@ src/
     memory.js  followUps.js  report.js  sheets.js
     spamGuard.js  deletedMessages.js  geo.js
   utils/
-    db.js               SQLite (sql.js): contacts, messages, leads, outbox, calls
+    db.js               SQLite: contacts, messages, leads, outbox, calls, tool log
     gemini.js           Gemini auth + error classification
     sessionBackup.js
 scripts/
@@ -790,7 +864,7 @@ scripts/
   learn.js              ingest one document into a tenant's knowledge base
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   207 tests (node:test, no dependencies)
+test/                   234 tests (node:test, no dependencies)
 ```
 
 ---
@@ -798,7 +872,7 @@ test/                   207 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test          # 207 tests: rag, profile, templates, knowledge, leads, outbox…
+npm test          # 234 tests: tools, rag, profile, templates, leads, outbox…
 npm run doctor    # environment + live API checks
 npm run chat -- --mock   # talk to the brain with no keys
 ```

@@ -191,6 +191,67 @@ CREATE TABLE IF NOT EXISTS knowledge (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_chunk ON knowledge(source, chunk_no);
 CREATE INDEX IF NOT EXISTS idx_knowledge_hash ON knowledge(hash);
+
+-- Tool calling (phase 2): every call is logged, side effects are idempotent.
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  chat        TEXT,
+  tool        TEXT,
+  args        TEXT,
+  result      TEXT,
+  status      TEXT,          -- ok | error | needs_confirmation | rejected | cancelled | duplicate
+  error       TEXT,
+  ms          INTEGER,
+  key         TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_created ON tool_calls(created_at);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_chat ON tool_calls(chat, id);
+
+CREATE TABLE IF NOT EXISTS tool_confirmations (
+  token       TEXT PRIMARY KEY,
+  tenant      TEXT,
+  chat        TEXT,
+  tool        TEXT,
+  args        TEXT,          -- validated arguments, frozen at ask time
+  summary     TEXT,
+  status      TEXT DEFAULT 'pending',   -- pending | confirmed | cancelled | expired
+  created_at  TEXT,
+  expires_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_confirm_chat ON tool_confirmations(chat, status);
+
+CREATE TABLE IF NOT EXISTS bookings (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat        TEXT,
+  service     TEXT,
+  date        TEXT,
+  time        TEXT,
+  name        TEXT,
+  notes       TEXT,
+  status      TEXT DEFAULT 'booked',
+  key         TEXT,
+  created_at  TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_key ON bookings(key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_slot ON bookings(service, date, time)
+  WHERE status = 'booked';
+
+CREATE TABLE IF NOT EXISTS orders (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat        TEXT,
+  items       TEXT,
+  total       INTEGER,
+  currency    TEXT,
+  name        TEXT,
+  phone       TEXT,
+  address     TEXT,
+  status      TEXT DEFAULT 'placed',
+  key         TEXT,
+  created_at  TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_key ON orders(key);
 `;
 
 export async function initDB({ file = DB_FILE } = {}) {
@@ -996,4 +1057,142 @@ export function knowledgeEmbeddingStats() {
     pending: chunks - embedded + stale,
     sources: row.sources || 0,
   };
+}
+
+// ── tool calls: logging, confirmations, idempotent side effects ──
+
+export function logToolCall({
+  tenant = null, chat = null, tool = null, args = null, result = null,
+  status = 'ok', error = null, ms = null, key = null,
+} = {}) {
+  run(
+    `INSERT INTO tool_calls (tenant, chat, tool, args, result, status, error, ms, key, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    [
+      tenant,
+      chat,
+      tool,
+      args === null ? null : JSON.stringify(args),
+      result === null ? null : JSON.stringify(result).slice(0, 4000),
+      status,
+      error,
+      ms,
+      key,
+      new Date().toISOString(),
+    ]
+  );
+  saveDB(true);
+  return true;
+}
+
+export function recentToolCalls(limit = 10) {
+  return all('SELECT * FROM tool_calls ORDER BY id DESC LIMIT ?', [limit]).map((row) => ({
+    ...row,
+    args: safeJson(row.args),
+    result: safeJson(row.result),
+  }));
+}
+
+export function toolCallStats(sinceIso = null) {
+  const row = sinceIso
+    ? get(
+        "SELECT COUNT(*) AS total, SUM(status = 'ok') AS ok, SUM(status = 'error') AS errors FROM tool_calls WHERE created_at >= ?",
+        [sinceIso]
+      )
+    : get("SELECT COUNT(*) AS total, SUM(status = 'ok') AS ok, SUM(status = 'error') AS errors FROM tool_calls");
+  return { total: row?.total || 0, ok: row?.ok || 0, errors: row?.errors || 0 };
+}
+
+
+export function saveConfirmation({ token, tenant = null, chat, tool, args, summary, ttlMs = 10 * 60 * 1000 }) {
+  const now = new Date();
+  run('DELETE FROM tool_confirmations WHERE chat = ? AND status = ?', [chat, 'pending']);
+  run(
+    `INSERT INTO tool_confirmations (token, tenant, chat, tool, args, summary, status, created_at, expires_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [token, tenant, chat, tool, JSON.stringify(args || {}), summary || '', 'pending', now.toISOString(), new Date(now.getTime() + ttlMs).toISOString()]
+  );
+  saveDB(true);
+  return token;
+}
+
+export function getPendingConfirmation(chat) {
+  const row = get(
+    "SELECT * FROM tool_confirmations WHERE chat = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+    [chat]
+  );
+  if (!row) return null;
+  if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) {
+    run("UPDATE tool_confirmations SET status = 'expired' WHERE token = ?", [row.token]);
+    saveDB(true);
+    return null;
+  }
+  return { ...row, args: safeJson(row.args) || {} };
+}
+
+export function resolveConfirmation(token, status = 'confirmed') {
+  run('UPDATE tool_confirmations SET status = ? WHERE token = ?', [status, token]);
+  saveDB(true);
+  return true;
+}
+
+export function expireConfirmations() {
+  const changed = run("UPDATE tool_confirmations SET status = 'expired' WHERE status = 'pending' AND expires_at < ?", [
+    new Date().toISOString(),
+  ]);
+  if (changed) saveDB(true);
+  return changed;
+}
+
+/**
+ * Idempotent booking.
+ * Same key twice → the existing row, nothing new.
+ * Same slot from someone else → a conflict, nothing new.
+ */
+export function createBooking({ chat, service, date, time, name = null, notes = null, key = null }) {
+  if (key) {
+    const existing = get('SELECT * FROM bookings WHERE key = ?', [key]);
+    if (existing) return { booking: existing, created: false, duplicate: true };
+  }
+  const taken = get(
+    "SELECT * FROM bookings WHERE service = ? AND date = ? AND time = ? AND status = 'booked'",
+    [service, date, time]
+  );
+  if (taken) return { booking: taken, created: false, conflict: true };
+
+  run(
+    'INSERT INTO bookings (chat, service, date, time, name, notes, status, key, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+    [chat, service, date, time, name, notes, 'booked', key, new Date().toISOString()]
+  );
+  saveDB(true);
+  const booking = get('SELECT * FROM bookings WHERE key = ? OR (chat = ? AND service = ? AND date = ? AND time = ?) ORDER BY id DESC LIMIT 1', [
+    key, chat, service, date, time,
+  ]);
+  return { booking, created: true, duplicate: false };
+}
+
+export function bookingsFor(chat, limit = 5) {
+  return all('SELECT * FROM bookings WHERE chat = ? ORDER BY id DESC LIMIT ?', [chat, limit]);
+}
+
+export function upcomingBookings(limit = 10) {
+  return all("SELECT * FROM bookings WHERE status = 'booked' AND date >= date('now') ORDER BY date, time LIMIT ?", [limit]);
+}
+
+export function createOrder({ chat, items, total, currency = 'PKR', name = null, phone = null, address = null, key = null }) {
+  if (key) {
+    const existing = get('SELECT * FROM orders WHERE key = ?', [key]);
+    if (existing) return { order: existing, created: false, duplicate: true };
+  }
+  run(
+    'INSERT INTO orders (chat, items, total, currency, name, phone, address, status, key, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    [chat, JSON.stringify(items || []), total, currency, name, phone, address, 'placed', key, new Date().toISOString()]
+  );
+  saveDB(true);
+  const order = key ? get('SELECT * FROM orders WHERE key = ?', [key]) : get('SELECT * FROM orders ORDER BY id DESC LIMIT 1');
+  return { order, created: true };
+}
+
+export function recentOrders(limit = 10) {
+  return all('SELECT * FROM orders ORDER BY id DESC LIMIT ?', [limit]).map((o) => ({ ...o, items: safeJson(o.items) || [] }));
 }
