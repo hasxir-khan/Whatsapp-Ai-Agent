@@ -24,6 +24,8 @@ import { buildReport } from './services/report.js';
 import { featureOn } from './services/profile.js';
 import { startBookingLoop } from './services/bookingAgent.js';
 import { startFollowUpAgentLoop, followUpAgentEnabled } from './services/followUpAgent.js';
+import { startAnalystLoop } from './services/analystAgent.js';
+import { startReviewLoop } from './services/reviewAgent.js';
 import { createTransport } from './transport/index.js';
 import { describeCapabilities } from './transport/base.js';
 
@@ -35,7 +37,7 @@ function banner() {
   const line = '─'.repeat(58);
   console.log(`
 ┌${line}┐
-│  🤖  WhatsApp Self-Knowledge Assistant  v9.5              │
+│  🤖  WhatsApp Self-Knowledge Assistant  v9.7              │
 │  ${config.bot.name.padEnd(54).slice(0, 54)}  │
 └${line}┘
 ${describeConfig()}
@@ -57,6 +59,11 @@ function startServices(t) {
   }
 
   if (featureOn('bookingAgent')) startBookingLoop(t);
+
+  // Phase 3 part 2: the analyst writes to the owner, the review agent writes
+  // after a job is finished. Both are silent until their flag is on.
+  if (featureOn('analystAgent')) startAnalystLoop({ transport: t });
+  if (featureOn('reviewAgent')) startReviewLoop({ transport: t });
 
   startPendingFlusher(t);
   startOutboxLoop(t);

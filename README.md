@@ -17,17 +17,18 @@ Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but bu
 7. [Actions the bot can take](#actions-the-bot-can-take)
 8. [Who answers: the manager agent](#who-answers-the-manager-agent)
 9. [Bookings and follow-ups (Phase 3)](#bookings-and-follow-ups-phase-3)
-10. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
-11. [Lead intelligence](#lead-intelligence)
-12. [Languages](#languages)
-13. [Missed calls](#missed-calls)
-14. [Offline & bad internet](#offline--bad-internet)
-15. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
-16. [Commands](#commands)
-17. [Dashboard](#dashboard)
-18. [Deploy for free](#deploy-for-free)
-19. [Troubleshooting](#troubleshooting)
-20. [Honest limitations](#honest-limitations)
+10. [Closing, reviews and the weekly report](#closing-reviews-and-the-weekly-report)
+11. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
+12. [Lead intelligence](#lead-intelligence)
+13. [Languages](#languages)
+14. [Missed calls](#missed-calls)
+15. [Offline & bad internet](#offline--bad-internet)
+16. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
+17. [Commands](#commands)
+18. [Dashboard](#dashboard)
+19. [Deploy for free](#deploy-for-free)
+20. [Troubleshooting](#troubleshooting)
+21. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -473,6 +474,9 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `bookingAgent` | 3 | Booking agent: real free slots, confirmations, reminders, reschedules, no-show rescue (alias `booking`) |
 | `followUpAgent` | 3 | Follow-up agent: 24h/72h nudges, personalised, in the customer's language (alias `followUps`) |
 | `growthApproval` | 3 | **On by default.** Drafts wait for `.approve` / `.skip`; turn off for auto-send |
+| `closerAgent` | 3 | Objection handling, discounts within your cap, quote + payment details (alias `closer`) |
+| `reviewAgent` | 3 | Feedback ask after a job, review link for 4–5 stars, referral codes (alias `reviews`) |
+| `analystAgent` | 3 | Weekly owner report, computed from your own data (alias `analyst`) |
 | `closer` | 3 | Objection handling, payment links |
 | `reactivation` | 3 | Monthly win-back for old clients |
 | `reviews` | 3 | Review and referral requests |
@@ -713,6 +717,91 @@ Every proactive message — reminders, nudges, win-backs — goes through one ga
 Anything blocked is **logged with the reason** (`quiet_hours`, `contact_cap`, `window_closed`, …) — `.growth` shows today's sends per agent and `.status` shows the window. Nothing ever fails silently.
 
 Booking reminders count as transactional: they ignore the one-per-24h limit, but never quiet hours, an opt-out, or the daily ceiling.
+
+---
+
+## Closing, reviews and the weekly report
+
+Three more agents, each behind its own flag, all sharing the same safety layer from the chapter above.
+
+```json
+"features": { "closerAgent": true, "reviewAgent": true, "analystAgent": true }
+```
+
+### The closer — the four objections that lose sales
+
+Customers say the same four things before they either buy or vanish: *it's too expensive*, *how do I know you're real*, *I'll think about it*, and *someone else is cheaper*. The closer answers each one with something true from **your** profile — a catalogue price, a guarantee you wrote down, an FAQ — then asks one question.
+
+It recognises them in English, Roman Urdu and Urdu:
+
+| They say | It answers with |
+|---|---|
+| "mehnga hai", "too expensive", "مہنگا ہے" | the real price, then what is included |
+| "bharosa nahi", "is this a scam?", "بھروسہ" | your refund or guarantee policy, verbatim |
+| "sochta hoon", "baad mein", "سوچتا ہوں" | no pressure — an offer to hold the slot |
+| "kisi aur se sasta", "someone else is cheaper" | a fair comparison, not a put-down |
+
+**Discounts are the part people get wrong**, so the rules are in code, not in a prompt:
+
+- no `policies.maxDiscountPercent` in `owner.json` → **no discount is ever offered**; a customer who asks for one gets "that's the owner's call" and you are told
+- with a cap → it may offer up to that cap and not a rupee more
+- above the cap → handoff to you, every time
+
+**Two attempts per objection, then a person.** The third "still too expensive" gets you, not another pitch. No countdown timers, no "last chance", no fake scarcity — the tests fail if those words appear.
+
+When they say yes ("order kar do", "I'll take it", "how do I pay") the closer sends the quote, then the payment details from `business.payment`:
+
+```json
+"payment": {
+  "bank": { "name": "Meezan", "title": "Burger Point", "number": "0123456789" },
+  "jazzcash": { "number": "03001234567" },
+  "easypaisa": { "number": "03451234567" },
+  "stripeLink": "https://buy.stripe.com/…",
+  "cod": true
+}
+```
+
+Only the fields you fill in are ever mentioned. The order lands as **awaiting payment** — never "paid".
+
+**Receipts are evidence, not proof.** If a customer sends a transfer screenshot, the bot reads it, forwards what it read to you with `.paid 12` as the next step, and confirms to the customer that *you* will verify. It cannot mark an order paid; only `.paid` does that.
+
+### The review and referral agent
+
+When a job is finished — `.done 12` on a booking, or an order marked delivered — the bot waits `REVIEW_AFTER_HOURS` (24 by default) and asks one short question in the customer's language: *how did we do, 1 to 5?*
+
+What happens next is the whole point:
+
+| Their answer | What the bot does |
+|---|---|
+| 4–5 | thanks them, sends `business.reviewLink`, and — once ever — invites them to refer someone with their own code |
+| 1–3 | **never sends the review link.** Thanks them, and sends you the score with their exact words so you can fix it yourself |
+
+One ask per finished job, honoured opt-outs, quiet hours, and no ask at 11 pm.
+
+**Referral codes** are short and stable (`BP3F2K` for one customer, forever). When a stranger's first message mentions a code, the lead is tagged `referral`, the code's owner is credited, and you get a message saying who sent whom. Rewards are mentioned only if you configured one:
+
+```json
+"referral": { "reward": "10% off your next order" }
+```
+
+Leave `reward` empty and the bot tracks referrals without promising anything.
+
+### The analyst — numbers first, suggestions second
+
+Every Monday at 09:00 (`ANALYST_DAY`, `ANALYST_TIME`, in your timezone) you get one message with last week's real numbers, and how they compare to the week before:
+
+- conversations, replies, average first-response time
+- new leads, split by where they came from (including referrals)
+- bookings made and completed
+- orders and revenue, priced from your catalogue
+- follow-ups sent vs answered
+- opt-outs, complaints, review scores
+- the busiest hours of your week
+- questions the bot **could not answer** from your knowledge base
+
+Those figures are computed in SQL and JavaScript. The model is only ever asked to write **three** suggestions on top of them — and if the week had fewer than five conversations, it says *"quiet week, too small to call a trend"* instead of inventing insight. No API key at all? You still get three suggestions, derived from the numbers deterministically.
+
+`.report week` gives you the same report on demand; `.report` is still the daily brief.
 
 ---
 
@@ -1049,6 +1138,10 @@ Type in your own WhatsApp chat (message yourself):
 | `.growth` | proactive messages sent today per agent, with caps and any opt-outs |
 | `.optouts` | everyone who asked to stop, and when |
 | `.approve 12` / `.skip 12` | send or drop a follow-up draft |
+| `.done 12` | a booking or order is finished — starts the review flow |
+| `.paid 12` | the money really arrived (only you can mark an order paid) |
+| `.report week` | last seven days vs the week before |
+| `.referrals` | who has a code, and who arrived with one |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
@@ -1127,6 +1220,8 @@ Notes:
 - **Groups and channels are impossible by design** — not a bug.
 - **Quotes are estimates**, not contracts.
 - **Booking reminders and follow-ups only go out if the process is running** at the right moment; a reminder that falls due while the bot is down is sent on the next start, still inside quiet hours and caps.
+- **The weekly report's suggestions need a model**; without a key you get the deterministic three, which are blunter but still true. The numbers themselves never need a model.
+- **A payment receipt is never auto-verified.** Reading a screenshot proves nothing about a bank balance — `.paid` stays a human decision.
 - **Google Calendar sync is optional and unverified in this repo's tests** (no credentials in CI). Bookings themselves are fully tested; the calendar call is best-effort and never blocks a booking.
 
 ---
@@ -1175,6 +1270,10 @@ src/
     bookingAgent.js     bookings: parse, offer slots, reminders, no-shows
     followUpAgent.js    quiet-lead nudges: 24h/72h, personalised, draft-first
     calendar.js         optional Google Calendar mirror (never blocks)
+    closerAgent.js      objections, discount cap, quote + payment, receipts
+    reviewAgent.js      feedback asks, review links, referral codes
+    analystAgent.js     weekly owner report: SQL numbers, model suggestions
+    jobFlow.js          .done / .paid → the review clock
   transport/            how the bot talks to WhatsApp, behind one interface
     base.js             the interface + the internal message shape
     baileys.js          Baileys (default), wrapped unchanged
@@ -1200,7 +1299,7 @@ scripts/
   learn.js              ingest one document into a tenant's knowledge base
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   379 tests (node:test, no dependencies)
+test/                   431 tests (node:test, no dependencies)
 ```
 
 ---

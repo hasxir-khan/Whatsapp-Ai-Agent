@@ -29,7 +29,7 @@ import { getTransport } from '../transport/index.js';
 import { growthSummary, optOutList, recordOptOut, recordOptIn, quietWindow } from '../services/growth.js';
 import { bookingsForOwner, cancelByChat } from '../services/bookingAgent.js';
 import { pendingDrafts, approveDraft, skipDraft } from '../services/followUpAgent.js';
-import { getBooking, cancelBooking, isOptedOut } from '../utils/db.js';
+import { getBooking, cancelBooking, isOptedOut, recentReferrals, getContact, all } from '../utils/db.js';
 import { describeCapabilities } from '../transport/base.js';
 import { outboxStatus } from '../services/outbox.js';
 import { knowledgeSources, knowledgeStats, knowledgeEmbeddingStats, recentToolCalls, toolCallStats } from '../utils/db.js';
@@ -78,6 +78,10 @@ const HELP = `*Bot commands*
 .bookings – today and tomorrow
 .cancel <id> – cancel a booking (frees the slot)
 .approve <id> / .skip <id> – follow-up drafts waiting for you
+.done <id> – a booking or order is finished (starts the review flow)
+.paid <id> – confirm an order's payment actually arrived
+.report week – last seven days vs the week before
+.referrals – who has a code, and who arrived with one
 .ping`;
 
 /** What this process is talking to, and what that transport cannot do. */
@@ -141,6 +145,7 @@ const COMMAND_PERMISSION = {
 const OWNER_ONLY = new Set([
   'export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq',
   'features', 'knowledge', 'tools', 'intents', 'growth', 'optouts', 'bookings', 'cancel', 'approve', 'skip',
+  'done', 'paid', 'referrals',
 ]);
 
 /**
@@ -642,7 +647,51 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     }
 
     case 'report': {
+      if (['week', 'weekly', '7d'].includes(String(args[0] || '').toLowerCase())) {
+        const { weeklyReportText } = await import('../services/analystAgent.js');
+        return { handled: true, reply: await weeklyReportText(new Date()) };
+      }
       return { handled: true, reply: buildReport() };
+    }
+
+    // ── phase 3 part 2 ─────────────────────────────────────
+    case 'done': {
+      const id = Number(args[0]);
+      if (!id) return { handled: true, reply: 'Usage: .done 12  (id from .bookings, or an order id from .orders)' };
+      const { finishJob } = await import('../services/jobFlow.js');
+      const res = finishJob({ id, kind: args[1] || null });
+      return { handled: true, reply: res.reply };
+    }
+
+    case 'paid': {
+      const id = Number(args[0]);
+      if (!id) return { handled: true, reply: 'Usage: .paid 12  (only when the money is really in)' };
+      const { markOrderPaid } = await import('../services/jobFlow.js');
+      const res = markOrderPaid(id);
+      return { handled: true, reply: res.reply };
+    }
+
+    case 'referrals': {
+      const rows = recentReferrals(15);
+      const attributed = all("SELECT number, detail FROM events WHERE type = 'referral_attributed' ORDER BY id DESC LIMIT 10");
+      if (!rows.length && !attributed.length) {
+        return { handled: true, reply: 'No referral codes yet — they are created after a good rating (features.reviewAgent).' };
+      }
+      const lines = ['*Referral codes*'];
+      for (const r of rows) {
+        const c = getContact(r.number);
+        lines.push(`• ${r.code} — ${c?.name || c?.push_name || `+${r.number}`} · used ${r.uses || 0}x`);
+      }
+      if (attributed.length) {
+        lines.push('');
+        lines.push('*Arrived with a code*');
+        for (const a of attributed) {
+          let detail = a.detail;
+          try { detail = JSON.parse(a.detail)?.code || detail; } catch { /* plain text */ }
+          lines.push(`• +${a.number} ← ${detail}`);
+        }
+      }
+      return { handled: true, reply: lines.join('\n') };
     }
 
     case 'voice': {

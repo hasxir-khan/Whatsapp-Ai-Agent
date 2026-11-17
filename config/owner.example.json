@@ -625,7 +625,47 @@
     "hours": "",
     "closed": "",
     "delivery": "",
-    "about": ""
+    "about": "",
+    "bookingService": "Appointment",
+    "reviewLink": "",
+    "review": {
+      "//": "Hours to wait after .done before asking for feedback. 24 by default.",
+      "afterHours": 24
+    },
+    "referral": {
+      "//": "Code tracking works with this empty. Set reward to promise something.",
+      "reward": "",
+      "message": ""
+    },
+    "analyst": {
+      "//": "Weekly report for the owner, in this timezone.",
+      "day": "mon",
+      "time": "09:00"
+    },
+    "payment": {
+      "//": "Only what is filled in is ever mentioned to a customer.",
+      "bank": {
+        "name": "",
+        "title": "",
+        "number": ""
+      },
+      "jazzcash": {
+        "title": "",
+        "number": ""
+      },
+      "easypaisa": {
+        "title": "",
+        "number": ""
+      },
+      "stripeLink": "",
+      "cod": false
+    },
+    "policies": {
+      "//": "maxDiscountPercent is the only discount the closer may offer. Remove it and every discount request goes to you.",
+      "maxDiscountPercent": null,
+      "refund": "",
+      "guarantee": ""
+    }
   },
   "catalog": {
     "//": "The price list the bot may quote. Each item: { name, kind: service|product, price OR min/max, duration (minutes), stock, keywords }.",
@@ -662,14 +702,15 @@
     "rag": false,
     "managerAgent": false,
     "cloudApi": false,
-    "closer": false,
     "reactivation": false,
-    "reviews": false,
     "content": false,
-    "analyst": false,
     "injectionGuard": false,
     "bookingAgent": false,
     "followUpAgent": false,
-    "growthApproval": true
+    "growthApproval": true,
+    "closerAgent": false,
+    "reviewAgent": false,
+    "analystAgent": false,
+    "//aliases": "closer / reviews / analyst still work — they map to closerAgent / reviewAgent / analystAgent."
   }
 }

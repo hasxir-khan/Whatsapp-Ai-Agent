@@ -101,6 +101,9 @@
     "managerAgent": false,
     "bookingAgent": false,
     "followUpAgent": false,
-    "growthApproval": true
+    "growthApproval": true,
+    "closerAgent": false,
+    "reviewAgent": false,
+    "analystAgent": false
   }
 }

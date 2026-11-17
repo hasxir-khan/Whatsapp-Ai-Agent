@@ -236,6 +236,17 @@ export async function sendProactively({
   return { sent: true };
 }
 
+/**
+ * Owner-directed messages (the weekly report) still respect quiet hours, but
+ * they are not marketing: the 1-per-24h per-contact cap would silence the
+ * second half of a two-part report, so they are marked transactional.
+ */
+export async function sendToOwner({ transport, text, agent = 'analyst', reason = null, now = new Date() } = {}) {
+  const number = config.owner.number;
+  if (!number) return { sent: false, reason: 'no_owner' };
+  return sendProactively({ transport, number, text, agent, reason, now, transactional: true });
+}
+
 // ── the owner's view ───────────────────────────────────────
 export function growthSummary(now = new Date()) {
   const since = dayStartIso(now);
@@ -260,7 +271,7 @@ export function growthSummary(now = new Date()) {
 export { optOutList, optOutCount, isOptedOut, dayStartIso as todayStartIso };
 
 export default {
-  detectOptOut, detectOptIn, recordOptOut, recordOptIn, optOutConfirmation,
+  detectOptOut, detectOptIn, recordOptOut, recordOptIn, optOutConfirmation, sendToOwner,
   inQuietHours, nextAllowedMoment, quietWindow, canSendProactively, sendProactively,
   growthSummary, dailyCapFor, isOptedOut, optOutList,
 };

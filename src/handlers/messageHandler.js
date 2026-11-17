@@ -20,6 +20,8 @@ import { routeMessage, managerEnabled } from '../core/manager.js';
 import { detectOptOut, detectOptIn, recordOptOut, recordOptIn, optOutConfirmation } from '../services/growth.js';
 import { bookingAgentEnabled, handleBookingTurn } from '../services/bookingAgent.js';
 import { cancelFor as cancelFollowUpDrafts } from '../services/followUpAgent.js';
+import { closerAgentEnabled, handleCloserTurn, readyToBuy, startOrder, handleReceipt } from '../services/closerAgent.js';
+import { reviewAgentEnabled, handleRating, attributeReferral } from '../services/reviewAgent.js';
 import {
   toolCallingEnabled, hasPendingConfirmation, confirmPending, cancelPending,
   isAffirmative, isNegative,
@@ -148,6 +150,35 @@ export async function handleIncoming(transport, rawIncoming) {
       memory.saveAssistantTurn(number, reply, 'text');
       await sendTyping(transport, jid, reply, { delay: 300 });
       return;
+    }
+
+    // ── a rating for a job we just finished ────────────────
+    // Only when a review ask is actually waiting: "5" in an unrelated chat is
+    // a quantity, not a score.
+    if (reviewAgentEnabled() && said) {
+      try {
+        const rated = await handleRating({ number, text: said, transport, now: new Date() });
+        if (rated.handled) {
+          memory.saveUserTurn(number, said, info.kind, { lang: detectLanguage(said).code, rating: rated.rating });
+          memory.saveAssistantTurn(number, rated.reply, 'text');
+          noteSent([(await sendTyping(transport, jid, rated.reply, { delay: 400 }))?.key?.id]);
+          return;
+        }
+      } catch (err) {
+        db.logEvent('review_handle_error', number, err.message);
+      }
+    }
+
+    // ── did a stranger arrive quoting someone's code? ───────
+    // First message only, so a later mention of a code in conversation cannot
+    // retroactively "refer" an existing customer.
+    if (reviewAgentEnabled() && said && (existing?.message_count || 0) === 0) {
+      try {
+        const ref = attributeReferral({ number, text: said, transport, context: said.slice(0, 160) });
+        if (ref) db.logEvent('referral_captured', number, ref.code);
+      } catch (err) {
+        db.logEvent('referral_error', number, err.message);
+      }
     }
 
     if (isPaused(contact)) {
@@ -494,6 +525,44 @@ async function processBatch(sock, jid, number, items) {
   // Long-term context BEFORE this turn is stored, so it isn't duplicated
   const dossier = { ...memory.getDossier(number), mood };
 
+  // ── payment proof ──────────────────────────────────────
+  // A screenshot from a customer who has an order awaiting payment goes to the
+  // owner with whatever we could read from it. It never marks anything paid:
+  // the owner is the only one who can see money arrive.
+  if (closerAgentEnabled()) {
+    const picture = parts.find((p) => p.kind === 'image' && p.text);
+    const order = db.orderFor(`${number}@s.whatsapp.net`);
+    // Not every photo is a receipt: either we can actually see it, or the
+    // caption says what it is.
+    const looksLikeReceipt =
+      visionEnabled() || /receipt|payment|paid|transfer|screenshot|رسید|ادائیگی|transfer\s+kiya/i.test(humanText);
+    if (picture && order && looksLikeReceipt && ['awaiting_payment', 'placed'].includes(order.status)) {
+      try {
+        const receipt = await handleReceipt({
+          number,
+          transport: sock,
+          now: new Date(),
+          // No second vision call: the description already exists.
+          reader: async () => ({ description: picture.text }),
+        });
+        if (receipt.handled) {
+          const ack =
+            langInfo.code === 'ur'
+              ? 'شکریہ — رسید میں نے مالک کو بھیج دی ہے، وہ تصدیق کریں گے۔'
+              : langInfo.code === 'roman-ur'
+                ? 'Shukriya — receipt main owner ko bhej di hai, wo confirm karenge.'
+                : "Thanks — I've passed that to the owner, they'll confirm it.";
+          memory.saveUserTurn(number, humanText, 'image', { lang: langInfo.code, receipt: true });
+          memory.saveAssistantTurn(number, ack, 'text');
+          noteSent([(await sendTyping(sock, jid, ack, { delay: 500 }))?.key?.id]);
+          return;
+        }
+      } catch (err) {
+        db.logEvent('receipt_error', number, err.message);
+      }
+    }
+  }
+
   // ── the booking agent's turn ───────────────────────────
   // Deterministic: real free slots, a confirmation, a written booking. No
   // tokens are spent and no slot can be invented.
@@ -511,6 +580,27 @@ async function processBatch(sock, jid, number, items) {
     } catch (err) {
       db.logEvent('booking_turn_error', number, err.message);
       // fall through to the normal brain — a booking bug must not silence the bot
+    }
+  }
+
+  // ── the closer's turn ──────────────────────────────────
+  // Objections are answered with facts from the profile, and "yes, I'll take
+  // it" produces a quote plus the real payment details. Still no tokens.
+  if (closerAgentEnabled() && humanText) {
+    try {
+      const ready = readyToBuy(humanText);
+      const turn = ready ? null : handleCloserTurn({ number, text: humanText, lang: langInfo.code, now: new Date() });
+      const out = turn?.handled ? turn : ready ? startOrder({ number, text: humanText, lang: langInfo.code, now: new Date() }) : null;
+      if (out) {
+        memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, closer: true });
+        memory.saveAssistantTurn(number, out.reply, 'text');
+        noteSent([(await sendTyping(sock, jid, out.reply, { delay: 500 }))?.key?.id]);
+        db.logEvent('closer_turn', number, { kind: out.kind || (ready ? 'ready' : null), order: out.order?.id || null });
+        return;
+      }
+    } catch (err) {
+      db.logEvent('closer_error', number, err.message);
+      // fall through to the normal brain
     }
   }
 

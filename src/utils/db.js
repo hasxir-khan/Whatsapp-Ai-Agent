@@ -336,6 +336,41 @@ CREATE TABLE IF NOT EXISTS message_intents (
   created_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_intents_created ON message_intents(created_at);
+
+-- Phase 3 part 2 ────────────────────────────────────────────
+-- One feedback ask per completed job, never twice.
+CREATE TABLE IF NOT EXISTS review_asks (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      TEXT,
+  kind        TEXT,           -- booking | order
+  ref_id      INTEGER,
+  status      TEXT DEFAULT 'scheduled',  -- scheduled | asked | rated | skipped | cancelled
+  rating      INTEGER,
+  due_at      TEXT,
+  created_at  TEXT,
+  updated_at  TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_asks_ref ON review_asks(kind, ref_id);
+CREATE INDEX IF NOT EXISTS idx_review_asks_due ON review_asks(status, due_at);
+
+-- How many times we argued with one objection. Two, then a human.
+CREATE TABLE IF NOT EXISTS objection_attempts (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      TEXT,
+  kind        TEXT,
+  attempt     INTEGER,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_objection_number ON objection_attempts(number, kind);
+
+-- A code per customer; when a stranger arrives quoting it, we know who sent them.
+CREATE TABLE IF NOT EXISTS referrals (
+  code        TEXT PRIMARY KEY,
+  number      TEXT,
+  uses        INTEGER DEFAULT 0,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_referrals_number ON referrals(number);
 `;
 
 export async function initDB({ file = DB_FILE } = {}) {
@@ -1294,6 +1329,28 @@ export function createOrder({ chat, items, total, currency = 'PKR', name = null,
   return { order, created: true };
 }
 
+export function getOrder(id) {
+  const o = get('SELECT * FROM orders WHERE id = ?', [id]);
+  return o ? { ...o, items: safeJson(o.items) || [] } : null;
+}
+
+export function orderFor(chat) {
+  return get("SELECT * FROM orders WHERE chat = ? ORDER BY id DESC LIMIT 1", [chat]);
+}
+
+export function setOrderStatus(id, status) {
+  run('UPDATE orders SET status = ? WHERE id = ?', [status, id]);
+  saveDB(true);
+  return get('SELECT * FROM orders WHERE id = ?', [id]);
+}
+
+export function ordersAwaitingPayment(limit = 10) {
+  return all("SELECT * FROM orders WHERE status = 'awaiting_payment' ORDER BY id DESC LIMIT ?", [limit]).map((o) => ({
+    ...o,
+    items: safeJson(o.items) || [],
+  }));
+}
+
 export function recentOrders(limit = 10) {
   return all('SELECT * FROM orders ORDER BY id DESC LIMIT ?', [limit]).map((o) => ({ ...o, items: safeJson(o.items) || [] }));
 }
@@ -1635,4 +1692,89 @@ export function setReminderStatus(id, status) {
 
 export function remindersFor(bookingId) {
   return all('SELECT * FROM booking_reminders WHERE booking_id = ? ORDER BY due_at', [bookingId]);
+}
+
+// ════════════════════════════════════════════════════════════
+// Phase 3 part 2 — reviews, objections, referrals
+// ════════════════════════════════════════════════════════════
+
+export function scheduleReviewAsk({ number, kind, refId, dueAt }) {
+  if (!number || !kind || refId == null) return null;
+  const existing = get('SELECT * FROM review_asks WHERE kind = ? AND ref_id = ?', [kind, refId]);
+  if (existing) return existing;
+  run(
+    'INSERT INTO review_asks (number, kind, ref_id, status, due_at, created_at) VALUES (?,?,?,?,?,?)',
+    [number, kind, refId, 'scheduled', dueAt, new Date().toISOString()]
+  );
+  saveDB(true);
+  return get('SELECT * FROM review_asks WHERE kind = ? AND ref_id = ?', [kind, refId]);
+}
+
+export function dueReviewAsks(nowIso = new Date().toISOString(), limit = 20) {
+  return all("SELECT * FROM review_asks WHERE status = 'scheduled' AND due_at <= ? ORDER BY due_at LIMIT ?", [nowIso, limit]);
+}
+
+export function reviewAsk(id) {
+  return get('SELECT * FROM review_asks WHERE id = ?', [id]);
+}
+
+export function reviewAskFor(number) {
+  return get("SELECT * FROM review_asks WHERE number = ? AND status IN ('scheduled','asked') ORDER BY id DESC LIMIT 1", [number]);
+}
+
+export function setReviewAsk(id, { status, rating = null } = {}) {
+  run('UPDATE review_asks SET status = COALESCE(?, status), rating = COALESCE(?, rating), updated_at = ? WHERE id = ?', [
+    status ?? null,
+    rating,
+    new Date().toISOString(),
+    id,
+  ]);
+  saveDB(true);
+}
+
+export function reviewStats(sinceIso) {
+  return all(
+    `SELECT status, COUNT(*) AS count, AVG(rating) AS avg_rating
+       FROM review_asks WHERE created_at >= ? GROUP BY status`,
+    [sinceIso]
+  );
+}
+
+export function logObjection({ number, kind, attempt }) {
+  run('INSERT INTO objection_attempts (number, kind, attempt, created_at) VALUES (?,?,?,?)', [
+    number,
+    kind,
+    attempt,
+    new Date().toISOString(),
+  ]);
+  saveDB(true);
+}
+
+export function objectionAttempts(number, kind) {
+  return get('SELECT COUNT(*) AS c FROM objection_attempts WHERE number = ? AND kind = ?', [number, kind])?.c || 0;
+}
+
+export function saveReferral({ code, number }) {
+  run('INSERT OR IGNORE INTO referrals (code, number, uses, created_at) VALUES (?,?,0,?)', [code, number, new Date().toISOString()]);
+  saveDB(true);
+  return get('SELECT * FROM referrals WHERE code = ?', [code]);
+}
+
+export function getReferral(code) {
+  if (!code) return null;
+  return get('SELECT * FROM referrals WHERE code = ?', [String(code).toUpperCase()]);
+}
+
+export function referralFor(number) {
+  return get('SELECT * FROM referrals WHERE number = ? ORDER BY created_at DESC LIMIT 1', [number]);
+}
+
+export function bumpReferral(code) {
+  run('UPDATE referrals SET uses = COALESCE(uses, 0) + 1 WHERE code = ?', [String(code).toUpperCase()]);
+  saveDB(true);
+  return getReferral(code);
+}
+
+export function recentReferrals(limit = 10) {
+  return all('SELECT * FROM referrals ORDER BY created_at DESC LIMIT ?', [limit]);
 }

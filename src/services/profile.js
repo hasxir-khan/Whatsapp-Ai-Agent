@@ -34,11 +34,14 @@ export const FEATURE_KEYS = [
   'growthApproval', // default ON: drafts wait for the owner until they say otherwise
   'booking', // deprecated alias of bookingAgent
   'followUps', // deprecated alias of followUpAgent
-  'closer',
+  'closerAgent',
+  'reviewAgent',
+  'analystAgent',
   'reactivation',
-  'reviews',
   'content',
-  'analyst',
+  'closer',    // deprecated alias of closerAgent
+  'reviews',   // deprecated alias of reviewAgent
+  'analyst',   // deprecated alias of analystAgent
   // phase 4
   'injectionGuard',
 ];
@@ -58,11 +61,14 @@ export const FEATURE_LABELS = {
   cloudApi: 'WhatsApp Cloud API transport',
   booking: 'Appointment slots, reminders, no-show rebooking',
   followUps: 'Automatic nudges for quiet leads',
-  closer: 'Objection handling and payment links',
+  closerAgent: 'Objection handling, then quote and payment instructions',
+  reviewAgent: 'Feedback asks after a job, review links, referral codes',
+  analystAgent: 'Weekly numbers report for the owner, computed not guessed',
   reactivation: 'Monthly win-back for old clients',
-  reviews: 'Review and referral requests after a job',
   content: 'Weekly content ideas for the owner',
-  analyst: 'Weekly performance report over WhatsApp',
+  closer: 'Deprecated alias of closerAgent',
+  reviews: 'Deprecated alias of reviewAgent',
+  analyst: 'Deprecated alias of analystAgent',
   injectionGuard: 'Extra prompt-injection defence',
 };
 
@@ -87,6 +93,9 @@ export const FEATURE_ALIASES = {
   booking: 'bookingAgent',
   followUps: 'followUpAgent',
   manager: 'managerAgent',
+  closer: 'closerAgent',
+  reviews: 'reviewAgent',
+  analyst: 'analystAgent',
 };
 
 /** Flags that are ON unless explicitly turned off. */
@@ -132,6 +141,32 @@ export function goals() {
 
 export function escalation() {
   return profile().escalation || {};
+}
+
+/** How payments are taken, as configured. Empty object = not set up yet. */
+export function payment() {
+  return business().payment || {};
+}
+
+/** Where happy customers should be sent to leave a review, if the owner has one. */
+export function reviewLink() {
+  const b = business();
+  return b.reviewLink || b.review?.link || null;
+}
+
+/** Referral programme config: {reward, message}. Absent = tracking only. */
+export function referral() {
+  return business().referral || {};
+}
+
+/** Weekly report schedule: {day: 'mon', time: '09:00'}. */
+export function analystSchedule() {
+  const b = business();
+  const raw = b.analyst || b.report || {};
+  return {
+    day: String(raw.day || config.analyst.day || 'mon').toLowerCase().slice(0, 3),
+    time: raw.time || config.analyst.time || '09:00',
+  };
 }
 
 export function maxDiscountPercent() {

@@ -199,6 +199,22 @@ export const config = {
     followUpMax: toInt(process.env.GROWTH_FOLLOWUP_MAX, 2),
   },
 
+  // Weekly owner report: which day and what time, in the business timezone.
+  analyst: {
+    day: process.env.ANALYST_DAY || 'mon',
+    time: process.env.ANALYST_TIME || '09:00',
+  },
+
+  // Review agent: how long after a finished job we ask for feedback.
+  review: {
+    afterHours: toInt(process.env.REVIEW_AFTER_HOURS, 24),
+  },
+
+  // Closer agent: how many times we may push back on one objection.
+  closer: {
+    maxAttempts: toInt(process.env.CLOSER_MAX_ATTEMPTS, 2),
+  },
+
   // Optional: push bookings into a Google Calendar. Both are best-effort —
   // with no credentials, bookings simply live in SQLite.
   calendar: {

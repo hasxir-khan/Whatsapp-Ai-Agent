@@ -213,6 +213,14 @@ TRANSPORT=baileys
 # GROWTH_FOLLOWUP_HOURS=24,72    # silence, in hours
 # GROWTH_FOLLOWUP_MAX=2
 
+# ── Analyst / closer / review agents (Phase 3 part 2) ───────
+# In config/owner.json: features.analystAgent, features.closerAgent,
+# features.reviewAgent (all off by default).
+# ANALYST_DAY=mon                # weekly report day, business timezone
+# ANALYST_TIME=09:00
+# REVIEW_AFTER_HOURS=24          # wait after .done before asking for feedback
+# CLOSER_MAX_ATTEMPTS=2
+
 # ── Google Calendar (optional) ──────────────────────────────
 # Bookings live in SQLite either way; this only mirrors them.
 # GOOGLE_CALENDAR_ID=

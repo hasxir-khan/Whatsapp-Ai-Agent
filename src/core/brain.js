@@ -16,7 +16,8 @@ import { intakePromptBlock } from './projectIntake.js';
 import { ownerClock } from './humanizer.js';
 import { localTime } from '../services/geo.js';
 import { featureOn, business, effectiveCatalog, tone as toneConfig, goals as goalConfig, escalation as escalationConfig } from '../services/profile.js';
-import { knowledgeContext } from '../services/rag.js';
+import { knowledgeContext, looksFactual } from '../services/rag.js';
+import { logEvent } from '../utils/db.js';
 import { featureOn as featureFlag } from '../services/profile.js';
 import { generateWithTools } from './toolCalling.js';
 import { AGENTS, allowedTools } from './manager.js';
@@ -388,6 +389,10 @@ export async function generateReply({
     knowledgeBlock = rag.block;
     if (rag.hits?.length) {
       console.log(`📚 knowledge: ${rag.hits.length} excerpt(s) via ${rag.method}`);
+    } else if (looksFactual(text)) {
+      // A real question the knowledge base had nothing for. The analyst's
+      // "asked but not answered" list is built from exactly these rows.
+      logRagMiss(number, text);
     }
   }
 
@@ -518,3 +523,12 @@ export function brainStatus() {
 }
 
 export default { generateReply, systemPrompt, detectMood, wantsVoiceReply, needsOwner, brainStatus };
+
+/** Best-effort: a logging failure must never break a reply. */
+function logRagMiss(number, text) {
+  try {
+    logEvent('rag_miss', number || null, String(text).replace(/\s+/g, ' ').slice(0, 120));
+  } catch {
+    /* logging is never allowed to matter this much */
+  }
+}
