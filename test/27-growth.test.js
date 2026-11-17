@@ -253,7 +253,7 @@ test('.growth and .optouts show what happened', async () => {
 
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const sock = fakeSock();
-  const OWNER = '923169896229@s.whatsapp.net';
+  const OWNER = '923001234567@s.whatsapp.net';
 
   const growth = (await handleOwnerCommand(sock, OWNER, '.growth')).reply;
   assert.match(growth, /Growth today/);

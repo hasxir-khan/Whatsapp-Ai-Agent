@@ -2,7 +2,7 @@
 
 **A WhatsApp assistant that knows your business, remembers every client, hears voice notes, watches videos, scores leads, answers missed calls in chat, and survives bad internet. For $0/month — and one install can serve many different people, each with their own keys.**
 
-Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but built so **anyone can be a user**: their own API keys, their own business profile, their own WhatsApp number, their own clients — fully isolated from everyone else's.
+Configured for **Hashir** and **HasDevs** out of the box, but built so **anyone can be a user**: their own API keys, their own business profile, their own WhatsApp number, their own clients — fully isolated from everyone else's.
 
 
 ---
@@ -125,7 +125,7 @@ cp .env.example .env      # Windows: copy .env.example .env
 Open `.env` and set **at minimum**:
 
 ```env
-MY_NUMBER=923169896229          # your WhatsApp number, international, no +
+MY_NUMBER=923001234567          # your WhatsApp number, international, no +
 MY_NAME=Hashir
 MY_BRAND=HasDevs
 GROQ_API_KEY=gsk_...            # free — chat + voice transcription
@@ -164,7 +164,7 @@ npm start
 
 - A QR code appears in the terminal **and** at `http://localhost:3000`
 - On your phone: **WhatsApp → Settings → Linked devices → Link a device → scan**
-- Prefer a code? Put `PAIRING_NUMBER=923169896229` in `.env`, restart, and type the 8-digit code WhatsApp shows
+- Prefer a code? Put `PAIRING_NUMBER=923001234567` in `.env`, restart, and type the 8-digit code WhatsApp shows
 
 ### 6. Try it
 

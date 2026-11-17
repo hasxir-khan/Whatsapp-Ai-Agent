@@ -41,9 +41,9 @@ const toList = (v, def = []) =>
         .filter(Boolean);
 
 /**
- * Normalise any phone input ("+92 316 9896229", "0316-9896229") to the digits
- * only: 923169896229. The comment uses a made-up number; nothing in this repo
- * should contain a real one.
+ * Normalise any phone input ("+92 300 1234567", "0300-1234567") to the digits
+ * only: 923001234567. The examples use a made-up number; nothing that ships in
+ * this repo should contain a real one.
  */
 export function normalizePhone(input) {
   if (!input) return '';

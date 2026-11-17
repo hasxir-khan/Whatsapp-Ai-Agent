@@ -5,6 +5,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { config, describeConfig, teamMembers } from '../src/config/env.js';
 import { GEMINI_BASE, geminiHeadersWith, authHeadersFor, isKeyError, explainGeminiError, maskKey, keyFormat } from '../src/utils/gemini.js';
 import { validateProfile, FEATURE_KEYS, effectiveCatalog, business, featureOn } from '../src/services/profile.js';
@@ -818,7 +819,15 @@ async function main() {
   process.exit(problems.length ? 1 : 0);
 }
 
-main().catch((err) => {
-  console.error('Doctor crashed:', err);
-  process.exit(1);
-});
+// Only run when invoked as a script. Importing this file (the tests do, to
+// reach growthSettingsWarnings) must not print a report and must certainly not
+// call process.exit() in the middle of somebody's test run.
+const invokedDirectly =
+  process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error('Doctor crashed:', err);
+    process.exit(1);
+  });
+}

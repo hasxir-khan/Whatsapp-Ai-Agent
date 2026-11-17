@@ -257,7 +257,7 @@ test('.intents and .status report the router', async () => {
   setProfile();
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const sock = fakeSock();
-  const OWNER = '923169896229@s.whatsapp.net';
+  const OWNER = '923001234567@s.whatsapp.net';
 
   const intents = (await handleOwnerCommand(sock, OWNER, '.intents')).reply;
   assert.match(intents, /Intents today/);
@@ -274,7 +274,7 @@ test('with the flag off nothing is routed and the command says so', async () => 
 
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const sock = fakeSock();
-  const res = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', '.intents');
+  const res = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', '.intents');
   assert.match(res.reply, /Routing: ⏸ off/);
 
   setProfile({ managerAgent: true });
@@ -366,10 +366,10 @@ test('a complaint is answered by the complaint agent and handed to the owner', a
     })
   );
 
-  await waitFor(() => sock.sent.some((m) => m.jid === '923169896229@s.whatsapp.net'));
+  await waitFor(() => sock.sent.some((m) => m.jid === '923001234567@s.whatsapp.net'));
   await settle(100);
 
-  const toOwner = textMessages(sock.sent, '923169896229');
+  const toOwner = textMessages(sock.sent, '923001234567');
   assert.ok(
     toOwner.some((t) => /Complaint —/.test(t)),
     `owner should get a complaint summary, got: ${JSON.stringify(toOwner)}`

@@ -398,7 +398,7 @@ test('.bookings shows today and tomorrow; .cancel frees the slot', async () => {
 
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const sock = fakeSock();
-  const OWNER = '923169896229@s.whatsapp.net';
+  const OWNER = '923001234567@s.whatsapp.net';
 
   // Fake "today" by asking for the range that contains our bookings.
   const realNow = Date.now;

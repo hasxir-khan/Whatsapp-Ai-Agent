@@ -1,9 +1,24 @@
 // End-to-end-ish: a fake WhatsApp socket, a fake AI provider, real everything else.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { isolate, fakeSock, incomingMessage, textMessages, waitFor, CLIENT, settle } from './helpers.js';
 
-isolate('router');
+const dataDir = isolate('router');
+
+// A friend list defined here, not inherited from the owner's private profile.
+const configDir = path.join(dataDir, 'config');
+fs.mkdirSync(configDir, { recursive: true });
+fs.writeFileSync(
+  path.join(configDir, 'owner.json'),
+  JSON.stringify({
+    owner: { name: 'Test Owner', timezone: 'Asia/Karachi', friends: [{ number: '923001112222', name: 'Test Friend' }] },
+    business: { name: 'Test Business', type: 'Cafe', city: 'Islamabad', hours: 'Daily 12:00-23:00' },
+    features: { businessProfile: true },
+  })
+);
+process.env.CONFIG_DIR = configDir;
 
 const db = await import('../src/utils/db.js');
 await db.initDB();
@@ -100,7 +115,7 @@ test('.resume hands the chat back to the bot', async () => {
 test('owner commands work in the self-chat', async () => {
   const sock = fakeSock();
   await handleIncoming(sock, {
-    key: { remoteJid: '923169896229@s.whatsapp.net', fromMe: true, id: 'CMD-1' },
+    key: { remoteJid: '923001234567@s.whatsapp.net', fromMe: true, id: 'CMD-1' },
     message: { conversation: '.status' },
   });
   await waitFor(() => sock.sent.some((m) => /System status/i.test(m.payload.text || '')));
@@ -158,22 +173,22 @@ test('a scam message is refused, not answered', async () => {
 
 test('friends are classified as friends and still get a reply', async () => {
   const sock = fakeSock();
-  const friendJid = '923169895286@s.whatsapp.net';
+  const friendJid = '923001112222@s.whatsapp.net';
   await handleIncoming(sock, {
     key: { remoteJid: friendJid, fromMe: false, id: 'FRIEND-1' },
     message: { conversation: 'yaar kya kar raha hai?' },
-    pushName: 'Koor',
+    pushName: 'Test Friend',
   });
   await waitFor(() => sock.sent.some((m) => m.jid === friendJid));
-  const contact = db.getContact('923169895286');
+  const contact = db.getContact('923001112222');
   assert.equal(contact.category, 'friend');
-  assert.equal(contact.name, 'Koor');
+  assert.equal(contact.name, 'Test Friend');
 });
 
 test('pausing via command silences the bot', async () => {
   const sock = fakeSock();
   await handleIncoming(sock, {
-    key: { remoteJid: '923169896229@s.whatsapp.net', fromMe: true, id: 'CMD-3' },
+    key: { remoteJid: '923001234567@s.whatsapp.net', fromMe: true, id: 'CMD-3' },
     message: { conversation: `.pause ${CLIENT.number} 30` },
   });
   await waitFor(() => sock.sent.length > 0);

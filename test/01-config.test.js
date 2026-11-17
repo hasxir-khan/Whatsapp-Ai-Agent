@@ -7,15 +7,15 @@ isolate('config');
 const { config, normalizePhone, assertConfig } = await import('../src/config/env.js');
 
 test('normalises Pakistani and international numbers', () => {
-  assert.equal(normalizePhone('+92 316 9896229'), '923169896229');
-  assert.equal(normalizePhone('0316-9896229'), '923169896229');
-  assert.equal(normalizePhone('0092 316 9896229'), '923169896229');
-  assert.equal(normalizePhone('923169896229'), '923169896229');
+  assert.equal(normalizePhone('+92 300 1234567'), '923001234567');
+  assert.equal(normalizePhone('0300-1234567'), '923001234567');
+  assert.equal(normalizePhone('0092 300 1234567'), '923001234567');
+  assert.equal(normalizePhone('923001234567'), '923001234567');
 });
 
 test('owner number and jid are correct', () => {
-  assert.equal(config.owner.number, '923169896229');
-  assert.equal(config.owner.jid, '923169896229@s.whatsapp.net');
+  assert.equal(config.owner.number, '923001234567');
+  assert.equal(config.owner.jid, '923001234567@s.whatsapp.net');
   assert.equal(config.owner.name, 'Hashir');
 });
 

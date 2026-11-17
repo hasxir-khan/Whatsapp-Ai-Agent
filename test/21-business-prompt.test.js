@@ -10,7 +10,7 @@ const dataDir = isolate('business-prompt');
 const configDir = path.join(dataDir, 'config');
 fs.mkdirSync(configDir, { recursive: true });
 process.env.CONFIG_DIR = configDir;
-process.env.MY_NUMBER = '923169896229';
+process.env.MY_NUMBER = '923001234567';
 
 const writeProfile = (obj) => {
   fs.writeFileSync(path.join(configDir, 'owner.json'), JSON.stringify(obj, null, 2));
@@ -134,7 +134,7 @@ test('catalog ranges are quoted as ranges, not invented numbers', async () => {
 });
 
 // ── owner commands ─────────────────────────────────────────
-const OWNER_JID = '923169896229@s.whatsapp.net';
+const OWNER_JID = '923001234567@s.whatsapp.net';
 const cmd = async (text) => {
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const res = await handleOwnerCommand({}, OWNER_JID, text);

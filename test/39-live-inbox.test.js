@@ -319,7 +319,7 @@ test('.inbox tells the owner where to look, and what is waiting', async () => {
   env.config.server.enabled = true;
   try {
     const sock = { sent: [], async sendMessage(jid, payload) { this.sent.push({ jid, payload }); } };
-    const res = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', '.inbox', '923169896229');
+    const res = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', '.inbox', '923001234567');
     assert.match(res.reply, /Live inbox/);
     assert.match(res.reply, /waiting for a reply/);
     assert.match(res.reply, /\/inbox/);
@@ -333,7 +333,7 @@ test('.inbox is honest when the web server is disabled', async () => {
   const wasEnabled = env.config.server.enabled;
   env.config.server.enabled = false;
   try {
-    const res = await handleOwnerCommand({ async sendMessage() {} }, '923169896229@s.whatsapp.net', '.inbox', '923169896229');
+    const res = await handleOwnerCommand({ async sendMessage() {} }, '923001234567@s.whatsapp.net', '.inbox', '923001234567');
     assert.match(res.reply, /web server is off/i);
   } finally {
     env.config.server.enabled = wasEnabled;
@@ -344,9 +344,9 @@ test('.inbox explains itself when the feature is off', async () => {
   setFlag('liveInbox', false);
   const res = await handleOwnerCommand(
     { async sendMessage() {} },
-    '923169896229@s.whatsapp.net',
+    '923001234567@s.whatsapp.net',
     '.inbox',
-    '923169896229'
+    '923001234567'
   );
   assert.match(res.reply, /features\.liveInbox/);
   setFlag('liveInbox', true);

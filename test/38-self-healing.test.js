@@ -113,7 +113,7 @@ test('turning it on proposes a rule — into pending_rules, not into the profile
   assert.ok(!JSON.stringify(profile.faqList()).includes('ek Zinger Burger'));
 
   // The owner is told, in his own chat, with the exact next commands.
-  const notice = sock.sent.find((m) => m.jid.startsWith('923169896229'));
+  const notice = sock.sent.find((m) => m.jid.startsWith('923001234567'));
   assert.ok(notice, 'the owner should be notified');
   assert.match(notice.payload.text, /New rule learned/);
   assert.match(notice.payload.text, /\.approve-rule \d+/);
@@ -304,30 +304,30 @@ test('owner commands: .rules lists proposals, .reject-rule drops one', async () 
   assert.equal(res.handled, true, JSON.stringify(res.reasons || res.reason));
 
   const sock = fakeSock();
-  const list = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', '.rules', '923169896229');
+  const list = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', '.rules', '923001234567');
   assert.match(list.reply, /Rules waiting for you/);
   assert.match(list.reply, new RegExp(`#${res.rule.id}`));
   assert.match(list.reply, /\.approve-rule/);
 
-  const rejected = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', `.reject-rule ${res.rule.id}`, '923169896229');
+  const rejected = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', `.reject-rule ${res.rule.id}`, '923001234567');
   assert.match(rejected.reply, /rejected/);
   assert.equal(db.getPendingRule(res.rule.id).status, 'rejected');
 
-  const empty = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', '.rules', '923169896229');
+  const empty = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', '.rules', '923001234567');
   assert.match(empty.reply, /Nothing pending/);
 });
 
 test('owner commands explain themselves when the feature is off', async () => {
   setFlag('selfHealing', false);
   const sock = fakeSock();
-  const res = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', '.rules', '923169896229');
+  const res = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', '.rules', '923001234567');
   assert.match(res.reply, /features\.selfHealing/);
   setFlag('selfHealing', true);
 });
 
 test('approve-rule with a bad id says so instead of crashing', async () => {
   const sock = fakeSock();
-  const res = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', '.approve-rule 99999', '923169896229');
+  const res = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', '.approve-rule 99999', '923001234567');
   assert.match(res.reply, /No rule with id 99999/);
 });
 

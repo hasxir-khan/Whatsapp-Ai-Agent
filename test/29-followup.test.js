@@ -190,7 +190,7 @@ test('.approve sends the draft to the customer', async () => {
   P.setPath('business.quietHours', { start: '00:00', end: '00:00' });
   let reply;
   try {
-    reply = (await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', `.approve ${draft.id}`)).reply;
+    reply = (await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', `.approve ${draft.id}`)).reply;
   } finally {
     P.setPath('business.quietHours', { start: '21:00', end: '09:00' });
   }
@@ -210,7 +210,7 @@ test('.skip drops it and it never goes out', async () => {
 
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const sock = fakeSock();
-  const reply = (await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', `.skip ${draft.id}`)).reply;
+  const reply = (await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', `.skip ${draft.id}`)).reply;
   assert.match(reply, /dropped/);
   assert.equal(db.getDraft(draft.id).status, 'skipped');
   assert.equal(db.growthStatsSince('1970-01-01').length, 0, 'nothing was sent');

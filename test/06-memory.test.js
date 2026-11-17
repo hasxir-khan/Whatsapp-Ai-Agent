@@ -1,8 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { isolate } from './helpers.js';
 
-isolate('memory');
+const dataDir = isolate('memory');
+
+// The friends list is the owner's own data, so it must not come from the repo:
+// a public clone has no config/owner.json, and a test that needs one is a test
+// that only passes on one machine.
+const configDir = path.join(dataDir, 'config');
+fs.mkdirSync(configDir, { recursive: true });
+fs.writeFileSync(
+  path.join(configDir, 'owner.json'),
+  JSON.stringify({
+    owner: { name: 'Test Owner', timezone: 'Asia/Karachi', friends: [{ number: '923001112222', name: 'Test Friend' }] },
+    business: { name: 'Test Business', type: 'Cafe', city: 'Islamabad', hours: 'Daily 12:00-23:00' },
+    features: { businessProfile: true },
+  })
+);
+process.env.CONFIG_DIR = configDir;
 
 const db = await import('../src/utils/db.js');
 const memory = await import('../src/services/memory.js');
@@ -102,12 +119,12 @@ test('system prompt forbids prompt injection', () => {
 });
 
 test('friends get a casual prompt, not the sales flow', () => {
-  assert.equal(isFriend('923169895286'), true);
-  assert.equal(friendName('923169895286'), 'Koor');
+  assert.equal(isFriend('923001112222'), true);
+  assert.equal(friendName('923001112222'), 'Test Friend');
   assert.equal(isFriend('447700900123'), false);
 
   const prompt = systemPrompt({
-    dossier: { number: '923169895286', category: 'friend', facts: [], recent: [], country: 'Pakistan' },
+    dossier: { number: '923001112222', category: 'friend', facts: [], recent: [], country: 'Pakistan' },
     intakeState: { stage: 'discovering', fields: { projectType: 'website' }, asked: [] },
     langInfo: { code: 'roman-ur', label: 'Roman Urdu' },
     features: {},

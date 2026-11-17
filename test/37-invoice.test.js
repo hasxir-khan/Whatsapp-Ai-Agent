@@ -283,20 +283,20 @@ test('owner command: .invoice <id> sends the document and names it correctly', a
   setFlag('pdfInvoices', true);
   const order = makeOrder();
   const sock = fakeSock();
-  const res = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', `.invoice ${order.id}`, '923169896229');
+  const res = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', `.invoice ${order.id}`, '923001234567');
   assert.equal(res.handled, true);
   assert.match(res.reply, /Invoice \(unpaid\)/);
   assert.match(res.reply, /PKR 2,800/);
   const sent = sock.sent.filter((m) => m.payload?.document);
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].jid, '923169896229@s.whatsapp.net');
+  assert.equal(sent[0].jid, '923001234567@s.whatsapp.net');
 });
 
 test('owner command: .invoice <id> send delivers to the customer, not to the owner', async () => {
   setFlag('pdfInvoices', true);
   const order = makeOrder();
   const sock = fakeSock();
-  const res = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', `.invoice ${order.id} send`, '923169896229');
+  const res = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', `.invoice ${order.id} send`, '923001234567');
   assert.match(res.reply, /Sent to \+923001234567/);
   const sent = sock.sent.filter((m) => m.payload?.document);
   assert.equal(sent[0].jid, '923001234567@s.whatsapp.net');
@@ -306,7 +306,7 @@ test('owner command: with the flag off, .invoice explains how to turn it on', as
   setFlag('pdfInvoices', false);
   const order = makeOrder();
   const sock = fakeSock();
-  const res = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', `.invoice ${order.id}`, '923169896229');
+  const res = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', `.invoice ${order.id}`, '923001234567');
   assert.match(res.reply, /features\.pdfInvoices/);
   assert.equal(sock.sent.filter((m) => m.payload?.document).length, 0);
   setFlag('pdfInvoices', true);
