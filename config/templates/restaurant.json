@@ -1,0 +1,120 @@
+{
+  "_template": {
+    "id": "restaurant",
+    "label": "Restaurant / Café",
+    "emoji": "🍽️",
+    "description": "Menu, delivery, table bookings, daily specials.",
+    "goodFor": "restaurants, cafés, bakeries, cloud kitchens"
+  },
+  "business": {
+    "name": "",
+    "type": "Restaurant",
+    "city": "",
+    "languages": [
+      "en",
+      "ur"
+    ],
+    "hours": "Daily 12:00–23:00",
+    "delivery": "Delivery within 5 km, 45–60 min. Pickup ready in 20 min.",
+    "about": "Fresh, cooked-to-order food. Halal."
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "Chicken Karahi",
+        "kind": "product",
+        "price": 1450,
+        "duration": 25,
+        "stock": 20,
+        "description": "serves 2–3, with naan"
+      },
+      {
+        "name": "Chicken Biryani",
+        "kind": "product",
+        "price": 550,
+        "duration": 15,
+        "stock": 35
+      },
+      {
+        "name": "Zinger Burger",
+        "kind": "product",
+        "price": 650,
+        "duration": 12,
+        "stock": 25,
+        "description": "with fries and drink"
+      },
+      {
+        "name": "Family Platter",
+        "kind": "product",
+        "price": 3200,
+        "duration": 30,
+        "stock": 8,
+        "description": "serves 4–5"
+      },
+      {
+        "name": "Mint Margarita",
+        "kind": "product",
+        "price": 350,
+        "duration": 5,
+        "stock": 40
+      },
+      {
+        "name": "Table for 4 (booking)",
+        "kind": "service",
+        "price": 0,
+        "duration": 90
+      }
+    ]
+  },
+  "policies": {
+    "delivery": "Free delivery over 2,000 PKR, otherwise 150 PKR.",
+    "payment": "Cash, card or JazzCash/Easypaisa on delivery.",
+    "reservation": "Tables held 15 minutes past the booking time.",
+    "allergies": "Tell us about allergies — most dishes can be adjusted."
+  },
+  "faqs": [
+    {
+      "q": "Do you deliver?",
+      "a": "Yes — within 5 km, 45–60 minutes, free over 2,000 PKR."
+    },
+    {
+      "q": "Is it halal?",
+      "a": "Fully halal, and we can show the certificate on request."
+    },
+    {
+      "q": "Can I book a table?",
+      "a": "Yes, tell me the date, time and how many people and I'll hold it."
+    }
+  ],
+  "tone": {
+    "style": "warm and quick, like a good waiter",
+    "emoji": "light",
+    "address": "sir/madam or bhai/behen depending on language",
+    "avoid": [
+      "corporate language",
+      "long paragraphs"
+    ]
+  },
+  "goals": {
+    "primary": "take the order or booking",
+    "secondary": [
+      "upsell a drink or dessert",
+      "collect the delivery address"
+    ],
+    "target": "order confirmed in under 5 messages"
+  },
+  "escalation": {
+    "when": "complaint about a late or wrong order, or a refund request",
+    "topics": [
+      "food poisoning",
+      "refund",
+      "staff complaint"
+    ]
+  },
+  "features": {
+    "businessProfile": true,
+    "catalog": true,
+    "knowledge": true,
+    "ownerEditing": true
+  }
+}

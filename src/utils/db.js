@@ -175,6 +175,22 @@ CREATE TABLE IF NOT EXISTS settings (
   key         TEXT PRIMARY KEY,
   value       TEXT
 );
+
+-- Learned business documents (menus, price sheets, policies, price lists).
+-- Text is stored in Phase 1; the embedding column is filled by the Phase 2 RAG layer.
+CREATE TABLE IF NOT EXISTS knowledge (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  source      TEXT NOT NULL,            -- file:<name> | url:<url> | text:<label>
+  title       TEXT,
+  chunk_no    INTEGER NOT NULL DEFAULT 0,
+  text        TEXT NOT NULL,
+  hash        TEXT NOT NULL,
+  rules       TEXT,                     -- JSON: what was stripped/kept
+  embedding   TEXT,                     -- reserved: JSON array of floats
+  created_at  TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_chunk ON knowledge(source, chunk_no);
+CREATE INDEX IF NOT EXISTS idx_knowledge_hash ON knowledge(hash);
 `;
 
 export async function initDB({ file = DB_FILE } = {}) {
@@ -839,4 +855,82 @@ export function exportAll() {
     followups: all('SELECT * FROM followups ORDER BY id DESC LIMIT 500'),
     usage: usageHistory(60),
   };
+}
+
+// ── knowledge base (Phase 1: ingest + store; Phase 2: embeddings) ──
+
+/** Replace every chunk of one source in a single transaction-ish pass. */
+export function replaceKnowledgeSource(source, chunks = [], { title = null, rules = null } = {}) {
+  run('DELETE FROM knowledge WHERE source = ?', [source]);
+  const now = new Date().toISOString();
+  let n = 0;
+  for (const chunk of chunks) {
+    const text = typeof chunk === 'string' ? chunk : chunk.text;
+    if (!text || !text.trim()) continue;
+    run('INSERT INTO knowledge (source, title, chunk_no, text, hash, rules, created_at) VALUES (?,?,?,?,?,?,?)', [
+      source,
+      title,
+      n,
+      text.trim(),
+      typeof chunk === 'string' ? hashText(text) : chunk.hash || hashText(text),
+      rules ? JSON.stringify(rules) : null,
+      now,
+    ]);
+    n += 1;
+  }
+  saveDB(true);
+  return n;
+}
+
+export function knowledgeSources() {
+  return all(
+    `SELECT source, title, COUNT(*) AS chunks,
+            MAX(created_at) AS updated_at,
+            SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END) AS embedded
+       FROM knowledge GROUP BY source ORDER BY updated_at DESC`
+  );
+}
+
+export function knowledgeChunks(source, limit = 500) {
+  return all('SELECT * FROM knowledge WHERE source = ? ORDER BY chunk_no LIMIT ?', [source, limit]);
+}
+
+export function knowledgeStats() {
+  const row = get('SELECT COUNT(*) AS chunks, COUNT(DISTINCT source) AS sources FROM knowledge') || {};
+  const bytes = get('SELECT COALESCE(SUM(LENGTH(text)), 0) AS bytes FROM knowledge') || {};
+  return {
+    chunks: row.chunks || 0,
+    sources: row.sources || 0,
+    bytes: bytes.bytes || 0,
+  };
+}
+
+/** Naive substring search. Phase 2 replaces this with vector retrieval. */
+export function searchKnowledge(query, limit = 5) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const words = q
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((w) => w.length > 2)
+    .slice(0, 6);
+  if (!words.length) return [];
+  const where = words.map(() => 'LOWER(text) LIKE ?').join(' OR ');
+  return all(
+    `SELECT source, title, chunk_no, text FROM knowledge WHERE ${where} LIMIT ?`,
+    [...words.map((w) => `%${w}%`), limit]
+  );
+}
+
+export function deleteKnowledgeSource(source) {
+  run('DELETE FROM knowledge WHERE source = ?', [source]);
+  saveDB(true);
+  return true;
+}
+
+function hashText(text) {
+  let h = 5381;
+  const s = String(text);
+  for (let i = 0; i < s.length; i += 1) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
 }

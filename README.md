@@ -13,16 +13,17 @@ Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but bu
 3. [Add your own API keys](#add-your-own-api-keys)
 4. [Run it for several users (multi-user)](#run-it-for-several-users-multi-user)
 5. [Make it *your* business](#make-it-your-business)
-6. [Lead intelligence](#lead-intelligence)
-7. [Languages](#languages)
-8. [Missed calls](#missed-calls)
-9. [Offline & bad internet](#offline--bad-internet)
-10. [Team (several people, one inbox)](#team-several-people-one-inbox)
-11. [Commands](#commands)
-12. [Dashboard](#dashboard)
-13. [Deploy for free](#deploy-for-free)
-14. [Troubleshooting](#troubleshooting)
-15. [Honest limitations](#honest-limitations)
+6. [Business setup — three ways](#business-setup--three-ways)
+7. [Lead intelligence](#lead-intelligence)
+8. [Languages](#languages)
+9. [Missed calls](#missed-calls)
+10. [Offline & bad internet](#offline--bad-internet)
+11. [Team (several people, one inbox)](#team-several-people-one-inbox)
+12. [Commands](#commands)
+13. [Dashboard](#dashboard)
+14. [Deploy for free](#deploy-for-free)
+15. [Troubleshooting](#troubleshooting)
+16. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -86,7 +87,19 @@ GEMINI_API_KEY=AQ...            # free — images + video
 
 ### 3. Describe your business
 
-Open **`config/owner.json`** and fill in your services, price ranges, payment terms, policies and FAQs. This file *is* the assistant's knowledge — the more real it is, the better every reply gets. ([details](#make-it-your-business))
+Three ways, easiest first — a 10-question wizard, an industry template, or a document you already have:
+
+```bash
+node scripts/tenant.js templates        # see the 8 industries first
+```
+
+For a single-business install, edit **`config/owner.json`** by hand, or copy any template over it:
+
+```bash
+cp config/templates/restaurant.json config/owner.json
+```
+
+This file *is* the assistant's knowledge — the more real it is, the better every reply gets. ([details](#business-setup--three-ways))
 
 ### 4. Check everything
 
@@ -296,6 +309,139 @@ Rules that keep it safe:
 
 ---
 
+## Business setup — three ways
+
+The bot can sell **anything** — a restaurant menu, clinic appointments, salon services, property visits, or a six-figure agency project. What changes is one file: `config/owner.json` (per user: `tenants/<slug>/config/owner.json`).
+
+### Method 1 — the wizard (10 questions)
+
+```bash
+node scripts/tenant.js setup <slug>
+```
+
+It asks for the business name, industry, city, languages, opening hours, price list, currency and the number to escalate to — then writes a valid profile and turns on the right flags.
+
+```
+2. What kind of business is it?
+  1. 🍽️ Restaurant / Café   Menu, delivery, table bookings, daily specials.
+  2. 🩺 Clinic / Doctor      Appointments, consultation fees, services, directions.
+  …
+```
+
+Non-interactive (for scripts and CI):
+
+```bash
+node scripts/tenant.js setup burger-point --non-interactive --type restaurant --city Islamabad --currency PKR
+```
+
+### Method 2 — an industry template
+
+```bash
+node scripts/tenant.js templates                      # 8 industries
+node scripts/tenant.js new "Burger Point" --number 923001112233 --template restaurant
+```
+
+| Template | Built for | Ships with |
+|---|---|---|
+| `restaurant` | cafés, bakeries, cloud kitchens | menu items, delivery rules, table booking |
+| `clinic` | doctors, dentists, physios, labs | consultation fees, lab panels, emergency rules |
+| `salon` | salons, barbers, spas | price list, bridal packages, cancellation policy |
+| `real-estate` | dealers, developers, rentals | valuation, listing package, commission rules |
+| `shop` | clothing, electronics, retail | products with stock, exchange policy, COD |
+| `agency` | developers, designers, consultants | project ranges, retainers, process |
+| `school` | schools, academies, tuition | admission, monthly fees, transport |
+| `generic` | anything else | a sane starting point |
+
+Template prices are **examples** — edit them before going live. A templated business keeps its whole price list in `catalog`, so there is exactly one place to change prices.
+
+### Method 3 — feed it the documents you already have
+
+```bash
+node scripts/tenant.js learn burger-point ./menu.pdf
+node scripts/tenant.js learn burger-point https://your-site.com/services
+node scripts/tenant.js learn ayesha-designs ./price-list.txt --name "2026 price list"
+```
+
+Reads PDF, TXT, MD, CSV, DOCX and web pages, cleans the text, splits it into overlapping chunks and stores them in that user's database. Phase 1 stores and indexes them; vector retrieval arrives in Phase 2, so nothing here can invent a fact.
+
+### Edit from WhatsApp
+
+Turn on `.set features.ownerEditing true` once, then:
+
+```
+.set business.hours Daily 12:00–23:00
+.set business.city Islamabad
+.set tone.style warm and quick, like a good waiter
+.addservice Garlic Mayo Dip | 150
+.addservice Website | 60000-180000
+.addfaq Do you deliver? | Yes, within 5 km, 45–60 minutes
+.profile
+.services
+```
+
+Every change is written to that tenant's `owner.json`, backed by an atomic write, and is **live on the next message** — no restart. `.profile`, `.services`, `.set`, `.addservice`, `.addfaq` and `.features` are owner-only.
+
+### What the profile looks like
+
+```jsonc
+{
+  "business": {
+    "name": "Burger Point", "type": "Restaurant", "city": "Islamabad",
+    "languages": ["en", "ur"],
+    "hours": "Daily 12:00–23:00",
+    "closed": "Never",
+    "delivery": "Within 5 km, 45–60 minutes, free over 2,000 PKR",
+    "about": "Fresh, cooked-to-order food. Halal."
+  },
+  "catalog": {
+    "items": [
+      { "name": "Zinger Burger", "kind": "product", "price": 650, "duration": 12, "stock": 25 },
+      { "name": "Family Platter", "kind": "product", "price": 3200, "duration": 30, "stock": 8 },
+      { "name": "Website", "kind": "service", "min": 60000, "max": 180000, "days": "10–21" }
+    ]
+  },
+  "tone":       { "style": "warm and quick", "emoji": "light", "avoid": ["corporate language"] },
+  "goals":      { "primary": "take the order", "secondary": ["upsell a drink"], "target": "order confirmed in under 5 messages" },
+  "escalation": { "when": "a complaint about a wrong order", "number": "923001112233", "topics": ["refund"] },
+  "policies":   { "delivery": "Free over 2,000 PKR", "payment": "Cash, card, JazzCash" },
+  "faqs":       [ { "q": "Do you deliver?", "a": "Yes — within 5 km." } ],
+  "features":   { "businessProfile": true, "catalog": true }
+}
+```
+
+`price` is a fixed amount; `min`/`max` is a range. Both work everywhere — the quote engine never invents a number, and an item with `"stock": 0` is described as out of stock instead of being sold.
+
+### Feature flags
+
+Everything new is **opt-in and off by default**, so an existing install behaves exactly as before until you say otherwise. Flip one from WhatsApp (`.set features.catalog true`) or in `owner.json`.
+
+| Flag | Phase | What it turns on |
+|---|---|---|
+| `businessProfile` | 1 | Business identity, hours, tone, goals, escalation in the prompt |
+| `catalog` | 1 | Product catalogue + stock awareness |
+| `knowledge` | 1 | Learned documents (ingesting works either way) |
+| `ownerEditing` | 1 | `.set`, `.addservice`, `.addfaq` from WhatsApp |
+| `toolCalling` | 2 | Structured actions: book, check stock, order, quote, handoff |
+| `rag` | 2 | Vector search over learned documents |
+| `manager` | 2 | Intent router with specialist agents |
+| `cloudApi` | 2 | WhatsApp Cloud API transport alongside Baileys |
+| `booking` | 3 | Appointment slots, reminders, no-show rebooking |
+| `followUps` | 3 | Automatic nudges for quiet leads |
+| `closer` | 3 | Objection handling, payment links |
+| `reactivation` | 3 | Monthly win-back for old clients |
+| `reviews` | 3 | Review and referral requests |
+| `content` | 3 | Weekly content ideas for the owner |
+| `analyst` | 3 | Weekly performance report over WhatsApp |
+| `injectionGuard` | 4 | Extra prompt-injection defence |
+
+Check what a specific business has:
+
+```bash
+node scripts/doctor.js business      # validates the profile, catalog, flags and knowledge base
+```
+
+---
+
 ## Lead intelligence
 
 Every lead gets a **0–100 score**, the reasons behind it, and **one next action**.
@@ -461,6 +607,12 @@ Type in your own WhatsApp chat (message yourself):
 | `.ai on\|off` | global kill switch |
 | `.export` | JSON backup of contacts + leads |
 | `.sync` | push leads to Google Sheets |
+| `.profile` | business summary: hours, tone, goal, price list size, flags |
+| `.services` | the price list the bot is allowed to quote, with stock |
+| `.addservice Name \| 1500` | add (or re-price) an item — quotable immediately |
+| `.addfaq Question \| Answer` | add an FAQ |
+| `.set path value` | edit any setting, live: `.set business.hours Daily 12:00–23:00` |
+| `.features` | what's on, what's off |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
@@ -555,8 +707,9 @@ Notes:
 
 ```
 config/
-  owner.example.json    full schema + defaults
+  owner.example.json    full schema + defaults (every option documented)
   owner.json            your business knowledge (edit this)
+  templates/            8 industry starter profiles
   countries.json        phone prefix → country / timezone / currency
 src/
   index.js              boot, WhatsApp connection, reconnect, session restore
@@ -572,6 +725,9 @@ src/
     pricing.js          deterministic multi-currency quotes
     humanizer.js        typing, delays, bubbles, quiet hours
   services/
+    profile.js          universal business profile: read, write, validate, live reload
+    templates.js        industry templates → owner.json
+    knowledge.js        documents → chunks → SQLite (embeddings in phase 2)
     leads.js            lead scoring, next actions, pipeline summary
     outbox.js           offline queue: never lose a reply
     calls.js            missed-call rescue
@@ -585,10 +741,12 @@ src/
     gemini.js           Gemini auth + error classification
     sessionBackup.js
 scripts/
-  tenant.js             create / inspect / delete users
+  tenant.js             create / setup / teach / inspect / delete users
+  wizard.js             the 10-question business setup
+  learn.js              ingest one document into a tenant's knowledge base
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   134 tests (node:test, no dependencies)
+test/                   187 tests (node:test, no dependencies)
 ```
 
 ---
@@ -596,7 +754,7 @@ test/                   134 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test          # 134 tests: languages, leads, outbox, tenants, calls, router…
+npm test          # 187 tests: profile, templates, knowledge, leads, outbox, tenants…
 npm run doctor    # environment + live API checks
 npm run chat -- --mock   # talk to the brain with no keys
 ```

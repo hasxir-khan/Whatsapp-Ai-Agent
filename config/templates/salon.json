@@ -1,0 +1,114 @@
+{
+  "_template": {
+    "id": "salon",
+    "label": "Salon / Spa",
+    "emoji": "💇",
+    "description": "Price list, stylists, bookings, bridal packages.",
+    "goodFor": "salons, barbers, spas, beauticians"
+  },
+  "business": {
+    "name": "",
+    "type": "Salon",
+    "city": "",
+    "languages": [
+      "en",
+      "ur"
+    ],
+    "hours": "Tue–Sun 11:00–21:00, Monday closed",
+    "closed": "Monday",
+    "about": "Walk-ins welcome; weekends get busy, so booking is better."
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "Haircut (ladies)",
+        "kind": "service",
+        "price": 1500,
+        "duration": 45
+      },
+      {
+        "name": "Haircut (gents)",
+        "kind": "service",
+        "price": 800,
+        "duration": 30
+      },
+      {
+        "name": "Beard trim & shape",
+        "kind": "service",
+        "price": 500,
+        "duration": 20
+      },
+      {
+        "name": "Hair colour (global)",
+        "kind": "service",
+        "price": 8000,
+        "duration": 120
+      },
+      {
+        "name": "Facial — hydrating",
+        "kind": "service",
+        "price": 3000,
+        "duration": 60
+      },
+      {
+        "name": "Bridal makeup package",
+        "kind": "service",
+        "min": 35000,
+        "max": 60000,
+        "duration": 240
+      }
+    ]
+  },
+  "policies": {
+    "booking": "A 1,000 PKR advance confirms bridal bookings.",
+    "cancellation": "Cancel 24 hours ahead, otherwise the advance is adjusted against the next visit.",
+    "late": "More than 15 minutes late may mean a shorter service or a rebooking.",
+    "products": "We use professional brands; ask to see the product before we start."
+  },
+  "faqs": [
+    {
+      "q": "Do you do bridal?",
+      "a": "Yes — packages run 35,000–60,000 PKR. Share your date and I'll check availability."
+    },
+    {
+      "q": "Can I walk in?",
+      "a": "Yes, but on weekends book a slot so you don't wait."
+    },
+    {
+      "q": "Which stylists do you have?",
+      "a": "Tell me what you need and I'll match you with the right one."
+    }
+  ],
+  "tone": {
+    "style": "friendly and upbeat",
+    "emoji": "light",
+    "address": "first name once you know it",
+    "avoid": [
+      "pushy upselling",
+      "commenting on appearance"
+    ]
+  },
+  "goals": {
+    "primary": "book an appointment",
+    "secondary": [
+      "suggest the right package",
+      "collect the preferred date and time"
+    ],
+    "target": "slot booked"
+  },
+  "escalation": {
+    "when": "allergic reaction, complaint about a service, or a refund",
+    "topics": [
+      "allergy",
+      "burn",
+      "refund",
+      "complaint"
+    ]
+  },
+  "features": {
+    "businessProfile": true,
+    "catalog": true,
+    "knowledge": true,
+    "ownerEditing": true
+  }
+}

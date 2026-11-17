@@ -1,0 +1,84 @@
+{
+  "_template": {
+    "id": "generic",
+    "label": "Generic business",
+    "emoji": "🏪",
+    "description": "A blank, sane starting point for any business that isn't listed yet.",
+    "goodFor": "any service business, local shop, consultant"
+  },
+  "business": {
+    "name": "",
+    "type": "Business",
+    "city": "",
+    "languages": [
+      "en",
+      "ur"
+    ],
+    "hours": "Mon–Sat 10:00–19:00",
+    "about": ""
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "Main service",
+        "kind": "service",
+        "price": 10000,
+        "duration": 60
+      },
+      {
+        "name": "Second service",
+        "kind": "service",
+        "price": 25000,
+        "duration": 120
+      },
+      {
+        "name": "Consultation",
+        "kind": "service",
+        "price": 3000,
+        "duration": 30
+      }
+    ]
+  },
+  "policies": {
+    "payment": "50% advance, 50% on delivery.",
+    "changes": "Two adjustment rounds are included."
+  },
+  "faqs": [
+    {
+      "q": "What do you charge?",
+      "a": "It depends on the scope — share what you need and I'll give you a range."
+    },
+    {
+      "q": "How soon can you start?",
+      "a": "Usually within a few days. Tell me your timeline and I'll confirm."
+    }
+  ],
+  "tone": {
+    "style": "friendly and direct",
+    "emoji": "light",
+    "address": "first name",
+    "avoid": [
+      "jargon"
+    ]
+  },
+  "goals": {
+    "primary": "understand what they need",
+    "secondary": [
+      "collect budget and timeline"
+    ],
+    "target": "qualified enquiry"
+  },
+  "escalation": {
+    "when": "anything the price list doesn't cover",
+    "topics": [
+      "custom work",
+      "complaint"
+    ]
+  },
+  "features": {
+    "businessProfile": true,
+    "catalog": true,
+    "knowledge": true,
+    "ownerEditing": true
+  }
+}

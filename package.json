@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-self-knowledge-assistant",
-  "version": "9.0.0",
+  "version": "9.1.0",
   "description": "Multi-user WhatsApp AI assistant: every user gets their own keys, business profile and session. Speaks 86 languages, scores leads, answers missed calls in chat, and never loses a reply to a bad connection.",
   "main": "src/index.js",
   "type": "module",
@@ -21,7 +21,9 @@
     "all": "node scripts/run-all.js",
     "users": "node scripts/tenant.js list",
     "doctor:all": "node scripts/doctor.js all",
-    "doctor:live": "node scripts/doctor.js all --live"
+    "doctor:live": "node scripts/doctor.js all --live",
+    "templates": "node scripts/tenant.js templates",
+    "setup": "node scripts/tenant.js setup"
   },
   "keywords": [
     "whatsapp",

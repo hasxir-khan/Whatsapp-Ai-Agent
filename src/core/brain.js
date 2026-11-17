@@ -15,6 +15,7 @@ import { mirrorInstruction, toneInstruction } from '../services/language.js';
 import { intakePromptBlock } from './projectIntake.js';
 import { ownerClock } from './humanizer.js';
 import { localTime } from '../services/geo.js';
+import { featureOn, business, effectiveCatalog, tone as toneConfig, goals as goalConfig, escalation as escalationConfig } from '../services/profile.js';
 
 const P = config.owner.profile || {};
 const OWNER = P.owner || {};
@@ -54,6 +55,92 @@ const MOOD_HINT = {
 };
 
 // ── self-knowledge: the owner's business ───────────────────
+// ── the universal business profile (Phase 1, opt-in) ───────
+// Only added to the prompt when features.businessProfile is on, so every
+// pre-existing tenant gets byte-identical prompts until they opt in.
+function businessKnowledge() {
+  if (!featureOn('businessProfile')) return '';
+  const b = business();
+  const lines = [];
+
+  const facts = [];
+  if (b.type) facts.push(`type: ${b.type}`);
+  if (b.city) facts.push(`city: ${b.city}`);
+  if (b.address) facts.push(`address: ${b.address}`);
+  if (b.languages?.length) facts.push(`languages spoken: ${b.languages.join(', ')}`);
+  if (facts.length) {
+    lines.push('── THE BUSINESS (match it, don’t recite it) ──');
+    lines.push(`${b.name || OWNER.brand || 'The business'} — ${facts.join(' · ')}.`);
+  }
+
+  const hours = b.hours;
+  if (hours && typeof hours === 'object' && !Array.isArray(hours)) {
+    const text = Object.entries(hours)
+      .map(([day, value]) => `${day}: ${value}`)
+      .join(' · ');
+    if (text) lines.push(`Opening hours: ${text}.`);
+  } else if (typeof hours === 'string' && hours.trim()) {
+    lines.push(`Opening hours: ${hours.trim()}.`);
+  }
+
+  if (b.closed && lines.length) lines.push(`Closed: ${b.closed}.`);
+  if (b.delivery) lines.push(`Delivery / pickup: ${b.delivery}`);
+  if (b.about) lines.push(b.about);
+
+  const usable = (v) => v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length);
+  const realKeys = (obj) =>
+    Object.entries(obj).filter(([k, v]) => !k.startsWith('//') && !k.startsWith('_') && usable(v));
+
+  const t = toneConfig();
+  const toneBits = realKeys(t)
+    .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`);
+  if (toneBits.length) lines.push(`House style — ${toneBits.join('; ')}.`);
+
+  const g = goalConfig();
+  const goalBits = realKeys(g).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`);
+  if (goalBits.length) {
+    lines.push(`What the owner wants from these chats — ${goalBits.join('; ')}. Steer gently toward it without being pushy.`);
+  }
+
+  if (featureOn('catalog')) {
+    const items = effectiveCatalog();
+    if (items.length) {
+      lines.push('');
+      lines.push('── CATALOG (the only prices and stock you may quote) ──');
+      for (const item of items.slice(0, 40)) {
+        const price =
+          item.min === null
+            ? 'price on request'
+            : item.min === item.max
+              ? `${item.min.toLocaleString()}`
+              : `${item.min.toLocaleString()}–${item.max.toLocaleString()}`;
+        const bits = [`${item.name}: ${price} ${item.currency || MONEY.base || 'PKR'}`];
+        if (item.duration) bits.push(`${item.duration} min`);
+        if (item.stock !== null) bits.push(item.stock > 0 ? `${item.stock} left` : 'out of stock');
+        if (item.description) bits.push(item.description);
+        lines.push(`• ${bits.join(' · ')}`);
+      }
+      lines.push(
+        'Quote these numbers exactly — no rounding up, no inventing items. If something is not on the list, say you will confirm with the owner instead of guessing a price. If an item is out of stock, say so and offer the closest thing that is available.'
+      );
+    }
+  }
+
+  const esc = escalationConfig();
+  if (esc.number || esc.whatsapp || esc.email || esc.when) {
+    lines.push('');
+    lines.push('── ESCALATION ──');
+    if (esc.when) lines.push(`Hand this to a human when: ${esc.when}`);
+    if (esc.topics?.length) lines.push(`Always escalate: ${esc.topics.join(', ')}.`);
+    const contact = [esc.number, esc.whatsapp && `WhatsApp ${esc.whatsapp}`, esc.email && `email ${esc.email}`]
+      .filter(Boolean)
+      .join(' · ');
+    if (contact) lines.push(`Human contact: ${contact}. Only share it when they need a person or ask for it.`);
+  }
+
+  return lines.join('\n');
+}
+
 function ownerKnowledge() {
   const lines = [];
   const services = OWNER.services || [];
@@ -172,6 +259,12 @@ export function systemPrompt({
 
   parts.push('');
   parts.push(ownerKnowledge());
+
+  const businessBlock = businessKnowledge();
+  if (businessBlock) {
+    parts.push('');
+    parts.push(businessBlock);
+  }
 
   if (dossier?.category === 'friend') {
     parts.push('');

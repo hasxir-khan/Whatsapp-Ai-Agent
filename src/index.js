@@ -43,7 +43,7 @@ function banner() {
   const line = '─'.repeat(58);
   console.log(`
 ┌${line}┐
-│  🤖  WhatsApp Self-Knowledge Assistant  v9                │
+│  🤖  WhatsApp Self-Knowledge Assistant  v9.1              │
 │  ${config.bot.name.padEnd(54).slice(0, 54)}  │
 └${line}┘
 ${describeConfig()}

@@ -11,6 +11,9 @@
 //
 // Usage:
 //   node scripts/tenant.js new "Ayesha Designs" --number 923001112233
+//   node scripts/tenant.js new "Burger Point" --number 923001112233 --template restaurant
+//   node scripts/tenant.js setup burger-point            # interactive business wizard
+//   node scripts/tenant.js learn burger-point ./menu.pdf # feed it the real documents
 //   node scripts/tenant.js list
 //   node scripts/tenant.js keys ayesha-designs GROQ_API_KEY=gsk_...
 //   node scripts/tenant.js show ayesha-designs
@@ -19,7 +22,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { buildProfileFromTemplate, isTemplate, listTemplates, TEMPLATE_IDS } from '../src/services/templates.js';
+import { runSetup } from './wizard.js';
 
 const ROOT = process.cwd();
 const TENANTS = path.join(ROOT, 'tenants');
@@ -131,6 +136,10 @@ function cmdNew(args, flags) {
   }
   if (readTenant(slug)) die(`Tenant "${slug}" already exists.`);
 
+  if (flags.template && !isTemplate(flags.template)) {
+    die(`Unknown template "${flags.template}". Available: ${TEMPLATE_IDS.join(', ')}`);
+  }
+
   const dir = tenantDir(slug);
   for (const sub of ['config', 'data', 'sessions', 'tmp']) {
     fs.mkdirSync(path.join(dir, sub), { recursive: true });
@@ -139,6 +148,14 @@ function cmdNew(args, flags) {
   const port = Number(flags.port) || nextPort();
   const brand = flags.brand || name;
   const timezone = flags.timezone || 'Asia/Karachi';
+
+  let template = null;
+  if (flags.template) {
+    if (!isTemplate(flags.template)) {
+      die(`Unknown template "${flags.template}". Available: ${TEMPLATE_IDS.join(', ')}`);
+    }
+    template = flags.template;
+  }
 
   const tenant = {
     slug,
@@ -177,19 +194,36 @@ PORT=${port}
 `
   );
 
-  fs.writeFileSync(
-    path.join(dir, 'config', 'owner.json'),
-    `${JSON.stringify(starterProfile({ name, brand, number, timezone }), null, 2)}\n`
-  );
+  const profile = template
+    ? buildProfileFromTemplate(template, {
+        name,
+        brand,
+        number,
+        timezone,
+        city: flags.city || '',
+        currency: flags.currency || 'PKR',
+        languages: flags.languages
+          ? String(flags.languages).split(',').map((s) => s.trim()).filter(Boolean)
+          : undefined,
+        hours: flags.hours || '',
+      })
+    : starterProfile({ name, brand, number, timezone });
 
-  console.log(`\n${c.green('✔')} Tenant ${c.bold(slug)} created for ${c.bold(name)} (+${number})`);
+  fs.writeFileSync(path.join(dir, 'config', 'owner.json'), `${JSON.stringify(profile, null, 2)}\n`);
+
+  console.log(
+    `\n${c.green('✔')} Tenant ${c.bold(slug)} created for ${c.bold(name)} (+${number})` +
+      (template ? ` ${c.dim(`from the ${template} template`)}` : '')
+  );
   console.log(`
   ${c.bold('1.')} Add this user's API keys (free):
        ${c.dim('node scripts/tenant.js keys ' + slug + ' GROQ_API_KEY=gsk_...')}
        ${c.dim('node scripts/tenant.js keys ' + slug + ' GEMINI_API_KEY=AQ...')}
 
-  ${c.bold('2.')} Replace the starter services and prices in:
-       ${c.dim(path.join('tenants', slug, 'config', 'owner.json'))}
+  ${c.bold('2.')} Tell it about the business:
+       ${c.dim(`node scripts/tenant.js setup ${slug}`)}   ${c.dim('# 10 questions')}
+       ${c.dim(`node scripts/tenant.js learn ${slug} menu.pdf`)}   ${c.dim('# or feed it documents')}
+       ${c.dim(path.join('tenants', slug, 'config', 'owner.json'))}   ${c.dim('# or edit by hand')}
 
   ${c.bold('3.')} Start this user's bot and scan the QR:
        ${c.dim('node scripts/tenant.js show ' + slug + ' --start')}
@@ -367,6 +401,57 @@ function cmdRm(slug, flags) {
 const [, , command = 'help', ...rest] = process.argv;
 const flags = {};
 const positional = [];
+function cmdSetup(slug, flags) {
+  const t = readTenant(slug);
+  if (!t) die(`No tenant "${slug}". Create it first: node scripts/tenant.js new "Name" --number 923...`);
+
+  const dir = tenantDir(slug);
+  return runSetup({
+    dir,
+    tenant: { name: t.name, number: t.number, timezone: t.timezone || 'Asia/Karachi' },
+    flags,
+  }).then((result) => {
+    if (!result.saved) process.exit(1);
+  });
+}
+
+function cmdLearn(slug, target, flags) {
+  const t = readTenant(slug);
+  if (!t) die(`No tenant "${slug}". Try: node scripts/tenant.js list`);
+
+  const dir = tenantDir(slug);
+  const args = [path.join(ROOT, 'scripts', 'learn.js'), target];
+  if (flags.name) args.push('--name', String(flags.name));
+
+  const child = spawnSync(process.execPath, args, {
+    cwd: ROOT,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      TENANT: slug,
+      ENV_FILE: path.join(dir, '.env'),
+      CONFIG_DIR: path.join(dir, 'config'),
+      DATA_DIR: path.join(dir, 'data'),
+      SESSION_FOLDER: path.join(dir, 'sessions'),
+      TMP_DIR: path.join(dir, 'tmp'),
+      ENABLE_WEB: 'false',
+    },
+  });
+  process.exit(child.status || 0);
+}
+
+function cmdTemplates() {
+  const templates = listTemplates();
+  console.log(`\n${c.bold('Industry templates')}\n`);
+  for (const t of templates) {
+    console.log(`  ${t.emoji} ${c.bold(t.id.padEnd(12))} ${t.label}`);
+    console.log(`     ${c.dim(t.description)}`);
+    console.log(`     ${c.dim(`${t.items} example items · ${t.faqs} FAQs · good for ${t.goodFor}`)}`);
+  }
+  console.log(`\n  Use one: ${c.dim('node scripts/tenant.js new "My Business" --number 923001112233 --template restaurant')}`);
+  console.log(`  Or run the wizard: ${c.dim('node scripts/tenant.js setup <slug>')}\n`);
+}
+
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i];
   if (a.startsWith('--')) {
@@ -411,11 +496,36 @@ switch (command) {
     cmdRm(positional[0] || '', flags);
     break;
 
+  case 'setup':
+  case 'wizard': {
+    const slug = positional[0];
+    if (!slug) die('Usage: node scripts/tenant.js setup <slug> [--non-interactive --type salon --city Islamabad]');
+    cmdSetup(slug, flags);
+    break;
+  }
+
+  case 'learn':
+  case 'ingest': {
+    const slug = positional[0];
+    const target = positional[1];
+    if (!slug || !target) die('Usage: node scripts/tenant.js learn <slug> <file|url> [--name "Title"]');
+    cmdLearn(slug, target, flags);
+    break;
+  }
+
+  case 'templates':
+  case 'template':
+    cmdTemplates();
+    break;
+
   default:
     console.log(`
 ${c.bold('Multi-user manager')}
 
-  ${c.dim('node scripts/tenant.js new "Business Name" --number 923001112233 [--brand X] [--port 3001]')}
+  ${c.dim('node scripts/tenant.js new "Business Name" --number 923001112233 [--template restaurant] [--port 3001]')}
+  ${c.dim('node scripts/tenant.js setup <slug>')}          ${c.dim('# business wizard')}
+  ${c.dim('node scripts/tenant.js learn <slug> <file|url>')} ${c.dim('# knowledge base')}
+  ${c.dim('node scripts/tenant.js templates')}
   ${c.dim('node scripts/tenant.js list')}
   ${c.dim('node scripts/tenant.js show <slug> [--start]')}
   ${c.dim('node scripts/tenant.js keys <slug> [KEY=VALUE ...]')}

@@ -102,6 +102,47 @@ export function loadOwnerProfile() {
   return profile;
 }
 
+/**
+ * Runtime reload of the business profile.
+ *
+ * Modules like brain.js capture `profile.owner` at import time, so replacing
+ * the object would leave them pointing at stale data. This mutates the live
+ * objects in place instead: edit a price from WhatsApp, and the next reply
+ * already uses it.
+ */
+function mergeInPlace(target, source) {
+  for (const key of Object.keys(target)) {
+    if (!(key in source)) delete target[key];
+  }
+  for (const [key, value] of Object.entries(source)) {
+    const current = target[key];
+    const bothPlain =
+      current && value && typeof current === 'object' && typeof value === 'object' &&
+      !Array.isArray(current) && !Array.isArray(value);
+    if (bothPlain) mergeInPlace(current, value);
+    else target[key] = value;
+  }
+  return target;
+}
+
+export function reloadProfile() {
+  const fresh = loadOwnerProfile();
+  const target = config.owner?.profile;
+  if (!target) return fresh;
+  mergeInPlace(target, fresh);
+
+  config.owner.name = fresh.owner?.name || config.owner.name || 'Hashir';
+  config.owner.pushName = process.env.MY_PUSHNAME || config.owner.name;
+  if (config.bot) {
+    config.bot.name = fresh.bot?.name || `${config.owner.name}'s Assistant`;
+    config.bot.persona = fresh.bot?.persona || '';
+    config.bot.disclosure = fresh.bot?.disclosure;
+    config.bot.maxBubbles = toInt(process.env.MAX_BUBBLES, toInt(fresh.bot?.maxBubbles, 3));
+    config.bot.pretendHuman = toBool(process.env.PRETEND_HUMAN, fresh.bot?.pretendHuman ?? false);
+  }
+  return fresh;
+}
+
 // ── main config object ──────────────────────────────────────
 const ownerNumber = normalizePhone(process.env.MY_NUMBER || process.env.OWNER_NUMBER || DEFAULT_OWNER_NUMBER);
 const ownerProfile = loadOwnerProfile();

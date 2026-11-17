@@ -612,5 +612,66 @@
         "label": "Extra requirements"
       }
     ]
+  },
+  "business": {
+    "//": "Universal profile (Phase 1). Used only when features.businessProfile is true. Fill it from scripts/tenant.js setup, a template, or .set from WhatsApp.",
+    "name": "",
+    "type": "",
+    "city": "",
+    "address": "",
+    "languages": ["en"],
+    "hours": "",
+    "closed": "",
+    "delivery": "",
+    "about": ""
+  },
+
+  "catalog": {
+    "//": "The price list the bot may quote. Each item: { name, kind: service|product, price OR min/max, duration (minutes), stock, keywords }.",
+    "items": []
+  },
+
+  "tone": {
+    "//": "Free-form house style. Example: { style, emoji, address, avoid }.",
+    "style": "",
+    "emoji": "",
+    "address": "",
+    "avoid": []
+  },
+
+  "goals": {
+    "//": "What the bot should push these chats toward.",
+    "primary": "",
+    "secondary": [],
+    "target": ""
+  },
+
+  "escalation": {
+    "//": "When and how to hand over to a human.",
+    "when": "",
+    "number": "",
+    "whatsapp": "",
+    "email": "",
+    "topics": []
+  },
+
+  "features": {
+    "//": "Every new capability is opt-in and false by default. See README > Feature flags.",
+    "businessProfile": false,
+    "catalog": false,
+    "knowledge": false,
+    "ownerEditing": false,
+    "toolCalling": false,
+    "rag": false,
+    "manager": false,
+    "cloudApi": false,
+    "booking": false,
+    "followUps": false,
+    "closer": false,
+    "reactivation": false,
+    "reviews": false,
+    "content": false,
+    "analyst": false,
+    "injectionGuard": false
   }
 }

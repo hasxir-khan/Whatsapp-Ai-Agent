@@ -25,6 +25,11 @@ import { sttEnabled } from '../services/transcription.js';
 import { hasFfmpeg } from '../services/ffmpeg.js';
 import { pendingFollowUps } from '../utils/db.js';
 import { outboxStatus } from '../services/outbox.js';
+import {
+  featureOn, business, effectiveCatalog, effectiveServices, faqList, tone as toneConfig,
+  goals as goalConfig, escalation as escalationConfig, setPath, addService, addFaq, coerceValue,
+  FEATURE_KEYS,
+} from '../services/profile.js';
 
 const HELP = `*Bot commands*
 
@@ -50,6 +55,12 @@ const HELP = `*Bot commands*
 .export – JSON backup of leads + chats
 .sync – push leads to Google Sheets
 .id – current chat id
+.profile – business profile summary
+.services – price list the bot quotes from
+.addservice Name | 1500 – add to the price list
+.addfaq Question | Answer – add an FAQ
+.set business.hours Daily 12:00–23:00 – edit any setting
+.features – which capabilities are on
 .ping`;
 
 function parseTarget(raw = '') {
@@ -94,7 +105,7 @@ const COMMAND_PERMISSION = {
   team: 'chats',
 };
 
-const OWNER_ONLY = new Set(['export', 'sync', 'ai', 'voice', 'block', 'unblock']);
+const OWNER_ONLY = new Set(['export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq', 'features']);
 
 /**
  * @returns {Promise<{handled:boolean, reply?:string, voice?:object}>}
@@ -141,6 +152,154 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         handled: true,
         reply: `Chat: ${chatJid}\nNumber: ${chatJid.split('@')[0]}\nOwner: +${config.owner.number}`,
       };
+
+    case 'profile': {
+      const b = business();
+      const items = effectiveCatalog();
+      const faqs = faqList();
+      const on = Object.entries(config.owner.profile?.features || {})
+        .filter(([k, v]) => !k.startsWith('//') && v === true)
+        .map(([k]) => k);
+      const lines = [`*${b.name || config.owner.name}*${b.type ? ` · ${b.type}` : ''}`];
+      if (b.city) lines.push(`City: ${b.city}`);
+      if (b.hours) lines.push(`Hours: ${typeof b.hours === 'string' ? b.hours : Object.entries(b.hours).map(([d, h]) => `${d} ${h}`).join(', ')}`);
+      if (b.languages?.length) lines.push(`Languages: ${b.languages.join(', ')}`);
+      lines.push(`Price list: ${items.length} items · FAQs: ${faqs.length}`);
+      const esc = escalationConfig();
+      if (esc.number || esc.when) lines.push(`Escalates to: ${esc.number || '—'}${esc.when ? ` (${esc.when})` : ''}`);
+      const t = toneConfig();
+      if (t.style) lines.push(`Tone: ${t.style}`);
+      const g = goalConfig();
+      if (g.primary) lines.push(`Goal: ${g.primary}`);
+      lines.push(`Features on: ${on.length ? on.join(', ') : 'none'}`);
+      lines.push('');
+      lines.push('Edit: .set <path> <value> · .addservice · .addfaq');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'services':
+    case 'catalog': {
+      const items = effectiveCatalog();
+      if (!items.length) {
+        return {
+          handled: true,
+          reply: 'No price list yet.\nAdd one with: .addservice Logo design | 15000\nor run the wizard: node scripts/tenant.js setup <slug>',
+        };
+      }
+      const cur = config.owner.profile?.currency?.base || 'PKR';
+      const lines = [`*Price list* (${items.length})`];
+      for (const item of items.slice(0, 40)) {
+        const price =
+          item.min === null
+            ? 'no price'
+            : item.min === item.max
+              ? `${item.min.toLocaleString()} ${cur}`
+              : `${item.min.toLocaleString()}–${item.max.toLocaleString()} ${cur}`;
+        const bits = [`• ${item.name} — ${price}`];
+        if (item.duration) bits.push(`${item.duration} min`);
+        if (item.stock !== null) bits.push(item.stock > 0 ? `${item.stock} left` : 'out of stock');
+        lines.push(bits.join(' · '));
+      }
+      const legacy = effectiveServices().filter((s) => !s.fromCatalog).length;
+      if (legacy) lines.push(`\n(${legacy} older services from owner.services still work too)`);
+      lines.push('\nAdd: .addservice Name | price');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'addservice': {
+      if (!featureOn('ownerEditing')) {
+        return {
+          handled: true,
+          reply: 'Owner editing is off. Turn it on with:\n.set features.ownerEditing true',
+        };
+      }
+      const [namePart, pricePart, ...rest] = arg.split('|').map((v) => v.trim());
+      if (!namePart || !pricePart) {
+        return {
+          handled: true,
+          reply: 'Usage: .addservice Logo design | 15000\nor a range: .addservice Website | 60000-180000',
+        };
+      }
+      try {
+        let entry;
+        const range = pricePart.match(/^(\d[\d,.]*)\s*[-–to]+\s*(\d[\d,.]*)$/i);
+        if (range) {
+          entry = addService({
+            name: namePart,
+            min: Number(range[1].replace(/,/g, '')),
+            max: Number(range[2].replace(/,/g, '')),
+            description: rest.join(' | ') || undefined,
+          });
+        } else {
+          entry = addService({
+            name: namePart,
+            price: Number(pricePart.replace(/[^\d.]/g, '')),
+            description: rest.join(' | ') || undefined,
+          });
+        }
+        const cur = config.owner.profile?.currency?.base || 'PKR';
+        const priceText = entry.min === entry.max ? `${entry.min.toLocaleString()} ${cur}` : `${entry.min.toLocaleString()}–${entry.max.toLocaleString()} ${cur}`;
+        return {
+          handled: true,
+          reply: `✔ Added *${entry.name}* — ${priceText}\n\nThe bot quotes this from the next message. See it with .services`,
+        };
+      } catch (err) {
+        return { handled: true, reply: `Couldn't add that: ${err.message}` };
+      }
+    }
+
+    case 'addfaq': {
+      if (!featureOn('ownerEditing')) {
+        return { handled: true, reply: 'Owner editing is off. Turn it on with:\n.set features.ownerEditing true' };
+      }
+      const [q, ...rest] = arg.split('|');
+      const a = rest.join('|').trim();
+      try {
+        const added = addFaq(q, a);
+        return { handled: true, reply: `✔ Saved FAQ (${added.count} total)\n\nQ: ${added.q}\nA: ${added.a}` };
+      } catch (err) {
+        return { handled: true, reply: `Couldn't save that: ${err.message}\n\nUsage: .addfaq Do you deliver? | Yes, all over Islamabad` };
+      }
+    }
+
+    case 'set': {
+      const match = arg.match(/^(\S+)\s+([\s\S]+)$/);
+      // Turning editing on must be possible while editing is still off,
+      // so feature flags can always be set by the owner.
+      if (!featureOn('ownerEditing') && !(match && match[1].startsWith('features.'))) {
+        return { handled: true, reply: 'Owner editing is off. Turn it on with:\n.set features.ownerEditing true' };
+      }
+      if (!match) {
+        return {
+          handled: true,
+          reply:
+            'Usage: .set <path> <value>\n\n' +
+            'Examples:\n.set business.hours Daily 12:00–23:00\n.set business.city Islamabad\n' +
+            '.set tone.style warm and quick\n.set goals.primary take the booking\n.set features.catalog true',
+        };
+      }
+      const [, pathArg, rawValue] = match;
+      const value = coerceValue(rawValue);
+      try {
+        setPath(pathArg, value);
+        return { handled: true, reply: `✔ Saved ${pathArg} = ${typeof value === 'string' ? value : JSON.stringify(value)}\nLive now — no restart needed.` };
+      } catch (err) {
+        return { handled: true, reply: `Couldn't set that: ${err.message}` };
+      }
+    }
+
+    case 'features': {
+      const current = config.owner.profile?.features || {};
+      const on = FEATURE_KEYS.filter((k) => current[k] === true);
+      const off = FEATURE_KEYS.filter((k) => current[k] !== true);
+      return {
+        handled: true,
+        reply:
+          `*Features on (${on.length}):*\n${on.length ? on.map((k) => `• ${k}`).join('\n') : '—'}\n\n` +
+          `*Off (${off.length}):* ${off.join(', ')}\n\n` +
+          'Turn one on: .set features.<name> true',
+      };
+    }
 
     case 'status':
     case 'stats': {

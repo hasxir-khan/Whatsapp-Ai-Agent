@@ -6,11 +6,20 @@
 
 import { config } from '../config/env.js';
 import { priceFor, lookupNumber, formatMoney } from '../services/geo.js';
+import { effectiveServices, effectiveAddons, maxDiscountPercent } from '../services/profile.js';
 
-const profile = config.owner.profile || {};
-const SERVICES = profile.owner?.services || [];
-const ADDONS = profile.owner?.addons || [];
-const MAX_DISCOUNT = profile.owner?.maxDiscountPercent ?? 10;
+// Resolved per call, not at import: the owner can add a service from WhatsApp
+// and the next quote must see it. With no catalog configured this returns
+// exactly owner.services / owner.addons, so behaviour is unchanged.
+const SERVICES = () => {
+  const list = effectiveServices();
+  return Array.isArray(list) ? list : [];
+};
+const ADDONS = () => {
+  const list = effectiveAddons();
+  return Array.isArray(list) ? list : [];
+};
+const MAX_DISCOUNT = () => maxDiscountPercent();
 
 const slug = (s) => String(s || '').toLowerCase();
 
@@ -38,7 +47,7 @@ function keywordScore(blob, keywords = []) {
 function pickService(blob) {
   let best = null;
   let bestScore = 0;
-  for (const service of SERVICES) {
+  for (const service of SERVICES()) {
     const score = keywordScore(blob, service.keywords || []);
     if (score > bestScore) {
       best = service;
@@ -55,13 +64,14 @@ function pickService(blob) {
       : /\becommerce|shop|store|product/.test(blob)
         ? 'ecommerce'
         : 'business_site';
-  const fallback = SERVICES.find((s) => s.id === fallbackId) || SERVICES[0];
+  const list = SERVICES();
+  const fallback = list.find((s) => s.id === fallbackId) || list[0];
   return { service: fallback, score: 0, guessed: true };
 }
 
 function pickAddons(blob) {
   const picked = [];
-  for (const addon of ADDONS) {
+  for (const addon of ADDONS()) {
     const score = keywordScore(blob, addon.keywords || []);
     if (score > 0) picked.push({ ...addon, score });
   }
@@ -138,7 +148,7 @@ export function parseBudget(text) {
             ? 'SAR'
             : 'PKR';
 
-  const fx = profile.currency?.fxToPkr || { USD: 280, GBP: 355, EUR: 305, AED: 76, SAR: 75, PKR: 1 };
+  const fx = config.owner.profile?.currency?.fxToPkr || { USD: 280, GBP: 355, EUR: 305, AED: 76, SAR: 75, PKR: 1 };
   const rate = fx[currency] || 1;
   return { text: String(text), amount: Math.round(n * rate), currency, rawAmount: Math.round(n) };
 }
@@ -200,7 +210,7 @@ export function buildQuote(fields = {}, number = '') {
 
   // Timeline — services store "2–4" (days) or "3–7 weeks"
   const rawDays = String(service?.days || '1–2 weeks');
-  const serviceDays = /day|week|month/i.test(rawDays) ? rawDays : `${rawDays} days`;
+  const serviceDays = /day|week|month|hour|min/i.test(rawDays) ? rawDays : `${rawDays} days`;
   const addonDays = addons.length;
   const timeline =
     addonDays <= 2 ? serviceDays : `${serviceDays} (a little longer with the extra features)`;
@@ -230,7 +240,7 @@ export function buildQuote(fields = {}, number = '') {
     scopeNote,
     budget,
     country: client.country,
-    ownerCurrency: profile.currency?.base || 'PKR',
+    ownerCurrency: config.owner.profile?.currency?.base || 'PKR',
   };
 }
 
@@ -290,13 +300,13 @@ export function formatQuote(quote, fields = {}) {
 /** Short "starting from" line for early price questions. */
 export function startingPriceLine(number, fields = {}) {
   const quote = buildQuote(fields, number);
-  const service = SERVICES.find((s) => s.id === quote.serviceId);
+  const service = SERVICES().find((s) => s.id === quote.serviceId);
   const from = priceFor(number, Math.round((service?.min || 15000) * 0.9));
   return `${quote.serviceName} usually starts around ${from.text}`;
 }
 
 export function priceBook() {
-  return { services: SERVICES, addons: ADDONS, maxDiscountPercent: MAX_DISCOUNT };
+  return { services: SERVICES(), addons: ADDONS(), maxDiscountPercent: MAX_DISCOUNT() };
 }
 
 export function formatMoneyPkr(n) {

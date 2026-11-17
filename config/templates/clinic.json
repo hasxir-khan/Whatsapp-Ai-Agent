@@ -1,0 +1,109 @@
+{
+  "_template": {
+    "id": "clinic",
+    "label": "Clinic / Doctor",
+    "emoji": "🩺",
+    "description": "Appointments, consultation fees, services, directions.",
+    "goodFor": "doctors, dentists, physiotherapists, labs"
+  },
+  "business": {
+    "name": "",
+    "type": "Clinic",
+    "city": "",
+    "languages": [
+      "en",
+      "ur"
+    ],
+    "hours": "Mon–Sat 10:00–20:00, Sunday closed",
+    "closed": "Sunday",
+    "address": "",
+    "about": "Registered practice. Walk-ins accepted but appointments come first."
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "General consultation",
+        "kind": "service",
+        "price": 2000,
+        "duration": 20
+      },
+      {
+        "name": "Follow-up visit",
+        "kind": "service",
+        "price": 1000,
+        "duration": 15
+      },
+      {
+        "name": "Dental scaling & polish",
+        "kind": "service",
+        "price": 6000,
+        "duration": 45
+      },
+      {
+        "name": "Physiotherapy session",
+        "kind": "service",
+        "price": 3500,
+        "duration": 45
+      },
+      {
+        "name": "Basic lab panel (CBC + LFT)",
+        "kind": "product",
+        "price": 4500,
+        "duration": 15
+      }
+    ]
+  },
+  "policies": {
+    "appointment": "Appointments are 20 minutes; arrive 10 minutes early.",
+    "payment": "Cash or card at reception.",
+    "records": "Lab reports are shared on WhatsApp within 24 hours.",
+    "emergency": "For emergencies call 1122 immediately — do not wait for a reply here."
+  },
+  "faqs": [
+    {
+      "q": "Do I need an appointment?",
+      "a": "Walk-ins are seen, but booked patients go first — tell me a day and time and I'll book you."
+    },
+    {
+      "q": "How much is a consultation?",
+      "a": "2,000 PKR, including a follow-up within 7 days."
+    },
+    {
+      "q": "Where are you located?",
+      "a": "Share your area and I'll send the exact location pin."
+    }
+  ],
+  "tone": {
+    "style": "calm, clear and reassuring",
+    "emoji": "none",
+    "address": "sir/madam",
+    "avoid": [
+      "diagnosis",
+      "guaranteed cure claims",
+      "medical advice beyond 'come in for a check'"
+    ]
+  },
+  "goals": {
+    "primary": "book an appointment",
+    "secondary": [
+      "share the fee up front",
+      "send the location"
+    ],
+    "target": "appointment confirmed with day and time"
+  },
+  "escalation": {
+    "when": "any emergency, severe pain, or a request for medical advice beyond booking",
+    "topics": [
+      "emergency",
+      "chest pain",
+      "bleeding",
+      "prescription change"
+    ]
+  },
+  "features": {
+    "businessProfile": true,
+    "catalog": true,
+    "knowledge": true,
+    "ownerEditing": true
+  }
+}

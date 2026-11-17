@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config, describeConfig, teamMembers } from '../src/config/env.js';
 import { GEMINI_BASE, geminiHeadersWith, authHeadersFor, isKeyError, explainGeminiError, maskKey, keyFormat } from '../src/utils/gemini.js';
+import { validateProfile, FEATURE_KEYS, effectiveCatalog, business } from '../src/services/profile.js';
+import { listTemplates } from '../src/services/templates.js';
 
 const ok = (m) => console.log(`  ✅ ${m}`);
 const warn = (m) => console.log(`  ⚠️  ${m}`);
@@ -75,6 +77,68 @@ async function timedFetch(url, options = {}, ms = 8000) {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function checkBusiness() {
+  section('Business profile');
+  const profile = config.owner.profile || {};
+  const b = business();
+  const featureFlags = Object.entries(profile.features || {})
+    .filter(([k, v]) => !k.startsWith('//') && v === true)
+    .map(([k]) => k);
+
+  if (b.name) ok(`Business: ${b.name}${b.type ? ` · ${b.type}` : ''}${b.city ? ` · ${b.city}` : ''}`);
+  else info('No business block yet — the bot still works, it just knows less.');
+
+  const items = effectiveCatalog();
+  if (items.length) {
+    ok(`Price list: ${items.length} items (${items.filter((i) => i.min !== null).length} priced)`);
+  } else {
+    info('No catalog items — quotes come from owner.services only.');
+  }
+
+  if (featureFlags.length) {
+    ok(`Features on: ${featureFlags.join(', ')}`);
+    const unknown = featureFlags.filter((f) => !FEATURE_KEYS.includes(f));
+    if (unknown.length) {
+      warn(`Unknown flags (ignored): ${unknown.join(', ')}`);
+      notes.push(`Typo in features? Known flags: ${FEATURE_KEYS.join(', ')}`);
+    }
+  } else {
+    info('All new features are off (defaults keep the original behaviour).');
+  }
+
+  const { errors, warnings } = validateProfile(profile);
+  for (const w of warnings.slice(0, 6)) info(`note: ${w}`);
+  for (const e of errors.slice(0, 8)) {
+    bad(e);
+    problems.push(`Business profile: ${e}`);
+  }
+  if (!errors.length) ok('Profile structure is valid');
+
+  // industry templates must all load
+  const templates = listTemplates();
+  if (templates.length) {
+    ok(`${templates.length} industry templates available (${templates.map((t) => t.id).join(', ')})`);
+  } else {
+    warn('No templates found in config/templates');
+  }
+
+  // learned documents
+  const dbFile = path.join(config.paths.data, 'assistant.db');
+  if (fs.existsSync(dbFile)) {
+    try {
+      const { initDB, knowledgeStats } = await import('../src/utils/db.js');
+      await initDB({ file: dbFile });
+      const stats = knowledgeStats();
+      if (stats.sources) ok(`Knowledge base: ${stats.sources} documents · ${stats.chunks} chunks`);
+      else info('Knowledge base is empty — add documents with: node scripts/tenant.js learn <slug> <file|url>');
+    } catch (err) {
+      warn(`Could not read the knowledge base: ${err.message}`);
+    }
+  } else {
+    info('No database yet — it is created on first start.');
   }
 }
 
@@ -548,6 +612,7 @@ async function main() {
   if (want('runtime')) await checkNode();
   if (want('files')) await checkFiles();
   if (want('identity', 'owner')) await checkOwner();
+  if (want('business', 'profile', 'catalog', 'features')) await checkBusiness();
   if (want('groq')) await checkGroq();
   if (want('gemini', 'google')) await checkGemini();
   if (want('openrouter')) await checkOpenRouter();

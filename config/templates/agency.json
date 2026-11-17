@@ -1,0 +1,115 @@
+{
+  "_template": {
+    "id": "agency",
+    "label": "Agency / Freelancer",
+    "emoji": "💼",
+    "description": "Project ranges, process, portfolio, retainers — the current HasDevs shape.",
+    "goodFor": "developers, designers, marketers, consultants, studios"
+  },
+  "business": {
+    "name": "",
+    "type": "Agency",
+    "city": "",
+    "languages": [
+      "en",
+      "ur"
+    ],
+    "hours": "Mon–Sat 10:00–19:00",
+    "about": "Small senior team. We take a limited number of projects at a time."
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "Business website",
+        "kind": "service",
+        "min": 60000,
+        "max": 180000,
+        "days": "10–21",
+        "description": "design, build, SEO basics, contact form"
+      },
+      {
+        "name": "E-commerce store",
+        "kind": "service",
+        "min": 120000,
+        "max": 350000,
+        "days": "21–35",
+        "description": "catalogue, checkout, payment gateway, admin"
+      },
+      {
+        "name": "Mobile app",
+        "kind": "service",
+        "min": 250000,
+        "max": 700000,
+        "days": "45–75"
+      },
+      {
+        "name": "Brand identity",
+        "kind": "service",
+        "min": 40000,
+        "max": 120000,
+        "days": "7–14"
+      },
+      {
+        "name": "Monthly retainer",
+        "kind": "service",
+        "min": 40000,
+        "max": 120000,
+        "days": "ongoing",
+        "description": "maintenance, small changes, reporting"
+      }
+    ]
+  },
+  "policies": {
+    "revisions": "Two revision rounds per deliverable.",
+    "payment": "50% to start, 50% on delivery.",
+    "ownership": "You own the code and accounts after final payment.",
+    "support": "Two weeks of free bug fixes; new features are quoted separately.",
+    "timeline": "Timelines start after the advance and after content is received."
+  },
+  "faqs": [
+    {
+      "q": "How much does a website cost?",
+      "a": "Most business sites land between 60,000 and 180,000 PKR depending on pages and features."
+    },
+    {
+      "q": "How long does it take?",
+      "a": "10–21 days for a business site, longer for stores and apps."
+    },
+    {
+      "q": "What do you need from me to start?",
+      "a": "Your logo, content and a reference site you like — then we begin."
+    }
+  ],
+  "tone": {
+    "style": "confident and human, no sales voice",
+    "emoji": "rare",
+    "address": "first name",
+    "avoid": [
+      "jargon",
+      "over-promising",
+      "'revolutionary'"
+    ]
+  },
+  "goals": {
+    "primary": "get to a scoped quote or a call",
+    "secondary": [
+      "qualify budget and timeline",
+      "collect references"
+    ],
+    "target": "quote sent with scope and timeline"
+  },
+  "escalation": {
+    "when": "legal/contract questions, or a project above 500,000 PKR",
+    "topics": [
+      "contract",
+      "NDA",
+      "enterprise"
+    ]
+  },
+  "features": {
+    "businessProfile": true,
+    "catalog": true,
+    "knowledge": true,
+    "ownerEditing": true
+  }
+}

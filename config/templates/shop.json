@@ -1,0 +1,109 @@
+{
+  "_template": {
+    "id": "shop",
+    "label": "Shop / e-commerce",
+    "emoji": "🛍️",
+    "description": "Products, sizes, stock, delivery and order taking.",
+    "goodFor": "clothing, electronics, cosmetics, any retail store"
+  },
+  "business": {
+    "name": "",
+    "type": "Shop",
+    "city": "",
+    "languages": [
+      "en",
+      "ur"
+    ],
+    "hours": "Mon–Sat 11:00–21:00",
+    "delivery": "Nationwide courier, 2–4 days, 200 PKR. Free over 5,000 PKR.",
+    "about": "Original products with a 7-day exchange policy."
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "Lawn 3-piece suit",
+        "kind": "product",
+        "price": 4500,
+        "stock": 12,
+        "description": "unstitched, summer collection"
+      },
+      {
+        "name": "Cotton kurta",
+        "kind": "product",
+        "price": 2500,
+        "stock": 25,
+        "description": "sizes S–XL"
+      },
+      {
+        "name": "Pashmina shawl",
+        "kind": "product",
+        "price": 3200,
+        "stock": 6
+      },
+      {
+        "name": "Handbag — leather",
+        "kind": "product",
+        "price": 6500,
+        "stock": 3
+      },
+      {
+        "name": "Gift wrapping",
+        "kind": "service",
+        "price": 200
+      }
+    ]
+  },
+  "policies": {
+    "exchange": "7-day exchange with the receipt, tags intact.",
+    "returns": "Sale items are final — no returns.",
+    "delivery": "2–4 working days nationwide; 200 PKR, free over 5,000.",
+    "payment": "Cash on delivery, bank transfer, or JazzCash/Easypaisa."
+  },
+  "faqs": [
+    {
+      "q": "Do you deliver outside the city?",
+      "a": "Yes, nationwide in 2–4 days for 200 PKR — free over 5,000."
+    },
+    {
+      "q": "Can I exchange?",
+      "a": "7 days with the receipt and tags intact. Sale items are final."
+    },
+    {
+      "q": "Is cash on delivery available?",
+      "a": "Yes, COD nationwide."
+    }
+  ],
+  "tone": {
+    "style": "helpful and concise, like a good shop assistant",
+    "emoji": "light",
+    "address": "aap / sir / madam",
+    "avoid": [
+      "fake urgency",
+      "'last piece' unless it's true"
+    ]
+  },
+  "goals": {
+    "primary": "close the order",
+    "secondary": [
+      "confirm size and colour",
+      "offer gift wrapping",
+      "share the delivery time"
+    ],
+    "target": "order placed with address and payment method"
+  },
+  "escalation": {
+    "when": "damaged item, refund, or a bulk/wholesale enquiry",
+    "topics": [
+      "refund",
+      "damaged",
+      "wholesale",
+      "bulk order"
+    ]
+  },
+  "features": {
+    "businessProfile": true,
+    "catalog": true,
+    "knowledge": true,
+    "ownerEditing": true
+  }
+}
