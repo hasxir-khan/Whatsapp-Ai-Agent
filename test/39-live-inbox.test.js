@@ -50,6 +50,7 @@ const db = await import('../src/utils/db.js');
 const profile = await import('../src/services/profile.js');
 const L = await import('../src/services/liveInbox.js');
 const { handleInboxRoute, inboxPage, authorised } = await import('../src/server.js');
+const { handleDemoRoute } = await import('../src/server.js');
 const { registerTransport, clearTransports } = await import('../src/transport/index.js');
 const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
 
@@ -373,4 +374,58 @@ test('a message with no text still has a preview the owner can act on', () => {
   const row = L.inboxChats().find((c) => c.number === '923222222222');
   assert.equal(row.preview, '[voice note]');
   assert.equal(row.unread, 1);
+});
+
+// ── the zero-key demo endpoint ──────────────────────────────
+// This is the one route that can create messages out of nothing, so it must be
+// impossible to reach on a normal deployment.
+
+async function callDemo(opts) {
+  const { req, res } = fakeReqRes(opts);
+  const handled = await handleDemoRoute(req, res, new URL(opts.url || '/api/demo/message', 'http://localhost'));
+  return { handled, status: res.status, body: res.body ? safeJson(res.body) : null, raw: res.body };
+}
+
+test('the demo endpoint does not exist unless DEMO_MODE is set', async () => {
+  const { req, res } = fakeReqRes({ method: 'POST', url: '/api/demo/message', body: { text: 'hello' } });
+  const handled = await handleDemoRoute(req, res, new URL('/api/demo/message', 'http://localhost'));
+  assert.equal(handled, true);
+  assert.equal(res.status, 404);
+  assert.match(String(res.body), /not_a_demo/);
+});
+
+test('in demo mode it needs a body, a POST and — when set — the token', async () => {
+  process.env.DEMO_MODE = '1';
+  const before = env.config.server.token;
+  try {
+    const empty = await callDemo({ method: 'POST', body: { text: '  ' } });
+    assert.equal(empty.status, 400);
+
+    const wrongMethod = await callDemo({ method: 'GET' });
+    assert.equal(wrongMethod.status, 405);
+
+    env.config.server.token = 'sekrit';
+    const denied = await callDemo({ method: 'POST', body: { text: 'hi' } });
+    assert.equal(denied.status, 401);
+
+    // No transport registered in this test process → honest 503, not a 500.
+    clearTransports();
+    const noTransport = await callDemo({ method: 'POST', url: '/api/demo/message?token=sekrit', body: { text: 'hi' } });
+    assert.equal(noTransport.status, 503);
+    assert.equal(noTransport.body.error, 'no_transport');
+  } finally {
+    env.config.server.token = before;
+    delete process.env.DEMO_MODE;
+  }
+});
+
+test('the demo folder and the owner profile stay out of git', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const ignored = execFileSync('git', ['check-ignore', 'config/owner.json', 'demo/data/assistant.db', 'tenants/x/.env'], {
+    cwd: new URL('..', import.meta.url).pathname,
+    encoding: 'utf8',
+  });
+  assert.match(ignored, /config\/owner\.json/);
+  assert.match(ignored, /demo\/data/);
+  assert.match(ignored, /tenants/);
 });

@@ -4,6 +4,45 @@
 
 Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but built so **anyone can be a user**: their own API keys, their own business profile, their own WhatsApp number, their own clients — fully isolated from everyone else's.
 
+
+---
+
+## Try it in 60 seconds — no API key, no phone
+
+If you only want to see it work:
+
+```bash
+git clone https://github.com/hasxir-khan/Whatsapp-Ai-Agent.git
+cd Whatsapp-Ai-Agent
+npm install
+npm run demo
+```
+
+Open **http://localhost:3111/inbox** and type in the *“Demo — type as a customer”* bar at the top. The real pipeline answers — language detection, the booking agent, opt-outs, the inbox itself — with the AI swapped for a deterministic mock, so nothing costs a token and nobody needs a WhatsApp account.
+
+Here is a real exchange from that page, not a mock-up:
+
+```
+you (as the customer):  table for 4 kal shaam 7 baje
+assistant:              Done — Wed 18/11, 19:00. Booking #1. Reply "cancel" any time.
+
+you:                    stop
+assistant:              Understood — no more reminders from me. If you ever want them
+                        back, just say "start".
+```
+
+Both of those are deterministic code, not the model: a real slot was checked, a real row was written, and the opt-out is honoured from the next message. Try a free-form question ("delivery charges kya hain?") and you will see the *shape* of a reply from the mock — that is where a Groq or Gemini key changes the experience, and the demo is honest about it.
+
+Or from a terminal, without a browser:
+
+```bash
+npm run chat -- --mock     # talk to the brain in your terminal
+```
+
+Everything the demo writes lives in `./demo` and is gitignored; delete the folder and it is gone. When you want the real thing, the next section is the one you want — a WhatsApp number and a free Groq key.
+
+> Without keys the AI is a stub. Everything around it — catalogue, booking slots, follow-up timing, PDF invoices, the inbox, opt-outs — is the real code against a real database.
+
 ---
 
 ## Contents
@@ -1680,7 +1719,7 @@ scripts/
   backup.js  restore.js   one-file backup of DB + config
 src/web/inbox.html      the inbox page (one file, no dependencies)
 assets/fonts/           Noto Sans + Noto Naskh Arabic (bundled, subsetted, OFL)
-test/                   548 tests (node:test, no dependencies)
+test/                   551 tests (node:test, no dependencies)
 ```
 
 ---
@@ -1688,7 +1727,7 @@ test/                   548 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test                 # 548 tests, ~37s, no network, no keys
+npm test                 # 551 tests, ~37s, no network, no keys
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys

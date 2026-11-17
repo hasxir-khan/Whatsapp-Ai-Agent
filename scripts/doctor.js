@@ -62,7 +62,7 @@ async function checkOwner() {
   if (/^\d{10,15}$/.test(config.owner.number)) ok(`MY_NUMBER = +${config.owner.number}`);
   else {
     bad(`MY_NUMBER looks wrong: "${config.owner.number}"`);
-    problems.push('Set MY_NUMBER in international format, e.g. 923169896229.');
+    problems.push('Set MY_NUMBER in international format, e.g. 923001234567.');
   }
   const services = config.owner.profile?.owner?.services || [];
   info(`Owner: ${config.owner.name} · brand: ${config.owner.profile?.owner?.brand || '—'}`);

@@ -9,8 +9,16 @@ qr.png
 *.log
 .DS_Store
 
+# Each user's own business profile — name, number, payment details, friends.
+# The schema lives in config/owner.example.json; this file is private data.
+config/owner.json
+config/owner.local.json
+
 # each user's private workspace (keys, session, clients)
 tenants/
+
+# the zero-key demo writes here
+demo/
 qr-*.png
 
 # Backups are data, not code — keep them off the repo.

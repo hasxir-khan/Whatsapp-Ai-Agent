@@ -40,7 +40,11 @@ const toList = (v, def = []) =>
         .map((s) => s.trim())
         .filter(Boolean);
 
-/** Normalise any phone input ("+92 316 9896229", "0316-9896229") to 923169896229 */
+/**
+ * Normalise any phone input ("+92 316 9896229", "0316-9896229") to the digits
+ * only: 923169896229. The comment uses a made-up number; nothing in this repo
+ * should contain a real one.
+ */
 export function normalizePhone(input) {
   if (!input) return '';
   let digits = String(input).replace(/[^\d]/g, '');
@@ -49,7 +53,10 @@ export function normalizePhone(input) {
   return digits;
 }
 
-export const DEFAULT_OWNER_NUMBER = '923169896229';
+// A placeholder, deliberately: a fresh clone must not inherit anyone's number.
+// MY_NUMBER in .env (or `npm run tenant`) is the only real source, and doctor
+// says so plainly when it is missing.
+export const DEFAULT_OWNER_NUMBER = '920000000000';
 
 // ── owner / persona knowledge base ──────────────────────────
 function deepMerge(base, override) {

@@ -50,6 +50,11 @@
   <span class="spacer"></span>
   <span class="tag" id="counts">loading…</span>
 </header>
+<div id="demobar" style="display:none; padding:8px 14px; background:#1b2330; border-bottom:1px solid var(--line); gap:8px; align-items:center;">
+  <span style="font-size:12px; color:var(--dim); white-space:nowrap;">Demo — type as a customer:</span>
+  <input id="demotext" placeholder="e.g. Zinger burger ka rate kya hai?" style="flex:1; background:#101318; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:7px 10px; font:inherit;">
+  <button id="demosend" style="background:#222836; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:7px 12px; cursor:pointer;">Send as customer</button>
+</div>
 <main>
   <div id="list"><div id="empty">No conversations yet.</div></div>
   <div id="thread">
@@ -114,6 +119,9 @@
 
   async function loadChats() {
     const data = await api('/api/inbox');
+    if (data.demo) {
+      $('demobar').style.display = 'flex';
+    }
     chats = data.chats || [];
     renderList();
     $('counts').textContent = data.summary.awaitingUs
@@ -193,6 +201,26 @@
     const first = chats[0];
     if (first && window.innerWidth > 720) open(first.number);
   }).catch((e) => { $('note').textContent = 'Inbox unavailable: ' + e.message; });
+
+  async function sendAsCustomer() {
+    const box = $('demotext');
+    const text = box.value.trim();
+    if (!text) return;
+    box.value = '';
+    $('note').textContent = 'Sent as the customer — the bot is thinking…';
+    try {
+      const r = await fetch(q('/api/demo/message'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, number: current || undefined })
+      });
+      if (!r.ok) { $('note').textContent = 'Demo endpoint said: ' + r.status; return; }
+      $('note').textContent = 'Delivered. The reply appears here in a few seconds.';
+      setTimeout(tick, 1200);
+      setTimeout(tick, 3500);
+    } catch (e) { $('note').textContent = 'Demo failed: ' + e.message; }
+  }
+  $('demosend').onclick = sendAsCustomer;
+  $('demotext').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendAsCustomer(); } });
 
   pollTimer = setInterval(tick, 3000);
   window.addEventListener('beforeunload', () => clearInterval(pollTimer));

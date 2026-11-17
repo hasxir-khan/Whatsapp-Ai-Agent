@@ -489,6 +489,57 @@ function sendJson(res, status, body) {
 }
 
 /**
+ * Demo only (DEMO_MODE=1): a visitor types as a customer and the real pipeline
+ * answers. Never present in a normal deployment, and still behind the token.
+ */
+export async function handleDemoRoute(req, res, url) {
+  if (url.pathname !== '/api/demo/message') return false;
+
+  if (process.env.DEMO_MODE !== '1') {
+    sendJson(res, 404, { error: 'not_a_demo' });
+    return true;
+  }
+  if (!authorised(req, url)) {
+    sendJson(res, 401, { error: 'unauthorised' });
+    return true;
+  }
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return true;
+  }
+
+  const body = await readJsonBody(req);
+  const text = String(body?.text || '').trim().slice(0, 500);
+  if (!text) {
+    sendJson(res, 400, { error: 'empty' });
+    return true;
+  }
+
+  const number = String(body?.number || '923001234567').replace(/\D/g, '').slice(0, 15) || '923001234567';
+  const transport = getTransport();
+  if (!transport) {
+    sendJson(res, 503, { error: 'no_transport' });
+    return true;
+  }
+
+  try {
+    const { handleIncoming } = await import('./handlers/messageHandler.js');
+    await handleIncoming(transport, {
+      id: `DEMO-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      chat: `${number}@s.whatsapp.net`,
+      number,
+      pushName: 'Demo customer',
+      kind: 'text',
+      text,
+    });
+    sendJson(res, 200, { ok: true, number });
+  } catch (err) {
+    sendJson(res, 500, { error: 'handler_failed', detail: err.message });
+  }
+  return true;
+}
+
+/**
  * Every /api/inbox* route. Returns true when it handled the request.
  * Kept in one function so the auth check cannot be forgotten on a new route.
  */
@@ -529,7 +580,12 @@ async function handleInboxRoute(req, res, url) {
   }
 
   if (pathname === '/api/inbox' && (req.method === 'GET' || !req.method)) {
-    sendJson(res, 200, { chats: inboxChats(), summary: inboxSummary(), latestId: latestMessageId() });
+    sendJson(res, 200, {
+      chats: inboxChats(),
+      summary: inboxSummary(),
+      latestId: latestMessageId(),
+      demo: process.env.DEMO_MODE === '1',
+    });
     return true;
   }
 
@@ -591,7 +647,8 @@ export function startServer() {
       // Unknown slugs answer honestly instead of pretending to be Meta's friend.
       if (await handleWebhookRequest(req, res, url)) return;
 
-      // Live inbox: /inbox and /api/inbox* — token-gated, flag-gated.
+      // Demo endpoint (DEMO_MODE=1 only), then the live inbox.
+      if (await handleDemoRoute(req, res, url)) return;
       if (await handleInboxRoute(req, res, url)) return;
 
       if (url.pathname === '/qr.png') {
