@@ -685,6 +685,22 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       return { handled: true, reply: await contentPackText({ now: new Date() }) };
     }
 
+    case 'rules': {
+      const { rulesText } = await import('../services/selfHealing.js');
+      return { handled: true, reply: rulesText() };
+    }
+
+    case 'approve-rule':
+    case 'approve_rule':
+    case 'reject-rule':
+    case 'reject_rule': {
+      const S = await import('../services/selfHealing.js');
+      const id = Number(args[0]);
+      if (!id) return { handled: true, reply: `Usage: .${cmd} 3   (.rules shows the pending ids)` };
+      const res = cmd.startsWith('approve') ? S.approveRule(id) : S.rejectRule(id);
+      return { handled: true, reply: res.reply };
+    }
+
     case 'invoice': {
       const I = await import('../services/invoice.js');
       if (!I.pdfInvoicesEnabled()) {

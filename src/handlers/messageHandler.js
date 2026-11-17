@@ -301,6 +301,20 @@ async function handleOwnerSide(sock, { jid, number, info, incoming }) {
   memory.saveOwnerTurn(number, text);
   db.logEvent('handoff', number, { minutes });
   memory.summarizeIfNeeded(number).catch(() => {});
+
+  // Phase 4: the owner just answered something himself. If his answer differs
+  // from the bot's, that difference is a candidate FAQ rule — for his approval,
+  // never applied on its own.
+  try {
+    const { selfHealingEnabled, observeOwnerReply } = await import('../services/selfHealing.js');
+    if (selfHealingEnabled()) {
+      const seen = observeOwnerReply({ number, text, transport: sock, now: new Date() });
+      if (seen?.handled) console.log(`🧠 Rule #${seen.rule?.id} proposed from the owner's own reply`);
+    }
+  } catch (err) {
+    db.logEvent('self_healing_error', number, err.message);
+  }
+
   console.log(`🤝 Handoff: owner is handling +${number} for ${minutes} min`);
 }
 

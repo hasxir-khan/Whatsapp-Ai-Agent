@@ -390,6 +390,22 @@ CREATE TABLE IF NOT EXISTS tenant_usage (
   llm_calls   INTEGER DEFAULT 0,
   PRIMARY KEY (day, tenant)
 );
+
+-- Self-healing: rules learned from the owner's own corrections wait here.
+-- Nothing written to this table can change the bot's behaviour until it says
+-- 'approved', and only then does it become a normal FAQ entry.
+CREATE TABLE IF NOT EXISTS pending_rules (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      TEXT,
+  question    TEXT,
+  answer      TEXT,
+  status      TEXT DEFAULT 'pending',   -- pending | approved | rejected
+  source      TEXT DEFAULT 'owner_correction',
+  reason      TEXT,
+  created_at  TEXT,
+  decided_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_rules_status ON pending_rules(status, created_at);
 `;
 
 export async function initDB({ file = DB_FILE } = {}) {
@@ -1848,4 +1864,48 @@ export function revenueBySource(rows = []) {
   let total = 0;
   for (const r of rows) total += Number(r.total) || 0;
   return total;
+}
+
+// ════════════════════════════════════════════════════════════
+// Self-healing: candidate rules, and who said yes
+// ════════════════════════════════════════════════════════════
+export function addPendingRule({ number = null, question, answer, source = 'owner_correction', created_at = null } = {}) {
+  const at = created_at || new Date().toISOString();
+  run(
+    'INSERT INTO pending_rules (number, question, answer, status, source, created_at) VALUES (?,?,?,?,?,?)',
+    [number, question, answer, 'pending', source, at]
+  );
+  return get('SELECT * FROM pending_rules ORDER BY id DESC LIMIT 1');
+}
+
+export function pendingRules(status = 'pending', limit = 20) {
+  return all('SELECT * FROM pending_rules WHERE status = ? ORDER BY id DESC LIMIT ?', [status, limit]);
+}
+
+export function getPendingRule(id) {
+  return get('SELECT * FROM pending_rules WHERE id = ?', [Number(id)]);
+}
+
+export function decidePendingRule(id, status, { reason = null, at = null } = {}) {
+  const row = getPendingRule(id);
+  if (!row) return null;
+  run('UPDATE pending_rules SET status = ?, reason = ?, decided_at = ? WHERE id = ?', [
+    status,
+    reason,
+    at || new Date().toISOString(),
+    Number(id),
+  ]);
+  return getPendingRule(id);
+}
+
+/** How many proposals were made since a given day (the daily cap). */
+export function rulesProposedSince(iso) {
+  return get('SELECT COUNT(*) AS c FROM pending_rules WHERE created_at >= ?', [iso])?.c || 0;
+}
+
+/** Any row at all with this question — pending, approved or rejected. */
+export function ruleByQuestion(question) {
+  const q = String(question || '').trim().toLowerCase();
+  if (!q) return null;
+  return get('SELECT * FROM pending_rules WHERE LOWER(TRIM(question)) = ? ORDER BY id DESC LIMIT 1', [q]);
 }

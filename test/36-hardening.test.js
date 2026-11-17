@@ -237,6 +237,32 @@ test('a careful setup produces no warnings', async () => {
   assert.deepEqual(clean, []);
 });
 
+test('doctor warns about PDF invoices that cannot be paid or filled in', async () => {
+  const { growthSettingsWarnings } = await import('../scripts/doctor.js');
+
+  const risky = growthSettingsWarnings(
+    { features: { pdfInvoices: true }, business: { name: '', payment: {}, invoice: { logo: 'assets/missing.png' } } },
+    {}
+  );
+  assert.ok(risky.some((w) => /payment is empty/i.test(w)), risky.join('\n'));
+  assert.ok(risky.some((w) => /does not exist/i.test(w)));
+  assert.ok(risky.some((w) => /business\.name is empty/i.test(w)));
+
+  const clean = growthSettingsWarnings(
+    { features: { pdfInvoices: true }, business: { name: 'HasDevs', payment: { cod: true } } },
+    {}
+  );
+  assert.deepEqual(clean, []);
+});
+
+test('doctor warns when rule proposals outnumber what anyone would review', async () => {
+  const { growthSettingsWarnings } = await import('../scripts/doctor.js');
+  const loud = growthSettingsWarnings({ features: { selfHealing: true }, business: {} }, { SELF_HEALING_MAX_PER_DAY: '9' });
+  assert.ok(loud.some((w) => /SELF_HEALING_MAX_PER_DAY is 9/i.test(w)), loud.join('\n'));
+  const quiet = growthSettingsWarnings({ features: { selfHealing: true }, business: {} }, { SELF_HEALING_MAX_PER_DAY: '3' });
+  assert.deepEqual(quiet, []);
+});
+
 test('every growth flag is a known feature key', async () => {
   const { FEATURE_KEYS } = await import('../src/services/profile.js');
   for (const flag of ['reactivationAgent', 'contentAgent', 'closerAgent', 'reviewAgent', 'analystAgent', 'bookingAgent', 'followUpAgent', 'growthApproval']) {

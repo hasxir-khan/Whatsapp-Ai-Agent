@@ -19,17 +19,19 @@ Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but bu
 9. [Bookings and follow-ups (Phase 3)](#bookings-and-follow-ups-phase-3)
 10. [Closing, reviews and the weekly report](#closing-reviews-and-the-weekly-report)
 11. [Win-backs, content and the growth dashboard](#win-backs-content-and-the-growth-dashboard)
-12. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
-13. [Lead intelligence](#lead-intelligence)
-14. [Languages](#languages)
-15. [Missed calls](#missed-calls)
-16. [Offline & bad internet](#offline--bad-internet)
-17. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
-18. [Commands](#commands)
-19. [Dashboard](#dashboard)
-20. [Deploy for $0 — the whole guide](#deploy-for-0--the-whole-guide)
-21. [Troubleshooting](#troubleshooting)
-22. [Honest limitations](#honest-limitations)
+12. [PDF quotes, invoices and receipts](#pdf-quotes-invoices-and-receipts)
+13. [Learning from your own replies](#learning-from-your-own-replies)
+14. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
+15. [Lead intelligence](#lead-intelligence)
+16. [Languages](#languages)
+17. [Missed calls](#missed-calls)
+18. [Offline & bad internet](#offline--bad-internet)
+19. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
+20. [Commands](#commands)
+21. [Dashboard](#dashboard)
+22. [Deploy for $0 — the whole guide](#deploy-for-0--the-whole-guide)
+23. [Troubleshooting](#troubleshooting)
+24. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -480,6 +482,8 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `analystAgent` | 3 | Weekly owner report, computed from your own data (alias `analyst`) |
 | `reactivationAgent` | 3 | Owner-approved win-back campaign, two cycles max (alias `reactivation`) |
 | `contentAgent` | 3 | Weekly pack: 5 posts, 3 statuses, 1 reel idea (alias `content`) |
+| `pdfInvoices` | 4 | A4 PDF quote/invoice/receipt, sent on WhatsApp (alias `invoices`) |
+| `selfHealing` | 4 | Learns FAQ rules from your own manual replies (alias `healing`) |
 | `closer` | 3 | Objection handling, payment links |
 | `reactivation` | 3 | Monthly win-back for old clients |
 | `reviews` | 3 | Review and referral requests |
@@ -880,6 +884,110 @@ With no token set it behaves exactly as before (`/health` and `/api/status` stay
 
 ---
 
+## PDF quotes, invoices and receipts
+
+Turn it on and every quote and order leaves a document behind:
+
+```json
+"features": { "pdfInvoices": true }
+```
+
+```
+you (customer): theek hai, order confirm
+bot: [the quote text]
+bot: [INV-2026-0007.pdf]  Invoice (unpaid) · HasDevs Cafe · Total: PKR 2,800
+```
+
+**The label is the honest part.** No order yet is a **Quote**. An order that is `awaiting_payment` or `placed` is an **Invoice (unpaid)**. Only after you type `.paid 12` does it become a **Receipt**. The footer says "Not a tax invoice" unless you replace it.
+
+**Every number comes from the order row or `core/pricing.js`.** The AI never touches it. Item lines are `qty × unit price`, and if the total you charged disagrees with the lines (a discount, a delivery fee), the difference is printed as its own line rather than either number being quietly rewritten.
+
+**Payment details come from `business.payment`, and only the fields you filled in.** A blank JazzCash number is not printed; neither is a `//` comment. Bank, JazzCash, Easypaisa, a payment link, cash on delivery — whichever you actually configured:
+
+```json
+"payment": {
+  "bank": { "name": "Meezan Bank", "title": "HasDevs", "number": "01234567890123" },
+  "easypaisa": { "title": "HasDevs", "number": "03001234567" },
+  "cod": false
+}
+```
+
+**Your logo, your footer, your prefix:**
+
+```json
+"invoice": {
+  "logo": "config/logo.png",
+  "prefix": "HD",
+  "footer": "Shukriya! HasDevs Cafe — 0300 1234567"
+}
+```
+
+Without a logo the header is just text — nothing breaks. `INVOICE_KEEP_DAYS` (90) sweeps old PDFs; the order row remains the record, so nothing is ever lost.
+
+### What happens when a customer speaks Urdu
+
+This is where most "we support Urdu" claims fall apart, so here is exactly what this does.
+
+The PDF embeds **Noto Sans** for Latin and Roman Urdu, and **Noto Naskh Arabic** for Arabic script. Both are bundled and subsetted (253 KB total), so the document looks the same on a server with no fonts installed.
+
+- **Text that can be shaped and reordered** — standard Arabic, like the name `محمد علی` — is shaped into joined letter forms and drawn right-to-left. It looks correct.
+- **Everything else** — which includes most Urdu, because Urdu's own letters (ٹ ڈ ڑ ں ھ ہ ے ک گ چ پ) have no isolated/joined codepoints in Unicode, and pdfkit has no bidi engine — is **transliterated into Roman Urdu**: `چکن کڑاہی` becomes `chkin krahi`.
+
+Mirrored or disconnected Arabic is never printed. That is not a font bug you can install your way out of; it is what pdfkit can do without an OpenType shaper plus bidi, and pretending otherwise would put a broken document in front of your customer. If an item has a proper Roman name, use it — the transliteration is a fallback, not a translation.
+
+### Commands and failure behaviour
+
+```
+.invoice 12          → build and send it to yourself
+.invoice 12 send     → deliver it to the customer
+```
+
+The text quote always goes out **first**. The PDF is an attachment after it, so a missing font, a corrupt logo, a disk error or a transport that cannot send files costs the customer nothing — the failure is logged with its reason (`invoice_fallback`, `invoice_render_failed`) and the text answer stands.
+
+---
+
+## Learning from your own replies
+
+Your best training data is the moment you type an answer yourself right after the bot got it wrong.
+
+```json
+"features": { "selfHealing": true }
+```
+
+That is all it takes. When you reply manually in a customer chat within 30 minutes of a bot reply, and your answer means something different, the exchange becomes **one candidate rule**:
+
+```
+🧠 New rule learned (#4)
+
+Q: do you deliver to f 11
+A: F-11 tak delivery hoti hai, 30 minute mein
+
+Type .approve-rule 4 or .reject-rule 4
+```
+
+`Q` is the customer's actual question, so the rule matches how people really type. `A` is your answer.
+
+**Nothing is applied until you say yes.** `.approve-rule 4` adds it through the same path as `.addfaq`, and it applies from the next customer message. `.reject-rule 4` marks it rejected and it is never proposed again — not for that question, not for a similar one.
+
+What is stripped or refused before you ever see it:
+
+| Check | What happens |
+|---|---|
+| Phone numbers, emails, links | removed |
+| The customer's name | removed (we know it from the contact) |
+| Addresses ("House 42, Street 7, F-11") | removed |
+| Instruction-shaped text ("always tell customers…", "ignore previous…") | the rule is refused outright |
+| A price that is not in your catalogue | refused — a learned rule can never invent a price |
+| A discount above `policies.maxDiscountPercent` | refused |
+| A question already covered by an FAQ | not proposed |
+| You repeated what the bot said | not proposed; there is nothing to learn |
+
+Limits: **3 proposals a day** (`SELF_HEALING_MAX_PER_DAY`), at most 10 waiting at once, and only chats where *you* replied — it never watches customer messages and never learns on its own. `SELF_HEALING_WINDOW_MINUTES` (30) decides how soon after the bot your reply counts as a correction.
+
+`.rules` shows what is waiting. Rules approved today are ordinary FAQs tomorrow — review them with `.features` like anything else.
+
+---
+
 ## Switching to the official Cloud API
 
 Baileys is the default because it is free and needs no approval: one QR scan and
@@ -1220,6 +1328,9 @@ Type in your own WhatsApp chat (message yourself):
 | `.content now` | this week's pack on demand |
 | `.campaign preview` | who would get a win-back message, with a sample |
 | `.campaign send` / `.campaign stop` | start the campaign (this is the approval) or halt it |
+| `.invoice <id>` | the PDF for an order — `.invoice <id> send` delivers it to the client |
+| `.rules` | FAQ rules learned from your replies, waiting for a yes or no |
+| `.approve-rule <id>` / `.reject-rule <id>` | decide one |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
@@ -1422,6 +1533,8 @@ Run through this once, in order. It takes about twenty minutes and prevents most
 - **Booking reminders and follow-ups only go out if the process is running** at the right moment; a reminder that falls due while the bot is down is sent on the next start, still inside quiet hours and caps.
 - **The weekly report's suggestions need a model**; without a key you get the deterministic three, which are blunter but still true. The numbers themselves never need a model.
 - **A payment receipt is never auto-verified.** Reading a screenshot proves nothing about a bank balance — `.paid` stays a human decision.
+- **Urdu in the PDF is transliterated, not typeset.** Standard Arabic shapes correctly; Urdu's extra letters cannot be rendered without an OpenType shaper plus bidi, which pdfkit does not have. You get readable Roman Urdu, never mirrored glyphs. If that matters for your invoices, put the Roman name in the catalogue.
+- **A learned rule is only as good as your one sentence.** It is keyword-matched, like every FAQ. `.rules` and a quick read before `.approve-rule` is the whole quality process.
 - **A win-back campaign is the riskiest thing here.** On Baileys, a burst of messages to people who have not written in a month is exactly what gets a number limited. The campaign is slow and capped for that reason — do not raise those caps to "get it done faster".
 - **Content is only as good as your catalogue.** If the price list is thin, the captions are thin. No amount of AI fixes a missing menu.
 - **The dashboard shows numbers, not answers.** It will tell you referral traffic converts better; it will not tell you why.
@@ -1481,7 +1594,10 @@ src/
     reactivationAgent.js  segments, campaign preview/send/stop, slow sending
     contentAgent.js     weekly pack: posts, statuses, reel, hashtags, times
     growthDashboard.js  funnel, per-agent and per-source numbers
+    invoice.js          PDF quotes, invoices and receipts
+    selfHealing.js      candidate rules from the owner's own replies
     injection.js        (core) untrusted text: detect, neutralise, fence
+    script.js           (core) Urdu/Arabic → shaped or transliterated
   transport/            how the bot talks to WhatsApp, behind one interface
     base.js             the interface + the internal message shape
     baileys.js          Baileys (default), wrapped unchanged
@@ -1508,7 +1624,8 @@ scripts/
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
   backup.js  restore.js   one-file backup of DB + config
-test/                   493 tests (node:test, no dependencies)
+assets/fonts/           Noto Sans + Noto Naskh Arabic (bundled, subsetted, OFL)
+test/                   532 tests (node:test, no dependencies)
 ```
 
 ---
@@ -1516,13 +1633,13 @@ test/                   493 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test                 # 493 tests, ~35s, no network, no keys
+npm test                 # 532 tests, ~37s, no network, no keys
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys
 ```
 
-The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening.
+The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening, `37`–`38` for PDF documents and the learning loop.
 
 ---
 

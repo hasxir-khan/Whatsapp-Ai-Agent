@@ -115,9 +115,13 @@ async function checkBusiness() {
   if (growthOn.length) {
     ok(`Growth agents on: ${growthOn.join(', ')}`);
     if (!featureOn('growthApproval')) warn('growthApproval is off — proactive messages will send without approval');
-  } else {
+   } else {
     info('Growth agents are all off (defaults keep the original behaviour).');
   }
+
+  // ── Phase 4: documents and the learning loop ───────────────
+  const docFlags = ['pdfInvoices', 'selfHealing', 'injectionGuard'].filter((f) => featureOn(f));
+  if (docFlags.length) ok(`Phase 4 features on: ${docFlags.join(', ')}`);
   for (const risk of growthSettingsWarnings(profile, process.env, { transport: config.transport })) {
     warn(risk);
     notes.push(risk);
@@ -580,6 +584,30 @@ export function growthSettingsWarnings(profile = {}, env = {}, { transport = nul
   }
   if (on('reactivationAgent') && !(business.offers?.length)) {
     warnings.push('reactivationAgent is on but business.offers is empty — win-back messages will only mention the catalogue');
+  }
+
+  // ── Phase 4 ───────────────────────────────────────────────
+  if (on('pdfInvoices')) {
+    const pay = business.payment || {};
+    const configured = pay.bank?.number || pay.jazzcash?.number || pay.easypaisa?.number || pay.stripeLink || pay.cod;
+    if (!configured) {
+      warnings.push('pdfInvoices is on but business.payment is empty — the invoice will say "payment details will be shared separately"');
+    }
+    const logo = business.invoice?.logo || business.logo;
+    if (logo) {
+      try {
+        const file = path.resolve(process.cwd(), logo);
+        if (!fs.existsSync(file)) warnings.push(`business.invoice.logo points at ${logo}, which does not exist — the PDF will print without it`);
+        else if (!/\.(png|jpe?g)$/i.test(file)) warnings.push(`business.invoice.logo is ${logo} — pdfkit can only embed PNG or JPG`);
+      } catch {
+        warnings.push('business.invoice.logo could not be read — the PDF will print without it');
+      }
+    }
+    if (!business.name) warnings.push('pdfInvoices is on but business.name is empty — the document would say "Business"');
+  }
+
+  if (on('selfHealing') && Number(env.SELF_HEALING_MAX_PER_DAY || 3) > 5) {
+    warnings.push(`SELF_HEALING_MAX_PER_DAY is ${env.SELF_HEALING_MAX_PER_DAY} — more proposals than you will actually review is noise, not learning`);
   }
   return warnings;
 }
