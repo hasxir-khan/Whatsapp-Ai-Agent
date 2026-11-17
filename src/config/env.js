@@ -225,6 +225,18 @@ export const config = {
     maxGapMs: toInt(process.env.REACTIVATION_MAX_GAP_MS, 420_000),
   },
 
+  // Phase 4: documents and the learning loop.
+  invoice: {
+    // Old PDFs are swept on every write; the order row is the real record.
+    keepDays: toInt(process.env.INVOICE_KEEP_DAYS, 90),
+  },
+  selfHealing: {
+    // A manual reply further apart than this from the bot's last answer is a
+    // different conversation, not a correction of it.
+    windowMinutes: toInt(process.env.SELF_HEALING_WINDOW_MINUTES, 30),
+    maxPerDay: toInt(process.env.SELF_HEALING_MAX_PER_DAY, 3),
+  },
+
   // Content agent: when the weekly pack lands.
   content: {
     day: process.env.CONTENT_DAY || 'wed',

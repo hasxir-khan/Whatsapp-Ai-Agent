@@ -230,6 +230,12 @@ TRANSPORT=baileys
 # CONTENT_TIME=10:00
 # TENANT_DAILY_LLM_CALLS=250      # this tenant's own daily AI budget
 
+# ── PDF documents + self-healing (Phase 4) ──────────────────
+# In config/owner.json: features.pdfInvoices, features.selfHealing.
+# INVOICE_KEEP_DAYS=90
+# SELF_HEALING_WINDOW_MINUTES=30
+# SELF_HEALING_MAX_PER_DAY=3
+
 # ── Google Calendar (optional) ──────────────────────────────
 # Bookings live in SQLite either way; this only mirrors them.
 # GOOGLE_CALENDAR_ID=

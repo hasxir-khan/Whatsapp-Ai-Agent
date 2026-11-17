@@ -44,6 +44,8 @@ export const FEATURE_KEYS = [
   'analyst',   // deprecated alias of analystAgent
   // phase 4
   'injectionGuard',
+  'pdfInvoices',
+  'selfHealing',
 ];
 
 export const FEATURE_LABELS = {
@@ -72,6 +74,8 @@ export const FEATURE_LABELS = {
   reviews: 'Deprecated alias of reviewAgent',
   analyst: 'Deprecated alias of analystAgent',
   injectionGuard: 'Extra prompt-injection defence',
+  pdfInvoices: 'PDF quotes, invoices and receipts on WhatsApp',
+  selfHealing: 'Learn FAQ rules from your own manual replies (owner-approved)',
 };
 
 // ── live profile access ─────────────────────────────────────
@@ -100,6 +104,9 @@ export const FEATURE_ALIASES = {
   analyst: 'analystAgent',
   reactivation: 'reactivationAgent',
   content: 'contentAgent',
+  invoices: 'pdfInvoices',
+  pdf: 'pdfInvoices',
+  healing: 'selfHealing',
 };
 
 /** Flags that are ON unless explicitly turned off. */

@@ -85,6 +85,9 @@ const HELP = `*Bot commands*
 .content now – this week's posts, statuses and a reel idea
 .campaign preview – who would get a win-back message, and a sample
 .campaign send / .campaign stop – start or halt it
+.invoice <id> – the PDF for an order/quote (.invoice <id> send → to the client)
+.rules – FAQ rules learned from your own replies, waiting for a yes/no
+.approve-rule <id> / .reject-rule <id>
 .ping`;
 
 /** What this process is talking to, and what that transport cannot do. */
@@ -148,7 +151,7 @@ const COMMAND_PERMISSION = {
 const OWNER_ONLY = new Set([
   'export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq',
   'features', 'knowledge', 'tools', 'intents', 'growth', 'optouts', 'bookings', 'cancel', 'approve', 'skip',
-  'done', 'paid', 'referrals', 'content', 'campaign',
+  'done', 'paid', 'referrals', 'content', 'campaign', 'invoice', 'rules', 'approve-rule', 'reject-rule',
 ]);
 
 /**
@@ -680,6 +683,52 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         return { handled: true, reply: 'Usage: .content now  (a fresh pack; the weekly one arrives on its own)' };
       }
       return { handled: true, reply: await contentPackText({ now: new Date() }) };
+    }
+
+    case 'invoice': {
+      const I = await import('../services/invoice.js');
+      if (!I.pdfInvoicesEnabled()) {
+        return {
+          handled: true,
+          reply: 'PDF documents are off.\nTurn them on with: .set features.pdfInvoices true',
+        };
+      }
+      const id = Number(args[0]);
+      if (!id) return { handled: true, reply: 'Usage: .invoice 12   (add "send" to deliver it to the client: .invoice 12 send)' };
+
+      const { getOrder } = await import('../utils/db.js');
+      const order = getOrder(id);
+      if (!order) return { handled: true, reply: `No order with id ${id}. Check .orders for the ids.` };
+
+      const toClient = String(args[1] || '').toLowerCase() === 'send';
+      const jidTo = toClient ? order.chat : chatJid;
+      const res = await I.sendInvoice({
+        transport: sock,
+        jid: jidTo,
+        order,
+        number: String(order.chat || '').split('@')[0],
+      });
+
+      if (!res.ok) {
+        // Never pretend it worked. Fall back to the numbers as text.
+        const model = res.model || I.invoiceModel({ order });
+        return {
+          handled: true,
+          reply:
+            `⚠️ Could not build the PDF (${res.reason || 'unknown'}).\n\n` +
+            `${model.label} ${model.invoiceNo}\nTotal: ${model.total || '—'}\n` +
+            (model.payment.length ? model.payment.map((r) => `${r.label}: ${r.value}`).join('\n') : ''),
+        };
+      }
+
+      const model = res.model;
+      const where = toClient ? `Sent to +${String(order.chat || '').split('@')[0]}.` : 'Saved and sent here.';
+      return {
+        handled: true,
+        reply:
+          `${model.label} ${model.invoiceNo} · ${model.total}\n${where}` +
+          (toClient ? '' : `\n.invoice ${id} send → deliver it to the client`),
+      };
     }
 
     case 'campaign': {

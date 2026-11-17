@@ -671,6 +671,12 @@
       "//": "Weekly content pack schedule.",
       "day": "wed",
       "time": "10:00"
+    },
+    "invoice": {
+      "//": "PDF quotes/invoices. logo is a path inside this folder (PNG or JPG). footer replaces the default line.",
+      "logo": "",
+      "prefix": "INV",
+      "footer": ""
     }
   },
   "catalog": {
@@ -719,6 +725,8 @@
     "analystAgent": false,
     "//aliases": "closer / reviews / analyst still work — they map to closerAgent / reviewAgent / analystAgent.",
     "reactivationAgent": false,
-    "contentAgent": false
+    "contentAgent": false,
+    "pdfInvoices": false,
+    "selfHealing": false
   }
 }

@@ -119,6 +119,8 @@
     "reviewAgent": false,
     "analystAgent": false,
     "reactivationAgent": false,
-    "contentAgent": false
+    "contentAgent": false,
+    "pdfInvoices": false,
+    "selfHealing": false
   }
 }

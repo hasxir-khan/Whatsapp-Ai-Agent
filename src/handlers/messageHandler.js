@@ -606,6 +606,9 @@ async function processBatch(sock, jid, number, items) {
         memory.saveAssistantTurn(number, out.reply, 'text');
         noteSent([(await sendTyping(sock, jid, out.reply, { delay: 500 }))?.key?.id]);
         db.logEvent('closer_turn', number, { kind: out.kind || (ready ? 'ready' : null), order: out.order?.id || null });
+        // The text quote has already gone out. This is the same quote as a PDF,
+        // and if it fails the customer still has the message above.
+        if (out.order) await maybeSendInvoice(sock, jid, { order: out.order, number });
         return;
       }
     } catch (err) {
@@ -939,12 +942,36 @@ function renderForModel(parts) {
     .join('\n\n');
 }
 
+// ── quote and invoice documents ─────────────────────────────
+/**
+ * Attach the PDF, if the owner turned features.pdfInvoices on.
+ *
+ * Deliberately quiet: the text version is always sent first, so a missing font,
+ * a bad logo or a transport without document support costs nothing. Every
+ * failure is logged with its reason instead of vanishing.
+ */
+async function maybeSendInvoice(sock, jid, { order = null, quote = null, number = null } = {}) {
+  try {
+    const { pdfInvoicesEnabled, sendInvoice } = await import('../services/invoice.js');
+    if (!pdfInvoicesEnabled()) return;
+    if (typeof sock.can === 'function' && !sock.can('document')) {
+      db.logEvent('invoice_skipped', number, 'transport has no document support');
+      return;
+    }
+    const res = await sendInvoice({ transport: sock, jid, order, quote, number });
+    if (!res.ok) db.logEvent('invoice_fallback', number, res.reason || 'unknown');
+  } catch (err) {
+    db.logEvent('invoice_error', number, err.message);
+  }
+}
+
 // ── quote delivery ──────────────────────────────────────────
 async function deliverQuote(sock, jid, number, intake, quote) {
   try {
     const quoteText = formatQuote(quote, intake.state.fields);
     const sent = await sendHuman(sock, jid, quoteText, { incomingText: 'quote' });
     noteSent((sent || []).map((m) => m?.key?.id));
+    await maybeSendInvoice(sock, jid, { quote, number });
 
     markQuoted(intake.state, quote);
 

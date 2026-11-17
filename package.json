@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-self-knowledge-assistant",
-  "version": "9.8.0",
+  "version": "9.9.0",
   "description": "Multi-user WhatsApp AI assistant: every user gets their own keys, business profile and session. Speaks 86 languages, scores leads, answers missed calls in chat, and never loses a reply to a bad connection.",
   "main": "src/index.js",
   "type": "module",
@@ -43,10 +43,12 @@
   "dependencies": {
     "@hapi/boom": "^9.1.4",
     "@whiskeysockets/baileys": "^6.7.9",
+    "arabic-persian-reshaper": "^1.0.1",
     "dotenv": "^16.4.5",
     "franc": "^6.2.0",
     "mammoth": "^1.12.0",
     "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.20.2",
     "pino": "^9.5.0",
     "qrcode": "^1.5.4",
     "sql.js": "^1.12.0",
