@@ -22,12 +22,17 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { buildProfileFromTemplate, isTemplate, listTemplates, TEMPLATE_IDS } from '../src/services/templates.js';
 import { runSetup } from './wizard.js';
 
+// Where the users live: whatever folder you ran the command from.
 const ROOT = process.cwd();
 const TENANTS = path.join(ROOT, 'tenants');
+// Where the code lives: this script's folder, so child processes still work
+// when the manager is run from somewhere else.
+const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 const c = {
   bold: (s) => `\x1b[1m${s}\x1b[0m`,
@@ -341,8 +346,8 @@ function cmdShow(slug, flags) {
 
   if (flags.start) {
     console.log(`\nStarting ${t.name}… scan the QR in the terminal (or open /qr.png on port ${t.port})\n`);
-    const child = spawn(process.execPath, ['src/index.js'], {
-      cwd: ROOT,
+    const child = spawn(process.execPath, [path.join(REPO, 'src', 'index.js')], {
+      cwd: REPO,
       stdio: 'inherit',
       env: {
         ...process.env,
@@ -420,11 +425,16 @@ function cmdLearn(slug, target, flags) {
   if (!t) die(`No tenant "${slug}". Try: node scripts/tenant.js list`);
 
   const dir = tenantDir(slug);
-  const args = [path.join(ROOT, 'scripts', 'learn.js'), target];
+  const args = [path.join(REPO, 'scripts', 'learn.js')];
+  // Resolve a relative file against where the user ran the command, since the
+  // child process runs from the repo folder.
+  if (target) args.push(/^https?:\/\//i.test(target) ? target : path.resolve(ROOT, target));
   if (flags.name) args.push('--name', String(flags.name));
+  if (flags.reindex) args.push('--reindex');
+  if (flags.force) args.push('--force');
 
   const child = spawnSync(process.execPath, args, {
-    cwd: ROOT,
+    cwd: REPO,
     stdio: 'inherit',
     env: {
       ...process.env,
@@ -508,7 +518,9 @@ switch (command) {
   case 'ingest': {
     const slug = positional[0];
     const target = positional[1];
-    if (!slug || !target) die('Usage: node scripts/tenant.js learn <slug> <file|url> [--name "Title"]');
+    if (!slug || (!target && !flags.reindex)) {
+      die('Usage: node scripts/tenant.js learn <slug> <file|url> [--name "Title"]\n       node scripts/tenant.js learn <slug> --reindex [--force]');
+    }
     cmdLearn(slug, target, flags);
     break;
   }

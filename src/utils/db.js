@@ -253,6 +253,8 @@ function migrate() {
   add('leads', 'score', 'INTEGER DEFAULT 0');
   add('leads', 'priority', 'TEXT');
   add('leads', 'next_action', 'TEXT');
+  add('knowledge', 'embedding_model', 'TEXT');
+  add('knowledge', 'embedded_hash', 'TEXT');
 }
 
 export function getDB() {
@@ -933,4 +935,65 @@ function hashText(text) {
   const s = String(text);
   for (let i = 0; i < s.length; i += 1) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
   return (h >>> 0).toString(36);
+}
+
+/** Chunks that still need a vector: never embedded, or changed since. */
+export function knowledgePending(limit = 500) {
+  return all(
+    `SELECT id, source, title, chunk_no, text, hash, embedding, embedded_hash
+       FROM knowledge
+      WHERE embedded_hash IS NULL OR embedded_hash <> hash OR embedding IS NULL
+      ORDER BY source, chunk_no LIMIT ?`,
+    [limit]
+  );
+}
+
+export function knowledgeEmbedded(limit = 5000) {
+  return all(
+    `SELECT id, source, title, chunk_no, text, embedding, hash
+       FROM knowledge WHERE embedding IS NOT NULL LIMIT ?`,
+    [limit]
+  );
+}
+
+export function setKnowledgeEmbedding(id, embeddingJson, { model = null, hash = null } = {}) {
+  run('UPDATE knowledge SET embedding = ?, embedding_model = ?, embedded_hash = ? WHERE id = ?', [
+    embeddingJson,
+    model,
+    hash,
+    id,
+  ]);
+}
+
+export function clearKnowledgeEmbeddings(source = null) {
+  if (source) run('UPDATE knowledge SET embedding = NULL, embedding_model = NULL, embedded_hash = NULL WHERE source = ?', [source]);
+  else run('UPDATE knowledge SET embedding = NULL, embedding_model = NULL, embedded_hash = NULL');
+  saveDB(true);
+  return true;
+}
+
+/** Every chunk, for the keyword (BM25) side of the hybrid search. */
+export function allKnowledgeChunks(limit = 5000) {
+  return all('SELECT id, source, title, chunk_no, text, hash FROM knowledge ORDER BY id LIMIT ?', [limit]);
+}
+
+export function knowledgeEmbeddingStats() {
+  const row =
+    get(
+      `SELECT COUNT(*) AS chunks,
+              SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END) AS embedded,
+              SUM(CASE WHEN embedded_hash IS NOT NULL AND embedded_hash <> hash THEN 1 ELSE 0 END) AS stale,
+              COUNT(DISTINCT source) AS sources
+         FROM knowledge`
+    ) || {};
+  const chunks = row.chunks || 0;
+  const embedded = row.embedded || 0;
+  const stale = row.stale || 0;
+  return {
+    chunks,
+    embedded,
+    stale,
+    pending: chunks - embedded + stale,
+    sources: row.sources || 0,
+  };
 }

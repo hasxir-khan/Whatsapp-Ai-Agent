@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config, describeConfig, teamMembers } from '../src/config/env.js';
 import { GEMINI_BASE, geminiHeadersWith, authHeadersFor, isKeyError, explainGeminiError, maskKey, keyFormat } from '../src/utils/gemini.js';
-import { validateProfile, FEATURE_KEYS, effectiveCatalog, business } from '../src/services/profile.js';
+import { validateProfile, FEATURE_KEYS, effectiveCatalog, business, featureOn } from '../src/services/profile.js';
 import { listTemplates } from '../src/services/templates.js';
 
 const ok = (m) => console.log(`  ✅ ${m}`);
@@ -134,6 +134,23 @@ async function checkBusiness() {
       const stats = knowledgeStats();
       if (stats.sources) ok(`Knowledge base: ${stats.sources} documents · ${stats.chunks} chunks`);
       else info('Knowledge base is empty — add documents with: node scripts/tenant.js learn <slug> <file|url>');
+
+      if (stats.chunks) {
+        const { embeddingStatus, embeddingsAvailable } = await import('../src/services/embeddings.js');
+        const { knowledgeEmbeddingStats } = await import('../src/utils/db.js');
+        const embed = embeddingStatus();
+        const vectors = knowledgeEmbeddingStats();
+
+        if (vectors.embedded) ok(`Vectors: ${vectors.embedded}/${vectors.chunks} chunks embedded (${embed.model})`);
+        else if (embeddingsAvailable()) {
+          warn(`Vectors: 0/${vectors.chunks} chunks embedded — queue them with: node scripts/tenant.js learn <slug> --reindex`);
+        } else {
+          warn('Vectors: no Gemini key — RAG falls back to keyword (BM25) search');
+        }
+        if (embed.cooling) info(`Embedding provider cooling down after an error: ${embed.lastError || 'rate limited'}`);
+        if (featureOn('rag')) ok('features.rag is on — excerpts are injected into the prompt');
+        else info('features.rag is off — documents are stored but not used in replies');
+      }
     } catch (err) {
       warn(`Could not read the knowledge base: ${err.message}`);
     }

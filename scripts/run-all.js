@@ -10,10 +10,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
 const ROOT = process.cwd();
 const TENANTS = path.join(ROOT, 'tenants');
+const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 const only = (() => {
   const i = process.argv.indexOf('--only');
@@ -70,8 +72,8 @@ function start(t, index, restarts = 0) {
   const tag = `${color}[${t.slug}]${reset}`;
   const dir = path.join(TENANTS, t.slug);
 
-  const child = spawn(process.execPath, ['src/index.js'], {
-    cwd: ROOT,
+  const child = spawn(process.execPath, [path.join(REPO, 'src', 'index.js')], {
+    cwd: REPO,
     env: envFor(t),
     stdio: ['ignore', 'pipe', 'pipe'],
   });

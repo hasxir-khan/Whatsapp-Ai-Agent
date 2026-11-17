@@ -16,6 +16,7 @@ import { intakePromptBlock } from './projectIntake.js';
 import { ownerClock } from './humanizer.js';
 import { localTime } from '../services/geo.js';
 import { featureOn, business, effectiveCatalog, tone as toneConfig, goals as goalConfig, escalation as escalationConfig } from '../services/profile.js';
+import { knowledgeContext } from '../services/rag.js';
 
 const P = config.owner.profile || {};
 const OWNER = P.owner || {};
@@ -238,6 +239,7 @@ export function systemPrompt({
   features = {},
   tone = 'neutral',
   formality = null,
+  knowledgeBlock = '',
 }) {
   const parts = [];
   const ownerName = OWNER.name || 'the owner';
@@ -264,6 +266,11 @@ export function systemPrompt({
   if (businessBlock) {
     parts.push('');
     parts.push(businessBlock);
+  }
+
+  if (knowledgeBlock) {
+    parts.push('');
+    parts.push(knowledgeBlock);
   }
 
   if (dossier?.category === 'friend') {
@@ -363,7 +370,18 @@ export async function generateReply({
     };
   }
 
-  const system = systemPrompt({ dossier, intakeState, langInfo, chatType, features, tone });
+  // Retrieval is opt-in and time-boxed: a slow or dead embedding provider must
+  // never delay a reply. knowledgeContext resolves with '' on any failure.
+  let knowledgeBlock = '';
+  if (featureOn('rag') && text) {
+    const rag = await knowledgeContext(text, { businessName: business().name || '' });
+    knowledgeBlock = rag.block;
+    if (rag.hits?.length) {
+      console.log(`📚 knowledge: ${rag.hits.length} excerpt(s) via ${rag.method}`);
+    }
+  }
+
+  const system = systemPrompt({ dossier, intakeState, langInfo, chatType, features, tone, knowledgeBlock });
   const history = buildHistoryMessages(dossier);
 
   const userContent = extraNote ? `${text}\n\n[system note: ${extraNote}]` : text;

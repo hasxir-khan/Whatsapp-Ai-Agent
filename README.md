@@ -362,7 +362,48 @@ node scripts/tenant.js learn burger-point https://your-site.com/services
 node scripts/tenant.js learn ayesha-designs ./price-list.txt --name "2026 price list"
 ```
 
-Reads PDF, TXT, MD, CSV, DOCX and web pages, cleans the text, splits it into overlapping chunks and stores them in that user's database. Phase 1 stores and indexes them; vector retrieval arrives in Phase 2, so nothing here can invent a fact.
+Reads PDF, TXT, MD, CSV, DOCX and web pages, cleans the text, splits it into overlapping chunks and stores them in that user's database.
+
+### How documents actually get used
+
+Turn it on per business:
+
+```
+.set features.rag true
+```
+
+Then every incoming question runs a **hybrid search** over that business's documents:
+
+| Side | How it works |
+|---|---|
+| **Vectors** | Chunks are embedded with Gemini's free embedding model; the question is embedded the same way and compared by cosine similarity |
+| **Keywords** | BM25 over the stored chunks — always available, no key, no network |
+
+The two are merged: an excerpt found by both methods outranks one found by only one. The top four excerpts go into the prompt **with their source labels**, plus one hard rule — *answer from these and the price list only; if the answer isn't there, say you'll check with the owner.*
+
+```
+── FROM THE BUSINESS'S OWN DOCUMENTS ──
+[menu.txt §2] Delivery is free over 2000 PKR within five kilometres…
+Answer from these excerpts and the price list only. If the answer isn't in
+them, say you'll check with the owner — never guess a price, policy, stock
+level, timing or discount.
+```
+
+If a factual question finds nothing, the bot is told to say it will check with the owner rather than invent an answer. A casual "haha nice 😄" gets no block at all.
+
+**It can never break a reply.** No key, an expired quota, a dead network or a slow provider — anything that goes wrong falls back to keyword search (and if even that finds nothing, the reply goes ahead without any excerpt). Retrieval is time-boxed at 2.5 seconds.
+
+**It only pays for what changed.** Every chunk stores the hash it was embedded from; re-ingesting a document re-embeds only that document's chunks, and untouched documents cost zero API calls.
+
+```bash
+node scripts/tenant.js learn <slug> ./new-menu.pdf     # learns + embeds it
+node scripts/tenant.js learn <slug> --reindex          # embed anything pending
+node scripts/tenant.js learn <slug> --reindex --force  # re-embed everything
+```
+
+Check the state any time with `.knowledge` on WhatsApp, or `node scripts/doctor.js business`.
+
+Free-tier knobs (`.env`): `EMBEDDINGS=off` disables vectors entirely, `EMBED_RPM=60` caps requests per minute, `RAG_TOP_K=4` sets how many excerpts are injected, `RAG_MIN_SCORE=0.5` sets the similarity floor.
 
 ### Edit from WhatsApp
 
@@ -422,7 +463,7 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `knowledge` | 1 | Learned documents (ingesting works either way) |
 | `ownerEditing` | 1 | `.set`, `.addservice`, `.addfaq` from WhatsApp |
 | `toolCalling` | 2 | Structured actions: book, check stock, order, quote, handoff |
-| `rag` | 2 | Vector search over learned documents |
+| `rag` | 2 | Hybrid retrieval: excerpts from learned documents in every reply |
 | `manager` | 2 | Intent router with specialist agents |
 | `cloudApi` | 2 | WhatsApp Cloud API transport alongside Baileys |
 | `booking` | 3 | Appointment slots, reminders, no-show rebooking |
@@ -613,6 +654,7 @@ Type in your own WhatsApp chat (message yourself):
 | `.addfaq Question \| Answer` | add an FAQ |
 | `.set path value` | edit any setting, live: `.set business.hours Daily 12:00–23:00` |
 | `.features` | what's on, what's off |
+| `.knowledge` | learned documents, chunks and vector status |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
@@ -727,7 +769,9 @@ src/
   services/
     profile.js          universal business profile: read, write, validate, live reload
     templates.js        industry templates → owner.json
-    knowledge.js        documents → chunks → SQLite (embeddings in phase 2)
+    knowledge.js        documents → chunks → SQLite
+    embeddings.js       Gemini embeddings: batches, rate limits, fast failure
+    rag.js              hybrid retrieval (vectors + BM25) and the prompt block
     leads.js            lead scoring, next actions, pipeline summary
     outbox.js           offline queue: never lose a reply
     calls.js            missed-call rescue
@@ -746,7 +790,7 @@ scripts/
   learn.js              ingest one document into a tenant's knowledge base
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   187 tests (node:test, no dependencies)
+test/                   207 tests (node:test, no dependencies)
 ```
 
 ---
@@ -754,7 +798,7 @@ test/                   187 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test          # 187 tests: profile, templates, knowledge, leads, outbox, tenants…
+npm test          # 207 tests: rag, profile, templates, knowledge, leads, outbox…
 npm run doctor    # environment + live API checks
 npm run chat -- --mock   # talk to the brain with no keys
 ```

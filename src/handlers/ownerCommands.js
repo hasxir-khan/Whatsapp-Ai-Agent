@@ -25,6 +25,7 @@ import { sttEnabled } from '../services/transcription.js';
 import { hasFfmpeg } from '../services/ffmpeg.js';
 import { pendingFollowUps } from '../utils/db.js';
 import { outboxStatus } from '../services/outbox.js';
+import { knowledgeSources, knowledgeStats, knowledgeEmbeddingStats } from '../utils/db.js';
 import {
   featureOn, business, effectiveCatalog, effectiveServices, faqList, tone as toneConfig,
   goals as goalConfig, escalation as escalationConfig, setPath, addService, addFaq, coerceValue,
@@ -61,6 +62,7 @@ const HELP = `*Bot commands*
 .addfaq Question | Answer – add an FAQ
 .set business.hours Daily 12:00–23:00 – edit any setting
 .features – which capabilities are on
+.knowledge – learned documents + vector status
 .ping`;
 
 function parseTarget(raw = '') {
@@ -105,7 +107,7 @@ const COMMAND_PERMISSION = {
   team: 'chats',
 };
 
-const OWNER_ONLY = new Set(['export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq', 'features']);
+const OWNER_ONLY = new Set(['export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq', 'features', 'knowledge']);
 
 /**
  * @returns {Promise<{handled:boolean, reply?:string, voice?:object}>}
@@ -286,6 +288,29 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       } catch (err) {
         return { handled: true, reply: `Couldn't set that: ${err.message}` };
       }
+    }
+
+    case 'knowledge': {
+      const sources = knowledgeSources();
+      const totals = knowledgeStats();
+      const embed = knowledgeEmbeddingStats();
+      if (!totals.chunks) {
+        return {
+          handled: true,
+          reply:
+            'No documents learned yet.\nFeed it something on the server:\n' +
+            '  node scripts/tenant.js learn <slug> menu.pdf\n  node scripts/tenant.js learn <slug> https://your-site.com/services',
+        };
+      }
+      const lines = [`*Knowledge base* — ${totals.sources} documents, ${totals.chunks} chunks`];
+      for (const s of sources.slice(0, 12)) {
+        lines.push(`• ${String(s.source).replace(/^(file|url|text):/, '')} — ${s.chunks} chunk${s.chunks === 1 ? '' : 's'}`);
+      }
+      if (sources.length > 12) lines.push(`…and ${sources.length - 12} more`);
+      lines.push('');
+      lines.push(`Vectors: ${embed.embedded}/${embed.chunks} embedded${embed.pending ? ` (${embed.pending} pending)` : ''}`);
+      lines.push(featureOn('rag') ? 'RAG is on — excerpts are used in replies.' : 'RAG is off — turn it on with .set features.rag true');
+      return { handled: true, reply: lines.join('\n') };
     }
 
     case 'features': {

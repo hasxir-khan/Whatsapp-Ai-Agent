@@ -180,6 +180,22 @@ export const config = {
     openrouter: process.env.OPENROUTER_API_KEY || '',
   },
 
+  // Free-tier embeddings for the knowledge base (Phase 2 RAG).
+  embed: {
+    enabled: toBool(process.env.EMBEDDINGS, true),
+    model: process.env.EMBED_MODEL || '',
+    rpm: toInt(process.env.EMBED_RPM, 60),
+    batchSize: toInt(process.env.EMBED_BATCH_SIZE, 20),
+  },
+
+  // Retrieval settings. Keep the timeout short: a slow lookup must never
+  // delay a customer's reply.
+  rag: {
+    topK: toInt(process.env.RAG_TOP_K, 4),
+    minScore: toNum(process.env.RAG_MIN_SCORE, 0.5),
+    timeoutMs: toInt(process.env.RAG_TIMEOUT_MS, 2500),
+  },
+
   paths: {
     config: CONFIG_DIR,
     data: path.resolve(ROOT, process.env.DATA_DIR || './data'),
