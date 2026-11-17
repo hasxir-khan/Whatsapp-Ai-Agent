@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Inbox</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b35; --txt:#e8eaef; --dim:#98a1b3; --me:#1f6f4a; --them:#232834; --accent:#3ba55d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--txt); height:100dvh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header b { font-size:15px; }
+  header .dot { width:8px; height:8px; border-radius:50%; background:#c9553d; }
+  header .dot.on { background:var(--accent); }
+  header .spacer { flex:1; }
+  header .tag { color:var(--dim); font-size:12px; }
+  main { flex:1; display:flex; min-height:0; }
+  #list { width:340px; max-width:45vw; overflow-y:auto; border-right:1px solid var(--line); }
+  .chat { padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; display:flex; gap:10px; }
+  .chat:hover { background:#1b1f27; }
+  .chat.active { background:#20252f; }
+  .chat .who { flex:1; min-width:0; }
+  .chat .name { font-weight:600; font-size:14px; display:flex; gap:6px; align-items:center; }
+  .chat .prev { color:var(--dim); font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .chat .meta { text-align:right; font-size:11px; color:var(--dim); display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
+  .badge { background:var(--accent); color:#04150b; border-radius:10px; padding:0 6px; font-size:11px; font-weight:700; }
+  .tagp { border:1px solid #4a3a1a; color:#d8a94b; border-radius:6px; padding:0 5px; font-size:10px; }
+  #thread { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #threadHead { padding:10px 14px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; }
+  #threadHead .sub { color:var(--dim); font-size:12px; }
+  #threadHead button { margin-left:auto; background:#222836; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:12.5px; cursor:pointer; }
+  #threadHead button.ghost { margin-left:0; }
+  #msgs { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:8px; }
+  .msg { max-width:min(78%,640px); padding:8px 11px; border-radius:12px; white-space:pre-wrap; word-wrap:break-word; font-size:14px; }
+  .msg.customer { align-self:flex-start; background:var(--them); border-bottom-left-radius:4px; }
+  .msg.bot, .msg.you { align-self:flex-end; background:var(--me); border-bottom-right-radius:4px; }
+  .msg .who { display:block; font-size:10.5px; opacity:.75; margin-bottom:2px; }
+  .msg .at { display:block; font-size:10px; opacity:.6; margin-top:3px; text-align:right; }
+  #composer { display:flex; gap:8px; padding:10px 12px; border-top:1px solid var(--line); background:var(--panel); }
+  #composer textarea { flex:1; resize:none; height:44px; background:#101318; color:var(--txt); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:inherit; }
+  #composer button { background:var(--accent); color:#04150b; font-weight:700; border:0; border-radius:10px; padding:0 18px; cursor:pointer; }
+  #composer button:disabled { opacity:.5; cursor:not-allowed; }
+  #note { padding:6px 14px; font-size:12px; color:var(--dim); border-top:1px solid var(--line); min-height:26px; }
+  #empty { margin:auto; color:var(--dim); padding:30px; text-align:center; max-width:420px; }
+  @media (max-width:720px) { #list { width:100%; max-width:none; border-right:0; } #thread { display:none; } body.reading #list { display:none; } body.reading #thread { display:flex; } }
+</style>
+</head><body>
+<header>
+  <span class="dot" id="live"></span>
+  <b id="biz">Inbox</b>
+  <span class="spacer"></span>
+  <span class="tag" id="counts">loading…</span>
+</header>
+<main>
+  <div id="list"><div id="empty">No conversations yet.</div></div>
+  <div id="thread">
+    <div id="threadHead">
+      <div>
+        <div id="who">Pick a chat</div>
+        <div class="sub" id="sub"></div>
+      </div>
+      <button class="ghost" id="back" style="display:none">← Chats</button>
+      <button id="takeover">Take over</button>
+    </div>
+    <div id="msgs"></div>
+    <div id="composer">
+      <textarea id="text" placeholder="Write a reply as yourself…" rows="1"></textarea>
+      <button id="send">Send</button>
+    </div>
+    <div id="note">Replies go out from your number and the bot steps back for a while.</div>
+  </div>
+</main>
+<script>
+(() => {
+  const tok = new URLSearchParams(location.search).get('token') || '';
+  const q = (p) => p + (tok ? (p.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok) : '');
+  const $ = (id) => document.getElementById(id);
+  let current = null, lastId = 0, chats = [], pollTimer = null;
+
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const time = (iso) => { try { const d = new Date(iso); return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); } catch { return ''; } };
+  const ago = (iso) => { try { const m = Math.round((Date.now() - new Date(iso)) / 60000); if (m < 1) return 'now'; if (m < 60) return m + 'm'; if (m < 1440) return Math.round(m/60) + 'h'; return Math.round(m/1440) + 'd'; } catch { return ''; } };
+
+  async function api(path, opts) {
+    const r = await fetch(q(path), Object.assign({ headers: {} }, opts || {}));
+    if (!r.ok) throw new Error((await r.text()) || r.status);
+    return r.json();
+  }
+
+  function renderList() {
+    const list = $('list');
+    if (!chats.length) { list.innerHTML = '<div id="empty">No conversations yet.</div>'; return; }
+    list.innerHTML = chats.map((c) => `
+      <div class="chat ${current === c.number ? 'active' : ''}" data-n="${esc(c.number)}">
+        <div class="who">
+          <div class="name">${esc(c.label)} ${c.paused ? '<span class="tagp">you</span>' : ''} ${c.blocked ? '<span class="tagp">blocked</span>' : ''}</div>
+          <div class="prev">${esc(c.preview)}</div>
+        </div>
+        <div class="meta"><span>${esc(ago(c.lastAt))}</span>${c.unread ? `<span class="badge">${c.unread}</span>` : ''}</div>
+      </div>`).join('');
+    list.querySelectorAll('.chat').forEach((el) => el.onclick = () => open(el.dataset.n));
+  }
+
+  function renderMsgs(msgs, append) {
+    const box = $('msgs');
+    const html = msgs.map((m) => `
+      <div class="msg ${esc(m.from)}">
+        ${m.from === 'bot' ? '<span class="who">bot</span>' : m.from === 'you' ? '<span class="who">you</span>' : ''}
+        ${esc(m.text || (m.kind && m.kind !== 'text' ? '[' + m.kind + ']' : ''))}
+        <span class="at">${esc(time(m.at))}</span>
+      </div>`).join('');
+    if (append) box.insertAdjacentHTML('beforeend', html); else box.innerHTML = html;
+    if (msgs.length) box.scrollTop = box.scrollHeight;
+  }
+
+  async function loadChats() {
+    const data = await api('/api/inbox');
+    chats = data.chats || [];
+    renderList();
+    $('counts').textContent = data.summary.awaitingUs
+      ? data.summary.awaitingUs + ' waiting · ' + data.summary.unreadMessages + ' unread'
+      : data.summary.total + ' chats';
+    $('biz').textContent = data.summary.name ? data.summary.name : 'Inbox';
+  }
+
+  async function open(number) {
+    current = number;
+    lastId = 0;
+    document.body.classList.add('reading');
+    $('back').style.display = 'inline-block';
+    const t = await api('/api/inbox/' + encodeURIComponent(number));
+    if (!t.contact) return;
+    $('who').textContent = t.contact.label;
+    $('sub').textContent = '+' + t.contact.number + ' · ' + t.contact.stage + (t.contact.paused ? ' · bot is quiet' : ' · bot is answering');
+    $('takeover').textContent = t.contact.paused ? 'Release to bot' : 'Take over';
+    $('takeover').dataset.paused = t.contact.paused ? '1' : '';
+    renderMsgs(t.messages, false);
+    lastId = t.messages.length ? t.messages[t.messages.length - 1].id : 0;
+    renderList();
+  }
+
+  async function tick() {
+    try {
+      await loadChats();
+      $('live').classList.add('on');
+      if (current && lastId) {
+        const t = await api('/api/inbox/' + encodeURIComponent(current) + '?after=' + lastId);
+        if (t.messages && t.messages.length) {
+          renderMsgs(t.messages, true);
+          lastId = t.messages[t.messages.length - 1].id;
+          loadChats();
+        }
+      }
+    } catch (e) {
+      $('live').classList.remove('on');
+      $('note').textContent = 'Not connected: ' + e.message;
+    }
+  }
+
+  async function send() {
+    const box = $('text');
+    const text = box.value.trim();
+    if (!text || !current) return;
+    $('send').disabled = true;
+    try {
+      const r = await fetch(q('/api/inbox/' + encodeURIComponent(current) + '/reply'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text })
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { $('note').textContent = 'Not sent: ' + (data.reason || data.error || r.status); return; }
+      box.value = '';
+      $('note').textContent = 'Sent. The bot is quiet in this chat' + (data.handoff ? ' for ' + data.handoff.minutes + ' min' : '') + '.';
+      $('takeover').textContent = 'Release to bot';
+      const t = await api('/api/inbox/' + encodeURIComponent(current) + '?after=' + lastId);
+      if (t.messages && t.messages.length) { renderMsgs(t.messages, true); lastId = t.messages[t.messages.length - 1].id; }
+    } catch (e) {
+      $('note').textContent = 'Not sent: ' + e.message;
+    } finally { $('send').disabled = false; }
+  }
+
+  $('send').onclick = send;
+  $('text').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+  $('back').onclick = () => { current = null; document.body.classList.remove('reading'); $('msgs').innerHTML = ''; $('who').textContent = 'Pick a chat'; $('sub').textContent = ''; $('back').style.display = 'none'; };
+  $('takeover').onclick = async () => {
+    if (!current) return;
+    const paused = $('takeover').dataset.paused === '1';
+    const r = await fetch(q('/api/inbox/' + encodeURIComponent(current) + '/' + (paused ? 'release' : 'takeover')), { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) { $('takeover').textContent = paused ? 'Take over' : 'Release to bot'; $('takeover').dataset.paused = paused ? '' : '1'; $('note').textContent = paused ? 'Bot is answering again.' : 'Bot is quiet here' + (d.minutes ? ' for ' + d.minutes + ' min' : '') + '.'; }
+    else $('note').textContent = 'Could not change: ' + (d.reason || r.status);
+  };
+
+  loadChats().then(() => {
+    const first = chats[0];
+    if (first && window.innerWidth > 720) open(first.number);
+  }).catch((e) => { $('note').textContent = 'Inbox unavailable: ' + e.message; });
+
+  pollTimer = setInterval(tick, 3000);
+  window.addEventListener('beforeunload', () => clearInterval(pollTimer));
+})();
+</script>
+</body></html>

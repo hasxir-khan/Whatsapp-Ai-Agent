@@ -307,6 +307,9 @@ export const config = {
     // Optional shared secret for the dashboard. Set it on any box with a public
     // IP: the growth figures are business data, not a landing page.
     token: process.env.DASHBOARD_TOKEN || '',
+    // Optional public base URL (e.g. behind a cloudflared tunnel), used only to
+    // print a clickable inbox link in .inbox.
+    publicUrl: (process.env.PUBLIC_URL || '').replace(/\/$/, ''),
   },
 
   // How the Gemini key is presented: "key" → x-goog-api-key header,

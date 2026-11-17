@@ -46,6 +46,7 @@ export const FEATURE_KEYS = [
   'injectionGuard',
   'pdfInvoices',
   'selfHealing',
+  'liveInbox',
 ];
 
 export const FEATURE_LABELS = {
@@ -76,6 +77,7 @@ export const FEATURE_LABELS = {
   injectionGuard: 'Extra prompt-injection defence',
   pdfInvoices: 'PDF quotes, invoices and receipts on WhatsApp',
   selfHealing: 'Learn FAQ rules from your own manual replies (owner-approved)',
+  liveInbox: 'Live inbox on the dashboard: read, reply and take over chats',
 };
 
 // ── live profile access ─────────────────────────────────────
@@ -107,6 +109,7 @@ export const FEATURE_ALIASES = {
   invoices: 'pdfInvoices',
   pdf: 'pdfInvoices',
   healing: 'selfHealing',
+  inbox: 'liveInbox',
 };
 
 /** Flags that are ON unless explicitly turned off. */

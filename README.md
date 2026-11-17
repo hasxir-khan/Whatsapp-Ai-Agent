@@ -484,6 +484,7 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `contentAgent` | 3 | Weekly pack: 5 posts, 3 statuses, 1 reel idea (alias `content`) |
 | `pdfInvoices` | 4 | A4 PDF quote/invoice/receipt, sent on WhatsApp (alias `invoices`) |
 | `selfHealing` | 4 | Learns FAQ rules from your own manual replies (alias `healing`) |
+| `liveInbox` | 4 | Read and answer every chat from a browser page (alias `inbox`) |
 | `closer` | 3 | Objection handling, payment links |
 | `reactivation` | 3 | Monthly win-back for old clients |
 | `reviews` | 3 | Review and referral requests |
@@ -988,6 +989,54 @@ Limits: **3 proposals a day** (`SELF_HEALING_MAX_PER_DAY`), at most 10 waiting a
 
 ---
 
+## The live inbox
+
+Everything else in this bot is about talking to customers. This is about *you* reading along, and stepping in when the bot is out of its depth.
+
+```json
+"features": { "liveInbox": true }
+```
+
+```
+you: .inbox
+bot: 📥 Live inbox
+     3 unread in 2 chat(s) · 2 waiting for a reply
+     1 chat(s) where the bot is quiet
+     http://localhost:3000/inbox?token=…
+     The link contains your token — do not forward it.
+```
+
+Open it and you get two panes: the chat list on the left with unread counts and who spoke last, the conversation on the right with every message labelled `bot`, `you` or nothing (the customer). It refreshes every three seconds, so a new message shows up while you are looking at the screen.
+
+### What the buttons actually do
+
+| Action | What happens |
+|---|---|
+| **Send** | The message goes out from your number, is recorded as *your* turn, and the bot steps back for the handoff window (45 min by default). Exactly what happens when you reply from your phone — one behaviour, two doors. |
+| **Take over** | Pauses the bot in that chat for the chosen window (15 min by default), without sending anything. |
+| **Release to bot** | Undoes it immediately. |
+| **← Chats** | Back to the list (phones show one pane at a time). |
+
+A chat is **unread** when the customer spoke last — not a flag that has to be maintained and can drift. `2 waiting` in `.inbox` means two customers are sitting there with no answer.
+
+### Where it keeps its promises
+
+- **Behind the token.** With `DASHBOARD_TOKEN` set, `/inbox` and every `/api/inbox` route return 401 without it — bearer header, `?token=`, or the cookie. The page also sends `Content-Security-Policy`, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`, and it loads nothing from anywhere: no CDN, no fonts, no analytics. One HTML file, `src/web/inbox.html`.
+- **It never invents data.** The list is a query over `messages` and `contacts`. There is no second store, no sync job, no "read" table to fall out of step.
+- **It refuses honestly.** No transport connected in this process → `503 no_transport`, and nothing is written into the history pretending it was sent. Blocked chat → `409`. Over 4000 characters → `400 too_long`. Bad JSON → `400 bad_json`.
+- **One tenant only.** The process owns one database; the page has no tenant switch and no way to query another. What is not in this SQLite file cannot be shown.
+
+### Running it behind a tunnel
+
+```bash
+PUBLIC_URL=https://bot.yourdomain.com   # makes .inbox print a clickable link
+DASHBOARD_TOKEN=something-long          # non-negotiable on a public box
+```
+
+`npm run doctor` says so out loud: with `liveInbox` on and no token, it warns that anyone who can reach the port can read every conversation — and again if `HOST=0.0.0.0` with no token. If you do not set `PUBLIC_URL`, `.inbox` prints a localhost link, which is correct when you are sitting at the machine.
+
+---
+
 ## Switching to the official Cloud API
 
 Baileys is the default because it is free and needs no approval: one QR scan and
@@ -1331,6 +1380,7 @@ Type in your own WhatsApp chat (message yourself):
 | `.invoice <id>` | the PDF for an order — `.invoice <id> send` delivers it to the client |
 | `.rules` | FAQ rules learned from your replies, waiting for a yes or no |
 | `.approve-rule <id>` / `.reject-rule <id>` | decide one |
+| `.inbox` | the live inbox link, with what is waiting |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
@@ -1533,6 +1583,9 @@ Run through this once, in order. It takes about twenty minutes and prevents most
 - **Booking reminders and follow-ups only go out if the process is running** at the right moment; a reminder that falls due while the bot is down is sent on the next start, still inside quiet hours and caps.
 - **The weekly report's suggestions need a model**; without a key you get the deterministic three, which are blunter but still true. The numbers themselves never need a model.
 - **A payment receipt is never auto-verified.** Reading a screenshot proves nothing about a bank balance — `.paid` stays a human decision.
+- **The inbox is not a CRM.** No tags, no notes, no bulk actions, no filters beyond "newest first". It is for reading and answering, which is what a phone-sized business needs.
+- **Three-second refresh, not websockets.** New messages appear within a few seconds; there is no typing indicator and no delivery-receipt display.
+- **It is one process.** If you run several tenants with `run-all.js`, each has its own port and its own inbox — there is deliberately no combined view that could mix customers up.
 - **Urdu in the PDF is transliterated, not typeset.** Standard Arabic shapes correctly; Urdu's extra letters cannot be rendered without an OpenType shaper plus bidi, which pdfkit does not have. You get readable Roman Urdu, never mirrored glyphs. If that matters for your invoices, put the Roman name in the catalogue.
 - **A learned rule is only as good as your one sentence.** It is keyword-matched, like every FAQ. `.rules` and a quick read before `.approve-rule` is the whole quality process.
 - **A win-back campaign is the riskiest thing here.** On Baileys, a burst of messages to people who have not written in a month is exactly what gets a number limited. The campaign is slow and capped for that reason — do not raise those caps to "get it done faster".
@@ -1596,6 +1649,7 @@ src/
     growthDashboard.js  funnel, per-agent and per-source numbers
     invoice.js          PDF quotes, invoices and receipts
     selfHealing.js      candidate rules from the owner's own replies
+    liveInbox.js        the inbox: chats, threads, replies, takeover
     injection.js        (core) untrusted text: detect, neutralise, fence
     script.js           (core) Urdu/Arabic → shaped or transliterated
   transport/            how the bot talks to WhatsApp, behind one interface
@@ -1624,8 +1678,9 @@ scripts/
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
   backup.js  restore.js   one-file backup of DB + config
+src/web/inbox.html      the inbox page (one file, no dependencies)
 assets/fonts/           Noto Sans + Noto Naskh Arabic (bundled, subsetted, OFL)
-test/                   532 tests (node:test, no dependencies)
+test/                   548 tests (node:test, no dependencies)
 ```
 
 ---
@@ -1633,13 +1688,13 @@ test/                   532 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test                 # 532 tests, ~37s, no network, no keys
+npm test                 # 548 tests, ~37s, no network, no keys
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys
 ```
 
-The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening, `37`–`38` for PDF documents and the learning loop.
+The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening, `37`–`38` for PDF documents and the learning loop, `39` for the live inbox.
 
 ---
 

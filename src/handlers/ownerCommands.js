@@ -88,6 +88,7 @@ const HELP = `*Bot commands*
 .invoice <id> – the PDF for an order/quote (.invoice <id> send → to the client)
 .rules – FAQ rules learned from your own replies, waiting for a yes/no
 .approve-rule <id> / .reject-rule <id>
+.inbox – the live inbox link (read + reply from the browser)
 .ping`;
 
 /** What this process is talking to, and what that transport cannot do. */
@@ -152,6 +153,7 @@ const OWNER_ONLY = new Set([
   'export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq',
   'features', 'knowledge', 'tools', 'intents', 'growth', 'optouts', 'bookings', 'cancel', 'approve', 'skip',
   'done', 'paid', 'referrals', 'content', 'campaign', 'invoice', 'rules', 'approve-rule', 'reject-rule',
+  'inbox',
 ]);
 
 /**
@@ -683,6 +685,34 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         return { handled: true, reply: 'Usage: .content now  (a fresh pack; the weekly one arrives on its own)' };
       }
       return { handled: true, reply: await contentPackText({ now: new Date() }) };
+    }
+
+    case 'inbox': {
+      const L = await import('../services/liveInbox.js');
+      if (!L.liveInboxEnabled()) {
+        return {
+          handled: true,
+          reply:
+            'The live inbox is off.\nTurn it on with: .set features.liveInbox true\n' +
+            'Then open /inbox on the dashboard' + (config.server.token ? ' with your DASHBOARD_TOKEN.' : '.'),
+        };
+      }
+      if (!config.server.enabled) {
+        return { handled: true, reply: 'The web server is off (ENABLE_WEB=false), so there is no inbox page to open.' };
+      }
+      const sum = L.inboxSummary();
+      const base = config.server.publicUrl || null;
+      return {
+        handled: true,
+        reply:
+          `📥 Live inbox\n\n` +
+          `${sum.unreadMessages} unread in ${sum.unreadChats} chat(s) · ${sum.awaitingUs} waiting for a reply\n` +
+          `${sum.paused} chat(s) where the bot is quiet\n\n` +
+          `${L.inboxUrl(base)}\n\n` +
+          (config.server.token
+            ? 'The link contains your token — do not forward it.'
+            : 'Set DASHBOARD_TOKEN before exposing this beyond your own machine.'),
+      };
     }
 
     case 'rules': {

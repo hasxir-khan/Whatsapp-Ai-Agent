@@ -727,6 +727,7 @@
     "reactivationAgent": false,
     "contentAgent": false,
     "pdfInvoices": false,
-    "selfHealing": false
+    "selfHealing": false,
+    "liveInbox": false
   }
 }

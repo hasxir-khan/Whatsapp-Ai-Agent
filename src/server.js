@@ -4,6 +4,7 @@
 // must expose a port anyway (Railway/Render health checks).
 
 import http from 'node:http';
+import fs from 'node:fs';
 import QRCode from 'qrcode';
 import { config, teamMembers } from './config/env.js';
 import { botState, uptimeMinutes } from './state.js';
@@ -23,6 +24,10 @@ import { hasFfmpeg } from './services/ffmpeg.js';
 import { handleWebhookRequest } from './transport/webhooks.js';
 import { getTransport } from './transport/index.js';
 import { growthSnapshot, SOURCE_LABELS } from './services/growthDashboard.js';
+import {
+  liveInboxEnabled, inboxChats, inboxThread, inboxReply,
+  inboxTakeover, inboxRelease, inboxSummary, latestMessageId,
+} from './services/liveInbox.js';
 
 const esc = (v) =>
   String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -432,6 +437,146 @@ export function growthSection(growth) {
   `;
 }
 
+// ════════════════════════════════════════════════════════════
+// Live inbox — the owner's screen
+// ════════════════════════════════════════════════════════════
+const INBOX_CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'";
+
+/**
+ * One page, no framework, no build step, no external requests: it has to work
+ * on a phone over a slow link, and it must not phone anywhere.
+ */
+/**
+ * The inbox page lives in src/web/inbox.html: one static file, no build step,
+ * no external requests, no framework. Read once at first use.
+ */
+let inboxPageCache = null;
+export function inboxPage() {
+  if (inboxPageCache === null) {
+    inboxPageCache = fs.readFileSync(new URL('./web/inbox.html', import.meta.url), 'utf8');
+  }
+  return inboxPageCache;
+}
+
+async function readJsonBody(req, limit = 16 * 1024) {
+  return new Promise((resolve) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) {
+        req.destroy();
+        resolve(null);
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+      } catch {
+        resolve(null);
+      }
+    });
+    req.on('error', () => resolve(null));
+  });
+}
+
+/** JSON helper: one shape for every inbox response, including failures. */
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(body));
+}
+
+/**
+ * Every /api/inbox* route. Returns true when it handled the request.
+ * Kept in one function so the auth check cannot be forgotten on a new route.
+ */
+async function handleInboxRoute(req, res, url) {
+  const pathname = url.pathname;
+  if (pathname !== '/inbox' && !pathname.startsWith('/api/inbox')) return false;
+
+  if (!liveInboxEnabled()) {
+    if (pathname === '/inbox') {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Live inbox is off. Turn it on with: .set features.liveInbox true');
+    } else {
+      sendJson(res, 404, { error: 'disabled', hint: '.set features.liveInbox true' });
+    }
+    return true;
+  }
+
+  if (!authorised(req, url)) {
+    if (pathname === '/inbox') {
+      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><title>Locked</title><p>The inbox needs <code>?token=…</code> (DASHBOARD_TOKEN).</p>');
+    } else {
+      sendJson(res, 401, { error: 'unauthorised' });
+    }
+    return true;
+  }
+
+  if (pathname === '/inbox') {
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Security-Policy': INBOX_CSP,
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+    });
+    res.end(inboxPage());
+    return true;
+  }
+
+  if (pathname === '/api/inbox' && (req.method === 'GET' || !req.method)) {
+    sendJson(res, 200, { chats: inboxChats(), summary: inboxSummary(), latestId: latestMessageId() });
+    return true;
+  }
+
+  // /api/inbox/<number>[/action]
+  const parts = pathname.split('/').filter(Boolean); // ['api','inbox','<number>','action']
+  const number = parts[2] ? decodeURIComponent(parts[2]).replace(/\D/g, '') : null;
+  const action = parts[3] || null;
+
+  if (!number) {
+    sendJson(res, 404, { error: 'not_found' });
+    return true;
+  }
+
+  if (!action && req.method === 'GET') {
+    const after = url.searchParams.get('after');
+    sendJson(res, 200, inboxThread(number, { after: after ? Number(after) : null }));
+    return true;
+  }
+
+  if (action === 'reply' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    if (!body) {
+      sendJson(res, 400, { error: 'bad_json' });
+      return true;
+    }
+    const result = await inboxReply({
+      number,
+      text: body.text,
+      transport: getTransport(),
+      now: new Date(),
+    });
+    const { status = 200, ...rest } = result;
+    sendJson(res, status, rest);
+    return true;
+  }
+
+  if ((action === 'takeover' || action === 'release') && req.method === 'POST') {
+    const body = (await readJsonBody(req)) || {};
+    const result = action === 'takeover' ? inboxTakeover(number, { minutes: body.minutes }) : inboxRelease(number);
+    sendJson(res, result.ok ? 200 : 400, result);
+    return true;
+  }
+
+  sendJson(res, 405, { error: 'method_not_allowed' });
+  return true;
+}
+
 export function startServer() {
   if (!config.server.enabled) {
     console.log('🌐 Dashboard disabled (ENABLE_WEB=false)');
@@ -445,6 +590,9 @@ export function startServer() {
       // Cloud API webhooks: /webhook/<slug> (GET verification, POST messages).
       // Unknown slugs answer honestly instead of pretending to be Meta's friend.
       if (await handleWebhookRequest(req, res, url)) return;
+
+      // Live inbox: /inbox and /api/inbox* — token-gated, flag-gated.
+      if (await handleInboxRoute(req, res, url)) return;
 
       if (url.pathname === '/qr.png') {
         if (!botState.qr) {
@@ -515,4 +663,5 @@ export function startServer() {
   return server;
 }
 
-export default { startServer };
+export { handleInboxRoute, readJsonBody };
+export default { startServer, inboxPage };

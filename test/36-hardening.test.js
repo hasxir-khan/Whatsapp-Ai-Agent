@@ -255,6 +255,29 @@ test('doctor warns about PDF invoices that cannot be paid or filled in', async (
   assert.deepEqual(clean, []);
 });
 
+test('doctor refuses to be quiet about an inbox with no token', async () => {
+  const { growthSettingsWarnings } = await import('../scripts/doctor.js');
+
+  const exposed = growthSettingsWarnings(
+    { features: { liveInbox: true }, business: { name: 'HasDevs' } },
+    { HOST: '0.0.0.0', DASHBOARD_TOKEN: '' }
+  );
+  assert.ok(exposed.some((w) => /DASHBOARD_TOKEN is empty/i.test(w)), exposed.join('\n'));
+  assert.ok(exposed.some((w) => /0\.0\.0\.0/.test(w)));
+
+  const noWeb = growthSettingsWarnings(
+    { features: { liveInbox: true }, business: { name: 'HasDevs' } },
+    { ENABLE_WEB: 'false', DASHBOARD_TOKEN: 'x' }
+  );
+  assert.ok(noWeb.some((w) => /ENABLE_WEB is false/i.test(w)));
+
+  const safe = growthSettingsWarnings(
+    { features: { liveInbox: true }, business: { name: 'HasDevs' } },
+    { HOST: '127.0.0.1', DASHBOARD_TOKEN: 'something-long', ENABLE_WEB: 'true' }
+  );
+  assert.deepEqual(safe, []);
+});
+
 test('doctor warns when rule proposals outnumber what anyone would review', async () => {
   const { growthSettingsWarnings } = await import('../scripts/doctor.js');
   const loud = growthSettingsWarnings({ features: { selfHealing: true }, business: {} }, { SELF_HEALING_MAX_PER_DAY: '9' });

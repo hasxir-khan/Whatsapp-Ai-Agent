@@ -120,7 +120,7 @@ async function checkBusiness() {
   }
 
   // ── Phase 4: documents and the learning loop ───────────────
-  const docFlags = ['pdfInvoices', 'selfHealing', 'injectionGuard'].filter((f) => featureOn(f));
+  const docFlags = ['pdfInvoices', 'selfHealing', 'liveInbox', 'injectionGuard'].filter((f) => featureOn(f));
   if (docFlags.length) ok(`Phase 4 features on: ${docFlags.join(', ')}`);
   for (const risk of growthSettingsWarnings(profile, process.env, { transport: config.transport })) {
     warn(risk);
@@ -604,6 +604,21 @@ export function growthSettingsWarnings(profile = {}, env = {}, { transport = nul
       }
     }
     if (!business.name) warnings.push('pdfInvoices is on but business.name is empty — the document would say "Business"');
+  }
+
+  if (on('liveInbox')) {
+    // This is the riskiest of the Phase 4 flags: it is the only one that puts
+    // customer conversations on a web page.
+    if (!env.DASHBOARD_TOKEN) {
+      warnings.push('liveInbox is on but DASHBOARD_TOKEN is empty — anyone who can reach the port can read every conversation');
+    }
+    if (String(env.ENABLE_WEB || 'true').toLowerCase() === 'false') {
+      warnings.push('liveInbox is on but ENABLE_WEB is false — the web server never starts, so there is no inbox to open');
+    }
+    const host = String(env.HOST || '0.0.0.0');
+    if (!env.DASHBOARD_TOKEN && (host === '0.0.0.0' || host === '::')) {
+      warnings.push('liveInbox listens on 0.0.0.0 with no token — bind HOST=127.0.0.1 or set DASHBOARD_TOKEN');
+    }
   }
 
   if (on('selfHealing') && Number(env.SELF_HEALING_MAX_PER_DAY || 3) > 5) {

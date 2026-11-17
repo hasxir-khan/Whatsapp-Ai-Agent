@@ -236,6 +236,11 @@ TRANSPORT=baileys
 # SELF_HEALING_WINDOW_MINUTES=30
 # SELF_HEALING_MAX_PER_DAY=3
 
+# ── Live inbox (Phase 4) ────────────────────────────────────
+# config/owner.json: features.liveInbox.
+# DASHBOARD_TOKEN=long-random-string   # required on anything public
+# PUBLIC_URL=https://bot.yourdomain.com  # for the .inbox link
+
 # ── Google Calendar (optional) ──────────────────────────────
 # Bookings live in SQLite either way; this only mirrors them.
 # GOOGLE_CALENDAR_ID=
