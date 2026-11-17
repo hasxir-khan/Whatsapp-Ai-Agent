@@ -182,7 +182,18 @@ test('.approve sends the draft to the customer', async () => {
 
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const sock = fakeSock();
-  const reply = (await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', `.approve ${draft.id}`)).reply;
+
+  // `.approve` is the owner pressing a button, so it reads the *real* clock —
+  // and this suite may run after 21:00 Karachi, when the quiet window (correctly)
+  // blocks the send. What is under test here is the press, not the hour, so the
+  // window is neutralised for this one call and put back afterwards.
+  P.setPath('business.quietHours', { start: '00:00', end: '00:00' });
+  let reply;
+  try {
+    reply = (await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', `.approve ${draft.id}`)).reply;
+  } finally {
+    P.setPath('business.quietHours', { start: '21:00', end: '09:00' });
+  }
   assert.match(reply, /sent/);
 
   // The command sent it through its own transport, so check the record.
