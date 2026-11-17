@@ -64,6 +64,8 @@ function slotIsTaken(date, time) {
   return rows.length > 0;
 }
 
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
 export function slotLine(slots = []) {
   return slots.map((s, i) => `${i + 1}. ${s.label}`).join('\n');
 }
@@ -494,7 +496,9 @@ function labelFor(date, time, tz) {
     Number(date.slice(0, 4)), Number(date.slice(5, 7)), Number(date.slice(8, 10)),
     Number(time.slice(0, 2)), Number(time.slice(3, 5)), tz
   );
-  return at.toLocaleString('en-GB', { timeZone: tz, weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  // Same shape as the slot labels the customer just picked from ("Tue 4/6, 20:00").
+  const p = partsInTz(at, tz);
+  return `${DAY_NAMES[p.weekday]} ${p.day}/${p.month}, ${time}`;
 }
 
 /**
