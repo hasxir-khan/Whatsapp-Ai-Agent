@@ -15,16 +15,17 @@ Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but bu
 5. [Make it *your* business](#make-it-your-business)
 6. [Business setup — three ways](#business-setup--three-ways)
 7. [Actions the bot can take](#actions-the-bot-can-take)
-8. [Lead intelligence](#lead-intelligence)
-9. [Languages](#languages)
-10. [Missed calls](#missed-calls)
-11. [Offline & bad internet](#offline--bad-internet)
-12. [Team (several people, one inbox)](#team-several-people-one-inbox)
-13. [Commands](#commands)
-14. [Dashboard](#dashboard)
-15. [Deploy for free](#deploy-for-free)
-16. [Troubleshooting](#troubleshooting)
-17. [Honest limitations](#honest-limitations)
+8. [Who answers: the manager agent](#who-answers-the-manager-agent)
+9. [Lead intelligence](#lead-intelligence)
+10. [Languages](#languages)
+11. [Missed calls](#missed-calls)
+12. [Offline & bad internet](#offline--bad-internet)
+13. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
+14. [Commands](#commands)
+15. [Dashboard](#dashboard)
+16. [Deploy for free](#deploy-for-free)
+17. [Troubleshooting](#troubleshooting)
+18. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -465,7 +466,7 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `ownerEditing` | 1 | `.set`, `.addservice`, `.addfaq` from WhatsApp |
 | `toolCalling` | 2 | The five actions, with validation, confirmation and logging |
 | `rag` | 2 | Hybrid retrieval: excerpts from learned documents in every reply |
-| `manager` | 2 | Intent router with specialist agents |
+| `managerAgent` | 2 | Intent router with specialist agents |
 | `cloudApi` | 2 | WhatsApp Cloud API transport alongside Baileys |
 | `booking` | 3 | Appointment slots, reminders, no-show rebooking |
 | `followUps` | 3 | Automatic nudges for quiet leads |
@@ -552,6 +553,99 @@ Every call — tool, arguments, result, status, duration, tenant and chat — is
 ### How it reaches the model
 
 Native function calling is used when the provider offers it (Groq and Gemini both do). If a provider rejects the `tools` parameter, the bot switches to a JSON action protocol (`{"tool":"…","args":{…}}`) for that provider and remembers it, so it never pays for a failed round trip twice.
+
+
+---
+
+## Who answers: the manager agent
+
+One brain answering everything starts to feel like one person doing every job:
+selling to someone who is angry, quoting prices to someone whose order arrived
+cold, taking a booking like it is a sales call. The manager agent decides *who*
+should reply before thinking about *what* to say.
+
+```
+.set features.managerAgent true
+```
+
+Five intents, five specialists. They all share the same persona, the same
+language rules, the same memory and the same learned documents — only the job
+and the tools change.
+
+| Intent | Agent | What changes | Tools it may use |
+|---|---|---|---|
+| sales | 💬 Sales | Qualify, quote, move to an order | check_stock, send_quote, create_order, book_slot, handoff |
+| support | 🛠️ Support | Solve first, sell nothing | check_stock, handoff |
+| booking | 📅 Booking | Get what/day/time, confirm against real hours | check_stock, book_slot, handoff |
+| complaint | 😟 Complaint | Stop selling, apologise once, hand to you | handoff |
+| other | 🤖 General | Exactly the bot you had before | all five |
+
+### How it decides (and why it is cheap)
+
+1. **Rules first.** Keywords in English, Roman Urdu and Urdu script, plus the
+   angry-tone detection that already existed. `"burger ki price kya hai?"` is
+   sales without spending a token. Roughly the whole of ordinary traffic stops
+   here.
+2. **Remembered per conversation.** If the router ever had to think, the answer
+   is kept for that chat for 15 minutes, so a long conversation does not pay
+   for a router call on every message.
+3. **The model last.** Only when the rules are genuinely unsure — no keyword
+   hit, or two intents neck and neck. A tiny model, one word out, three-second
+   leash.
+
+**Routing can never cost a reply.** If the router times out, errors, or hits a
+rate limit, the message goes to the plain brain and the customer never notices.
+
+### A complaint, end to end
+
+```
+Customer: this is the third time my order is late, honestly useless service
+Bot:      I'm sorry — three times is not a mistake, that's a pattern.
+          Can I ask which order number it was? I'm passing this to the owner
+          himself, he'll look at it today.
+```
+
+…and in your own chat:
+
+```
+😟 Complaint — +923001234567
+They said: "this is the third time my order is late, honestly useless service"
+
+Name: Ali · 3 orders · PKR 4,200 lifetime · last seen 2 min ago
+```
+
+No prices, no "anything else I can get you", no defending the business. The
+complaint agent cannot even see the quoting tool.
+
+### Seeing what it decided
+
+```
+.intents
+```
+
+```
+*Intents today* — 34 messages
+Routing: ✅ on (managerAgent)
+💬 *Sales* — 19
+🛠️ *Support* — 8
+📅 *Booking* — 5
+😟 *Complaint* — 2
+
+Decided by: 29 rules · 4 remembered · 1 model · 0 default
+⚠️ 2 complaints — check your notifications.
+```
+
+`.status` carries a one-line summary too, and every routing decision goes into
+the `message_intents` table if you want to look at it later.
+
+### Turning it off
+
+```
+.set features.managerAgent false
+```
+
+Back to one brain, immediately. Nothing is lost — the log stays, the tools stay,
+the flag is the only switch.
 
 ---
 
@@ -715,7 +809,7 @@ Type in your own WhatsApp chat (message yourself):
 | `.calls` | recent calls and what the bot did |
 | `.report` | today's brief now |
 | `.usage` | free-tier usage today |
-| `.status` | providers, memory, outbox, ffmpeg, follow-ups |
+| `.status` | providers, memory, outbox, ffmpeg, follow-ups, routing |
 | `.voice off\|request\|match\|always` | voice-reply behaviour |
 | `.ai on\|off` | global kill switch |
 | `.export` | JSON backup of contacts + leads |
@@ -728,6 +822,7 @@ Type in your own WhatsApp chat (message yourself):
 | `.features` | what's on, what's off |
 | `.knowledge` | learned documents, chunks and vector status |
 | `.tools` | the last 10 actions the bot took, with arguments |
+| `.intents` | who answered what today: sales, support, booking, complaint — and how it was decided |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
@@ -847,6 +942,7 @@ src/
     rag.js              hybrid retrieval (vectors + BM25) and the prompt block
     tools.js            the five actions: schemas, validation, confirmations
     hours.js            opening hours parsed and checked in the business timezone
+    manager.js          intent rules, the model router, specialist agents
     toolCalling.js      the model loop: native function calling or JSON fallback
     leads.js            lead scoring, next actions, pipeline summary
     outbox.js           offline queue: never lose a reply
@@ -866,7 +962,7 @@ scripts/
   learn.js              ingest one document into a tenant's knowledge base
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   249 tests (node:test, no dependencies)
+test/                   271 tests (node:test, no dependencies)
 ```
 
 ---
@@ -874,7 +970,7 @@ test/                   249 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test          # 249 tests: hours, tools, rag, profile, templates, leads, outbox…
+npm test          # 271 tests: manager, hours, tools, rag, profile, templates, leads, outbox…
 npm run doctor    # environment + live API checks
 npm run chat -- --mock   # talk to the brain with no keys
 ```

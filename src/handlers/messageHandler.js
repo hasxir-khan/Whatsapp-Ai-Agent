@@ -14,6 +14,7 @@ import * as db from '../utils/db.js';
 import * as media from '../services/media.js';
 import { detectLanguage, detectTone, fromWhisperLanguage } from '../services/language.js';
 import { generateReply, detectMood, needsOwner } from '../core/brain.js';
+import { routeMessage, managerEnabled } from '../core/manager.js';
 import {
   toolCallingEnabled, hasPendingConfirmation, confirmPending, cancelPending,
   isAffirmative, isNegative,
@@ -497,9 +498,32 @@ async function processBatch(sock, jid, number, items) {
     return;
   }
 
+  // ── who should answer this one? ─────────────────────────
+  // Cheap rules first; the model only when they are unsure. A failure here
+  // must never cost the customer a reply, so routeMessage never throws.
+  let route = null;
+  if (managerEnabled()) {
+    try {
+      route = await routeMessage({ text: humanText, mood, langInfo, chatId: jid });
+      db.logIntent({
+        tenant: config.tenant.slug,
+        chat: jid,
+        intent: route.intent,
+        agent: route.agent,
+        source: route.source,
+        confidence: route.confidence,
+      });
+      db.logEvent('route', number, { intent: route.intent, source: route.source });
+    } catch (err) {
+      db.logEvent('route_error', number, err.message);
+      route = null;
+    }
+  }
+
   const reply = await generateReply({
     number,
     text: modelText,
+    agent: route?.agent || null,
     kind: parts[0]?.kind || 'text',
     langInfo,
     dossier,
@@ -572,11 +596,22 @@ async function processBatch(sock, jid, number, items) {
   }
 
   // ── escalation / owner notifications ────────────────────
-  const esc = needsOwner(humanText);
-  if (esc.required && config.behavior.escalateToOwner) {
-    db.logEvent('escalation', number, { reason: esc.reason });
-    await notifyOwner(sock, `⚠️ Needs you — +${number} (${esc.reason})\n\n${memory.buildOwnerBrief(number)}`);
-    await notifyOperator(sock, number, `⚠️ Your chat +${number} needs a human (${esc.reason}).`);
+  // A complaint is handed to the owner with a summary, whether or not it also
+  // trips the keyword escalator — one notification, not two.
+  if (route?.intent === 'complaint' && config.behavior.escalateToOwner) {
+    db.logEvent('complaint_handoff', number, { source: route.source });
+    await notifyOwner(
+      sock,
+      `😟 Complaint — +${number}\nThey said: "${humanText.slice(0, 240)}"\n\n${memory.buildOwnerBrief(number)}`
+    );
+    await notifyOperator(sock, number, `😟 A customer complained (+${number}). It is in your chat.`);
+  } else {
+    const esc = needsOwner(humanText);
+    if (esc.required && config.behavior.escalateToOwner) {
+      db.logEvent('escalation', number, { reason: esc.reason });
+      await notifyOwner(sock, `⚠️ Needs you — +${number} (${esc.reason})\n\n${memory.buildOwnerBrief(number)}`);
+      await notifyOperator(sock, number, `⚠️ Your chat +${number} needs a human (${esc.reason}).`);
+    }
   }
 
   // ── memory roll-up every N messages ─────────────────────

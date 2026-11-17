@@ -39,8 +39,8 @@ function looksUnsupported(err) {
 }
 
 /** The three tools the model sees, in each provider's favourite shape. */
-export function providerTools() {
-  return TOOL_DEFS.map((def) => ({
+export function providerTools(allowed = null) {
+  return TOOL_DEFS.filter((def) => !allowed || allowed.has(def.name)).map((def) => ({
     name: def.name,
     description: def.description,
     parameters: def.parameters,
@@ -58,11 +58,11 @@ function resultsNote(results) {
   return lines.join('\n');
 }
 
-async function modelTurn({ system, messages, native }) {
+async function modelTurn({ system, messages, native, allowed = null }) {
   if (native) {
-    return chat({ system, messages, tools: providerTools() });
+    return chat({ system, messages, tools: providerTools(allowed) });
   }
-  return chat({ system: `${system}\n\n${toolJsonProtocol()}`, messages });
+  return chat({ system: `${system}\n\n${toolJsonProtocol(allowed)}`, messages });
 }
 
 /**
@@ -76,7 +76,8 @@ async function modelTurn({ system, messages, native }) {
  * @returns {Promise<{text:string, provider?:string, model?:string, calls:Array, status:string}>}
  */
 export async function generateWithTools({ system, messages, ctx = {}, onToolResult = null }) {
-  const baseSystem = `${system}\n\n${toolsPrompt()}`;
+  const allowed = ctx.allowedTools || null;
+  const baseSystem = `${system}\n\n${toolsPrompt(allowed)}`;
   const transcript = [];
   const calls = [];
   let native = true;
@@ -93,6 +94,7 @@ export async function generateWithTools({ system, messages, ctx = {}, onToolResu
         system: finalRound ? `${systemNow}\n\nYou have used all the actions available for this message. Answer the customer now in words.` : systemNow,
         messages,
         native: native && !finalRound,
+        allowed,
       });
     } catch (err) {
       if (native && looksUnsupported(err)) {
@@ -161,6 +163,7 @@ export async function generateWithTools({ system, messages, ctx = {}, onToolResu
         system: `${systemNow}\n\n${resultsNote(transcript)}\n\nYou have used all the actions available for this message. Answer the customer now in words.`,
         messages,
         native: false,
+        allowed,
       });
       return { text: cleanText(closing.text), provider: closing.provider, model: closing.model, calls, status: 'ok' };
     }

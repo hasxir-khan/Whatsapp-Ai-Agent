@@ -134,6 +134,19 @@ async function checkBusiness() {
     info('Tool calling is off (.set features.toolCalling true to let it book and order)');
   }
 
+  // intent routing
+  if (featureOn('managerAgent') || featureOn('manager')) {
+    const { AGENTS } = await import('../src/core/manager.js');
+    ok('Manager agent on — messages are routed to a specialist first');
+    for (const [key, agent] of Object.entries(AGENTS)) {
+      if (key === 'other') continue;
+      info(`${agent.emoji} ${agent.label}: ${agent.tools?.join(', ') || 'all tools'}`);
+    }
+    info('Owner command .intents shows today\'s counts');
+  } else {
+    info('Manager agent is off (one brain answers everything). Turn on: .set features.managerAgent true');
+  }
+
   // learned documents
   const dbFile = path.join(config.paths.data, 'assistant.db');
   if (fs.existsSync(dbFile)) {

@@ -542,6 +542,12 @@ export async function executeTool(name, rawArgs, ctx = {}) {
     return { status: 'rejected', message: 'unknown tool' };
   }
 
+  // A specialist only gets the tools its job needs.
+  if (ctx.allowedTools && !ctx.allowedTools.has(name)) {
+    log('rejected', { error: 'not allowed for this agent' });
+    return { status: 'rejected', message: 'not available in this conversation' };
+  }
+
   const { args, removed } = stripMoneyFields(rawArgs);
   const { ok, value, errors } = validateArgs(name, args);
   if (!ok) {
@@ -628,10 +634,15 @@ export function hasPendingConfirmation(chat) {
 // ── prompt material ─────────────────────────────────────────
 
 /** Tool list + rules, injected into the system prompt. */
-export function toolsPrompt() {
+export function toolsPrompt(allowed = null) {
+  const usable = TOOL_DEFS.filter((def) => !allowed || allowed.has(def.name));
   const lines = ['── ACTIONS YOU CAN TAKE ──'];
+  if (!usable.length) {
+    lines.push('None for this conversation. Answer in words only.');
+    return lines.join('\n');
+  }
   lines.push('You may ask the system to run one of these actions. You never run them yourself, and you never make up their results.');
-  for (const def of TOOL_DEFS) {
+  for (const def of usable) {
     const fields = Object.entries(def.parameters.properties || {})
       .map(([key, value]) => `${key}${(def.parameters.required || []).includes(key) ? '*' : ''}: ${value.type}`)
       .join(', ');
@@ -647,8 +658,8 @@ export function toolsPrompt() {
 }
 
 /** The JSON protocol, used when a provider has no native function calling. */
-export function toolJsonProtocol() {
-  const schemas = TOOL_DEFS.map((def) => ({
+export function toolJsonProtocol(allowed = null) {
+  const schemas = TOOL_DEFS.filter((def) => !allowed || allowed.has(def.name)).map((def) => ({
     tool: def.name,
     args: def.parameters,
   }));

@@ -110,6 +110,7 @@
     "businessProfile": true,
     "catalog": true,
     "knowledge": true,
-    "ownerEditing": true
+    "ownerEditing": true,
+    "managerAgent": false
   }
 }

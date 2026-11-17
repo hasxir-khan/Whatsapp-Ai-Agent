@@ -663,7 +663,7 @@
     "ownerEditing": false,
     "toolCalling": false,
     "rag": false,
-    "manager": false,
+    "managerAgent": false,
     "cloudApi": false,
     "booking": false,
     "followUps": false,

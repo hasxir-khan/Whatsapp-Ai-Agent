@@ -25,7 +25,8 @@ export const FEATURE_KEYS = [
   // phase 2
   'toolCalling',
   'rag',
-  'manager',
+  'managerAgent',
+  'manager', // deprecated alias of managerAgent
   'cloudApi',
   // phase 3
   'booking',
@@ -46,7 +47,8 @@ export const FEATURE_LABELS = {
   ownerEditing: '.set / .addfaq / .addservice from WhatsApp',
   toolCalling: 'Structured actions (book, stock, order, quote, handoff)',
   rag: 'Vector search over learned documents',
-  manager: 'Intent router with specialist agents',
+  managerAgent: 'Intent router with specialist agents',
+  manager: 'Deprecated alias of managerAgent',
   cloudApi: 'WhatsApp Cloud API transport',
   booking: 'Appointment slots, reminders, no-show rebooking',
   followUps: 'Automatic nudges for quiet leads',

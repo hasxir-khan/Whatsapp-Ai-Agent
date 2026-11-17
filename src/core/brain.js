@@ -19,6 +19,7 @@ import { featureOn, business, effectiveCatalog, tone as toneConfig, goals as goa
 import { knowledgeContext } from '../services/rag.js';
 import { featureOn as featureFlag } from '../services/profile.js';
 import { generateWithTools } from './toolCalling.js';
+import { AGENTS, allowedTools } from './manager.js';
 
 const P = config.owner.profile || {};
 const OWNER = P.owner || {};
@@ -368,6 +369,8 @@ export async function generateReply({
   chatId = null,
   send = null,
   notifyOwner = null,
+  // Which specialist is answering (phase 2 step 3). Null keeps the old brain.
+  agent = null,
 }) {
   if (!hasLLM()) {
     return {
@@ -388,7 +391,13 @@ export async function generateReply({
     }
   }
 
-  const system = systemPrompt({ dossier, intakeState, langInfo, chatType, features, tone, knowledgeBlock });
+  let system = systemPrompt({ dossier, intakeState, langInfo, chatType, features, tone, knowledgeBlock });
+
+  // A specialist keeps the same persona, language rules and knowledge — only
+  // its job changes, plus the tools it is trusted with.
+  const specialist = agent && AGENTS[agent] && agent !== 'other' ? AGENTS[agent] : null;
+  if (specialist) system = `${system}\n\n${specialist.prompt}`;
+
   const history = buildHistoryMessages(dossier);
 
   const userContent = extraNote ? `${text}\n\n[system note: ${extraNote}]` : text;
@@ -407,6 +416,7 @@ export async function generateReply({
           send,
           notifyOwner,
           who: dossier?.name || number,
+          allowedTools: specialist ? allowedTools(agent) : null,
         },
       });
 

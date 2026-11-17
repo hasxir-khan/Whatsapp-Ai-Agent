@@ -23,7 +23,8 @@ import { ttsStatus } from '../services/tts.js';
 import { videoCapabilities } from '../services/video.js';
 import { sttEnabled } from '../services/transcription.js';
 import { hasFfmpeg } from '../services/ffmpeg.js';
-import { pendingFollowUps } from '../utils/db.js';
+import { pendingFollowUps, intentStatsForDay } from '../utils/db.js';
+import { intentSummary, managerEnabled, AGENTS } from '../core/manager.js';
 import { outboxStatus } from '../services/outbox.js';
 import { knowledgeSources, knowledgeStats, knowledgeEmbeddingStats, recentToolCalls, toolCallStats } from '../utils/db.js';
 import { toolNames, toolCallingEnabled } from '../core/tools.js';
@@ -65,6 +66,7 @@ const HELP = `*Bot commands*
 .features – which capabilities are on
 .knowledge – learned documents + vector status
 .tools – last 10 actions the bot took
+.intents – who answered what today (sales / support / booking / complaint)
 .ping`;
 
 function parseTarget(raw = '') {
@@ -109,7 +111,7 @@ const COMMAND_PERMISSION = {
   team: 'chats',
 };
 
-const OWNER_ONLY = new Set(['export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq', 'features', 'knowledge', 'tools']);
+const OWNER_ONLY = new Set(['export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq', 'features', 'knowledge', 'tools', 'intents']);
 
 /**
  * @returns {Promise<{handled:boolean, reply?:string, voice?:object}>}
@@ -313,6 +315,29 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       return { handled: true, reply: lines.join('\n') };
     }
 
+    case 'intents': {
+      const counts = intentStatsForDay();
+      const { byIntent, bySource } = intentSummary(counts);
+      const total = Object.values(byIntent).reduce((a, b) => a + b, 0);
+      const lines = [`*Intents today* — ${total} message${total === 1 ? '' : 's'}`];
+      lines.push(managerEnabled() ? 'Routing: ✅ on (managerAgent)' : 'Routing: ⏸ off (.set features.managerAgent true)');
+      if (!total) {
+        lines.push('');
+        lines.push('Nothing routed yet today. Counts reset at midnight UTC.');
+        return { handled: true, reply: lines.join('\n') };
+      }
+      lines.push('');
+      for (const [intent, count] of Object.entries(byIntent)) {
+        if (!count) continue;
+        const agent = AGENTS[intent];
+        lines.push(`${agent.emoji} *${agent.label}* — ${count}`);
+      }
+      lines.push('');
+      lines.push(`Decided by: ${bySource.rules} rules · ${bySource.cache} remembered · ${bySource.llm} model · ${bySource.fallback} default`);
+      if (byIntent.complaint) lines.push(`⚠️ ${byIntent.complaint} complaint${byIntent.complaint === 1 ? '' : 's'} — check your notifications.`);
+      return { handled: true, reply: lines.join('\n') };
+    }
+
     case 'knowledge': {
       const sources = knowledgeSources();
       const totals = knowledgeStats();
@@ -368,6 +393,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         `Pending follow-ups: ${stats.pendingFollowUps}`,
         `Outbox: ${outboxStatus().pending} queued · ${outboxStatus().failed} failed`,
         `Bot globally: ${getSetting('bot_enabled', true) ? 'ON' : 'OFF'}`,
+        `Routing: ${managerEnabled() ? 'manager agent on' : 'single brain (managerAgent off)'}`,
       ];
       return { handled: true, reply: lines.join('\n') };
     }

@@ -252,6 +252,19 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at  TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_key ON orders(key);
+
+-- Which specialist answered, and how we decided (phase 2 step 3).
+CREATE TABLE IF NOT EXISTS message_intents (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  chat        TEXT,
+  intent      TEXT,
+  agent       TEXT,
+  source      TEXT,          -- rules | cache | llm | fallback
+  confidence  REAL,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_intents_created ON message_intents(created_at);
 `;
 
 export async function initDB({ file = DB_FILE } = {}) {
@@ -1195,4 +1208,39 @@ export function createOrder({ chat, items, total, currency = 'PKR', name = null,
 
 export function recentOrders(limit = 10) {
   return all('SELECT * FROM orders ORDER BY id DESC LIMIT ?', [limit]).map((o) => ({ ...o, items: safeJson(o.items) || [] }));
+}
+
+// ── intents ────────────────────────────────────────────────
+
+export function logIntent({ tenant = null, chat = null, intent = 'other', agent = 'other', source = 'rules', confidence = 0 } = {}) {
+  run('INSERT INTO message_intents (tenant, chat, intent, agent, source, confidence, created_at) VALUES (?,?,?,?,?,?,?)', [
+    tenant,
+    chat,
+    intent,
+    agent,
+    source,
+    confidence,
+    new Date().toISOString(),
+  ]);
+  // no saveDB here: this table is analytics, it rides along with the next write
+  return true;
+}
+
+export function intentCountsSince(sinceIso) {
+  return all(
+    `SELECT intent, agent, source, COUNT(*) AS count
+       FROM message_intents
+      WHERE created_at >= ?
+      GROUP BY intent, agent, source
+      ORDER BY count DESC`,
+    [sinceIso]
+  );
+}
+
+export function recentIntents(limit = 15) {
+  return all('SELECT * FROM message_intents ORDER BY id DESC LIMIT ?', [limit]);
+}
+
+export function intentStatsForDay(dayKey = new Date().toISOString().slice(0, 10)) {
+  return intentCountsSince(`${dayKey}T00:00:00.000Z`);
 }
