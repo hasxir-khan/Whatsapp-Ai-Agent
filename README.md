@@ -216,6 +216,28 @@ node scripts/tenant.js show <slug>
 node scripts/tenant.js rm <slug> --yes      # deletes their clients + session too
 ```
 
+### Check every user in one command
+
+```bash
+npm run doctor:all        # config, keys, services, session, ports, duplicate numbers
+npm run doctor:live       # the same, plus real API calls with each user"s key
+node scripts/doctor.js all --json   # machine-readable output for dashboards/CI
+```
+
+It catches the mistakes that actually break a fleet:
+
+```
+🩺 Fleet check — 3 users
+
+  ✔ alpha-co    Ayesha Designs  +923001112233  port 3001  keys:GM services:4  session:yes db:148 KB
+  ▲ beta-co     Bilal Studio    +923001112233  port 3002  keys:G· services:3  session:no  db:0 KB
+      ↳ no GEMINI_API_KEY — it cannot see images or video
+      ↳ not logged in — QR needed on first start
+      ↳ same number as alpha-co — two bots on one number disconnect each other
+```
+
+Exits non-zero if anything is wrong, so it works in a deploy script.
+
 ### Things worth knowing
 
 - **One WhatsApp number per user.** Two installs on one number will disconnect each other.
@@ -566,7 +588,7 @@ scripts/
   tenant.js             create / inspect / delete users
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   129 tests (node:test, no dependencies)
+test/                   134 tests (node:test, no dependencies)
 ```
 
 ---
@@ -574,7 +596,7 @@ test/                   129 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test          # 129 tests: languages, leads, outbox, tenants, calls, router…
+npm test          # 134 tests: languages, leads, outbox, tenants, calls, router…
 npm run doctor    # environment + live API checks
 npm run chat -- --mock   # talk to the brain with no keys
 ```

@@ -18,13 +18,13 @@ export const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
  * Google hands out two kinds of credentials; both work, but with different
  * headers, so the style is configurable (GEMINI_AUTH_STYLE).
  */
+/** Auth headers for an arbitrary key (used by the fleet doctor). */
+export function authHeadersFor(key = '', style = 'key') {
+  return style === 'bearer' ? { Authorization: `Bearer ${key}` } : { 'x-goog-api-key': key };
+}
+
 export function geminiHeaders(extra = {}, style = config.geminiAuthStyle) {
-  const key = config.keys.gemini || '';
-  const auth =
-    style === 'bearer'
-      ? { Authorization: `Bearer ${key}` }
-      : { 'x-goog-api-key': key };
-  return { ...auth, ...extra };
+  return { ...authHeadersFor(config.keys.gemini || '', style), ...extra };
 }
 
 /** The same headers with the other auth style — used by the doctor's probe. */

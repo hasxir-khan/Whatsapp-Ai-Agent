@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config, describeConfig, teamMembers } from '../src/config/env.js';
-import { GEMINI_BASE, geminiHeadersWith, isKeyError, explainGeminiError, maskKey, keyFormat } from '../src/utils/gemini.js';
+import { GEMINI_BASE, geminiHeadersWith, authHeadersFor, isKeyError, explainGeminiError, maskKey, keyFormat } from '../src/utils/gemini.js';
 
 const ok = (m) => console.log(`  ✅ ${m}`);
 const warn = (m) => console.log(`  ⚠️  ${m}`);
@@ -324,10 +324,222 @@ async function checkWhatsApp() {
   if (config.session.backupEnv) ok('WA_SESSION restore blob present');
 }
 
+// ════════════════════════════════════════════════════════════
+// Fleet check — every user in one pass
+// ════════════════════════════════════════════════════════════
+function readEnvFile(file) {
+  const out = {};
+  try {
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+      if (m) out[m[1]] = m[2].trim();
+    }
+  } catch {
+    /* no env file */
+  }
+  return out;
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function sizeOf(file) {
+  try {
+    return fs.statSync(file).size;
+  } catch {
+    return 0;
+  }
+}
+
+const kb = (n) => (n >= 1024 * 1024 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
+
+async function liveGroq(key) {
+  if (!key) return { state: 'missing' };
+  try {
+    const res = await timedFetch('https://api.groq.com/openai/v1/models', {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (res.ok) return { state: 'ok' };
+    if (res.status === 401 || res.status === 403) return { state: 'rejected', detail: `HTTP ${res.status}` };
+    return { state: 'error', detail: `HTTP ${res.status}` };
+  } catch (err) {
+    return { state: 'unreachable', detail: err.message.split('\n')[0] };
+  }
+}
+
+async function liveGemini(key) {
+  if (!key) return { state: 'missing' };
+  try {
+    const res = await timedFetch(`${GEMINI_BASE}/models?pageSize=1`, { headers: authHeadersFor(key) });
+    if (res.ok) return { state: 'ok' };
+    const body = await res.text();
+    return { state: isKeyError(res.status, body) ? 'rejected' : 'error', detail: `HTTP ${res.status}` };
+  } catch (err) {
+    return { state: 'unreachable', detail: err.message.split('\n')[0] };
+  }
+}
+
+async function checkFleet({ live = false, json = false } = {}) {
+  const tenantsDir = path.join(process.cwd(), 'tenants');
+  const rows = [];
+
+  // the owner install counts as a user too
+  const rootEnv = readEnvFile(path.join(process.cwd(), '.env'));
+  const rootProfile = readJson(path.join(process.cwd(), 'config', 'owner.json'));
+  rows.push({
+    slug: 'default',
+    name: rootProfile?.owner?.name || rootEnv.MY_NAME || 'owner install',
+    number: rootProfile?.owner?.number || rootEnv.MY_NUMBER || '',
+    port: rootEnv.PORT || '3000',
+    dir: process.cwd(),
+    env: rootEnv,
+    profile: rootProfile,
+    builtin: true,
+  });
+
+  if (fs.existsSync(tenantsDir)) {
+    for (const slug of fs.readdirSync(tenantsDir)) {
+      const dir = path.join(tenantsDir, slug);
+      const meta = readJson(path.join(dir, 'tenant.json'));
+      if (!meta) continue;
+      rows.push({
+        slug: meta.slug || slug,
+        name: meta.name || slug,
+        number: meta.number || '',
+        port: String(meta.port || ''),
+        dir,
+        env: readEnvFile(path.join(dir, '.env')),
+        profile: readJson(path.join(dir, 'config', 'owner.json')),
+        meta,
+        builtin: false,
+      });
+    }
+  }
+
+  if (!json) {
+    console.log(
+      `\n\x1b[1m🩺 Fleet check\x1b[0m — ${rows.length} user${rows.length === 1 ? '' : 's'}${live ? ' · live API calls' : ''}\n`
+    );
+  }
+
+  const issues = [];
+  const report = [];
+  const seenNumbers = new Map();
+  const seenPorts = new Map();
+
+  // The owner install keeps its price list in owner.example.json (owner.json
+  // only overrides), so fall back to the schema file for that row.
+  const schema = readJson(path.join(process.cwd(), 'config', 'owner.example.json'));
+
+  for (const row of rows) {
+    const services =
+      row.profile?.owner?.services?.length ||
+      (row.builtin ? schema?.owner?.services?.length || 0 : 0);
+    const session = fs.existsSync(path.join(row.dir, 'sessions', 'creds.json')) ||
+      fs.existsSync(path.join(row.dir, 'sessions', 'creds'));
+    const dbBytes = sizeOf(path.join(row.dir, 'data', 'assistant.db'));
+    const groq = row.env.GROQ_API_KEY || (row.builtin ? config.keys.groq : '');
+    const gemini = row.env.GEMINI_API_KEY || (row.builtin ? config.keys.gemini : '');
+
+    const local = [];
+    if (!row.profile) local.push('no config/owner.json — it has no business knowledge');
+    else if (services === 0) local.push('no services in the price list — it cannot quote');
+    if (!groq) local.push('no GROQ_API_KEY — voice notes cannot be transcribed');
+    if (!gemini) local.push('no GEMINI_API_KEY — it cannot see images or video');
+    if (!session) local.push('not logged in — QR needed on first start');
+    if (!row.number) local.push('no WhatsApp number configured');
+
+    if (row.number) {
+      const key = String(row.number).replace(/\D/g, '');
+      if (seenNumbers.has(key)) {
+        local.push(`same number as ${seenNumbers.get(key)} — two bots on one number disconnect each other`);
+      } else {
+        seenNumbers.set(key, row.slug);
+      }
+    }
+    if (row.port) {
+      if (seenPorts.has(row.port)) {
+        local.push(`port ${row.port} already used by ${seenPorts.get(row.port)}`);
+      } else {
+        seenPorts.set(row.port, row.slug);
+      }
+    }
+
+    const rowLive = { groq: { state: groq ? 'unchecked' : 'missing' }, gemini: { state: gemini ? 'unchecked' : 'missing' } };
+    if (live) {
+      rowLive.groq = await liveGroq(groq);
+      rowLive.gemini = await liveGemini(gemini);
+      if (rowLive.groq.state === 'rejected') local.push('Groq rejected the key');
+      if (rowLive.gemini.state === 'rejected') local.push('Gemini rejected the key');
+    }
+
+    for (const problem of local) issues.push(`${row.slug}: ${problem}`);
+
+    report.push({
+      slug: row.slug,
+      name: row.name,
+      number: row.number || null,
+      port: row.port || null,
+      builtin: !!row.builtin,
+      services,
+      hasGroq: !!groq,
+      hasGemini: !!gemini,
+      loggedIn: session,
+      dbBytes,
+      live: live ? { groq: rowLive.groq.state, gemini: rowLive.gemini.state } : null,
+      issues: local,
+    });
+
+    const keysLabel = `${groq ? 'G' : '·'}${gemini ? 'M' : '·'}`;
+    const liveLabel = live
+      ? ` · groq:${rowLive.groq.state} gemini:${rowLive.gemini.state}`
+      : '';
+
+    if (!json) {
+      console.log(
+        `  ${local.length ? '\x1b[33m▲\x1b[0m' : '\x1b[32m✔\x1b[0m'} ${row.slug.padEnd(22)} ` +
+          `${String(row.name).slice(0, 22).padEnd(24)} +${String(row.number || '—').padEnd(14)} ` +
+          `port ${String(row.port || '—').padEnd(6)} keys:${keysLabel} ` +
+          `services:${String(services).padEnd(3)} session:${session ? 'yes' : 'no '} db:${kb(dbBytes).padEnd(8)}${liveLabel}`
+      );
+      for (const problem of local) console.log(`      \x1b[2m↳ ${problem}\x1b[0m`);
+    }
+  }
+
+  if (!json) console.log('');
+  if (json) {
+    console.log(JSON.stringify({ users: report, healthy: issues.length === 0, issues }, null, 2));
+    process.exit(issues.length ? 1 : 0);
+  }
+
+  if (issues.length) {
+    console.log(`  \x1b[33m${issues.length} issue${issues.length === 1 ? '' : 's'} across the fleet\x1b[0m`);
+    console.log('  Fix per user: node scripts/tenant.js keys <slug> GROQ_API_KEY=...');
+    console.log('  Full detail : node scripts/tenant.js show <slug>\n');
+    process.exit(1);
+  }
+
+  console.log('  \x1b[32mAll users look healthy.\x1b[0m');
+  console.log('  Start everybody: node scripts/run-all.js\n');
+}
+
 async function main() {
   // `npm run doctor -- gemini` runs only the checks whose name matches.
-  const only = process.argv.slice(2).join(' ').toLowerCase().trim();
+  const args = process.argv.slice(2);
+  const flags = args.filter((a) => a.startsWith('--')).map((a) => a.slice(2).toLowerCase());
+  const only = args.filter((a) => !a.startsWith('--')).join(' ').toLowerCase().trim();
   const want = (...names) => !only || names.some((n) => n.includes(only) || only.includes(n));
+
+  // Fleet mode: validate every user of this installation in one pass.
+  if (['all', 'fleet', 'tenants', 'users'].includes(only)) {
+    await checkFleet({ live: flags.includes('live'), json: flags.includes('json') });
+    return;
+  }
 
   console.log('\n\x1b[1m🩺 WhatsApp Assistant — self check\x1b[0m');
   if (only) console.log(`\n\x1b[2monly: ${only}\x1b[0m`);

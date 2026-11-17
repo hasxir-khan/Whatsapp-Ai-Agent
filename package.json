@@ -19,7 +19,9 @@
     "seed": "node scripts/seed-demo.js",
     "tenant": "node scripts/tenant.js",
     "all": "node scripts/run-all.js",
-    "users": "node scripts/tenant.js list"
+    "users": "node scripts/tenant.js list",
+    "doctor:all": "node scripts/doctor.js all",
+    "doctor:live": "node scripts/doctor.js all --live"
   },
   "keywords": [
     "whatsapp",
