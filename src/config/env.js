@@ -132,6 +132,10 @@ export const config = {
     host: process.env.HOST || '0.0.0.0',
   },
 
+  // How the Gemini key is presented: "key" → x-goog-api-key header,
+  // "bearer" → Authorization: Bearer, for keys Google issues that way.
+  geminiAuthStyle: (process.env.GEMINI_AUTH_STYLE || 'key').toLowerCase() === 'bearer' ? 'bearer' : 'key',
+
   llm: {
     // provider preference order; only providers with a key are used
     providers: toList(process.env.LLM_PROVIDERS, ['groq', 'gemini', 'openrouter']),
@@ -146,12 +150,15 @@ export const config = {
       'llama-3.1-8b-instant',
       'openai/gpt-oss-120b',
     ]),
+    // Newest free-tier model first, then progressively older ones. If Google
+    // retires or renames one, the next in the chain is tried automatically.
     geminiModels: toList(process.env.GEMINI_MODELS, [
-      process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+      process.env.GEMINI_MODEL || 'gemini-4-hydrogen',
+      'gemini-3.8-flash',
       'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
       'gemini-3-flash-preview',
       'gemini-2.5-flash',
-      'gemini-2.0-flash',
     ]),
     openrouterTextModels: toList(process.env.OPENROUTER_MODELS, [
       'meta-llama/llama-3.3-70b-instruct:free',
@@ -165,11 +172,12 @@ export const config = {
   vision: {
     providers: toList(process.env.VISION_PROVIDERS, ['gemini', 'openrouter', 'groq']),
     geminiModels: toList(process.env.GEMINI_VISION_MODELS, [
-      process.env.GEMINI_VISION_MODEL || 'gemini-3.8-flash',
+      process.env.GEMINI_VISION_MODEL || 'gemini-4-hydrogen',
+      'gemini-3.8-flash',
       'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
       'gemini-3-flash-preview',
       'gemini-2.5-flash',
-      'gemini-2.0-flash',
     ]),
     openrouterModels: toList(process.env.OPENROUTER_VISION_MODELS, [
       process.env.OPENROUTER_VISION_MODEL || 'google/gemini-2.0-flash-exp:free',

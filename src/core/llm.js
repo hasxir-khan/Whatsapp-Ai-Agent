@@ -8,6 +8,7 @@
 
 import { config } from '../config/env.js';
 import { bumpUsage, getUsage, todayKey, logEvent } from '../utils/db.js';
+import { GEMINI_BASE, geminiHeaders, isKeyError, explainGeminiError } from '../utils/gemini.js';
 
 let fetchImpl = globalThis.fetch;
 
@@ -27,6 +28,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Sticky choice: once a provider+model answers, keep using it.
 const sticky = { chat: null, small: null };
+
+export function providerModels(provider) {
+  return candidatesFor(provider, false);
+}
 
 export function providersAvailable() {
   const out = [];
@@ -127,8 +132,7 @@ function toGeminiContents(messages) {
 }
 
 async function gemini({ model, system, messages, temperature, maxTokens, json, signal }) {
-  const key = config.keys.gemini;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${key}`;
+  const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`;
 
   const body = {
     contents: toGeminiContents(messages),
@@ -142,16 +146,18 @@ async function gemini({ model, system, messages, temperature, maxTokens, json, s
 
   const res = await fetchImpl(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: geminiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
     signal,
   });
   const raw = await res.text();
 
   if (!res.ok) {
-    const err = new Error(`gemini ${res.status}: ${raw.slice(0, 300)}`);
+    const err = new Error(explainGeminiError(res.status, raw));
     err.status = res.status;
     err.body = raw;
+    err.model = model;
+    err.keyInvalid = isKeyError(res.status, raw);
     err.retryAfter = parseFloat(res.headers?.get?.('retry-after') || '0') || 0;
     throw err;
   }
@@ -221,6 +227,13 @@ export async function chat({
       } catch (err) {
         lastError = err;
         const status = err.status || 0;
+
+        if (err.keyInvalid) {
+          // Wrong/expired key: every other model on this provider fails too.
+          logEvent('llm_bad_key', null, { provider, model, status });
+          console.error(`🔑 ${provider}: ${err.message}`);
+          break;
+        }
 
         if (status === 429) {
           // Rate limited on this model: brief retry, then fall through.

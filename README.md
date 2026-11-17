@@ -63,8 +63,20 @@ Open `.env` and paste at least:
 ```env
 MY_NUMBER=923169896229
 GROQ_API_KEY=gsk_...           # https://console.groq.com/keys  (free)
-GEMINI_API_KEY=AIza...         # https://aistudio.google.com/api-keys  (free)
+GEMINI_API_KEY=AQ...           # https://aistudio.google.com/api-keys  (free)
 ```
+
+Gemini specifics:
+
+```env
+# Model used for images, video and (as a fallback) chat.
+GEMINI_VISION_MODEL=gemini-4-hydrogen
+GEMINI_MODEL=gemini-4-hydrogen
+# If Google hands you a key that only works as a bearer token, say so:
+# GEMINI_AUTH_STYLE=bearer      (default: key → x-goog-api-key header)
+```
+
+New AI Studio keys start with `AQ.` (the legacy `AIza…` format still works). The key always travels in a header, never in the URL. `npm run doctor -- gemini` checks it against the live API and tells you whether the key was rejected, the model is missing, or you hit a free-tier limit.
 
 ### 3. Check everything
 
@@ -299,7 +311,7 @@ npm run chat -- --mock # no API keys needed at all
 Inside the simulator: `/image photo.jpg`, `/voice note.ogg`, `/video demo.mp4`, `/doc brief.pdf`, `/state`, `/leads`, `/reset`.
 
 ```bash
-npm test               # 87 tests: language, memory, intake, pricing, guards, router
+npm test               # 95 tests: language, memory, intake, pricing, guards, router
 npm run doctor         # environment + live API checks
 ```
 
@@ -349,7 +361,9 @@ A Raspberry Pi, an old laptop, a $0 VPS. It only needs outbound HTTPS.
 | QR keeps appearing | Another WhatsApp Web session took over; delete `./sessions` and re-link one device only. |
 | Connection loop / `405` right after scanning | WhatsApp changed its protocol. Update the client: `npm i @whiskeysockets/baileys@latest` (the code works with 6.x and the 7.x release candidates). |
 | "Connection closed (401)" | Logged out. Delete `./sessions`, restart, scan again. |
-| Replies but no images described | `GEMINI_API_KEY` missing or the model name is retired → `npm run doctor`, then set `GEMINI_VISION_MODELS`. |
+| Replies but no images described | `GEMINI_API_KEY` missing or the model name is retired → `npm run doctor -- gemini`, then set `GEMINI_VISION_MODEL`. |
+| "Gemini rejected the API key" | The key was refused, not the model: revoked, deleted, restricted to other APIs, or its project has no Gemini API enabled. Mint a fresh `AQ.…` key at https://aistudio.google.com/api-keys. |
+| Gemini says model not found | Your key doesn't have that model. `npm run doctor -- gemini` lists what it does have; put one of those in `GEMINI_VISION_MODELS`. |
 | Voice notes not understood | `GROQ_API_KEY` missing, or the note is longer than `MAX_AUDIO_SECONDS`. |
 | Voice reply arrives as a file, not a voice note | No ffmpeg → install it, or `npm i ffmpeg-static`. |
 | Bot talks over me | It shouldn't: your manual reply pauses it for `HANDOFF_MINUTES`. Check `.resume` wasn't needed. |
@@ -410,7 +424,7 @@ src/
   dev/mockLlm.js        offline fake provider for demos and tests
 scripts/
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   87 tests (node:test, no dependencies)
+test/                   95 tests (node:test, no dependencies)
 ```
 
 ---

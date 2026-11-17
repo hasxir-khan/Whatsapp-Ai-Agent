@@ -11,8 +11,7 @@
 import fs from 'node:fs';
 import { config } from '../config/env.js';
 import { bumpUsage, logEvent } from '../utils/db.js';
-
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+import { GEMINI_BASE, geminiHeaders, isKeyError, explainGeminiError } from '../utils/gemini.js';
 
 const sticky = { image: null, video: null };
 
@@ -39,7 +38,7 @@ const DATA_URL = (buffer, mimetype) => `data:${mimetype || 'image/jpeg'};base64,
 
 // ── Gemini ──────────────────────────────────────────────────
 async function geminiGenerate({ model, parts, system, temperature = 0.4, maxTokens = 900 }) {
-  const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${config.keys.gemini}`;
+  const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`;
   const body = {
     contents: [{ role: 'user', parts }],
     generationConfig: { temperature, maxOutputTokens: maxTokens },
@@ -48,16 +47,18 @@ async function geminiGenerate({ model, parts, system, temperature = 0.4, maxToke
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: geminiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(90000),
   });
   const raw = await res.text();
 
   if (!res.ok) {
-    const err = new Error(`gemini vision ${res.status}: ${raw.slice(0, 250)}`);
+    const err = new Error(explainGeminiError(res.status, raw));
     err.status = res.status;
     err.body = raw;
+    err.model = model;
+    err.keyInvalid = isKeyError(res.status, raw);
     throw err;
   }
 
@@ -69,15 +70,15 @@ async function geminiGenerate({ model, parts, system, temperature = 0.4, maxToke
 
 /** Upload a large file to Gemini's Files API and return its URI. */
 async function geminiUpload(buffer, mimetype, displayName = 'whatsapp-media') {
-  const startRes = await fetch(`${GEMINI_BASE.replace('/v1beta', '')}/upload/v1beta/files?key=${config.keys.gemini}`, {
+  const startRes = await fetch(`${GEMINI_BASE.replace('/v1beta', '')}/upload/v1beta/files`, {
     method: 'POST',
-    headers: {
+    headers: geminiHeaders({
       'X-Goog-Upload-Protocol': 'resumable',
       'X-Goog-Upload-Command': 'start',
       'X-Goog-Upload-Header-Content-Length': String(buffer.length),
       'X-Goog-Upload-Header-Content-Type': mimetype,
       'Content-Type': 'application/json',
-    },
+    }),
     body: JSON.stringify({ file: { display_name: displayName } }),
     signal: AbortSignal.timeout(30000),
   });
@@ -108,7 +109,10 @@ async function geminiUpload(buffer, mimetype, displayName = 'whatsapp-media') {
   for (let i = 0; i < 30 && state !== 'ACTIVE'; i++) {
     if (state === 'FAILED') throw new Error('gemini file processing failed');
     await new Promise((r) => setTimeout(r, 2000));
-    const check = await fetch(`${GEMINI_BASE}/${file.name}?key=${config.keys.gemini}`, { signal: AbortSignal.timeout(20000) });
+    const check = await fetch(`${GEMINI_BASE}/${file.name}`, {
+      headers: geminiHeaders(),
+      signal: AbortSignal.timeout(20000),
+    });
     const info = await check.json();
     state = info.state || info.file?.state;
     if (state === 'ACTIVE') {
@@ -122,7 +126,11 @@ async function geminiUpload(buffer, mimetype, displayName = 'whatsapp-media') {
 
 async function geminiDeleteFile(name) {
   try {
-    await fetch(`${GEMINI_BASE}/${name}?key=${config.keys.gemini}`, { method: 'DELETE', signal: AbortSignal.timeout(10000) });
+    await fetch(`${GEMINI_BASE}/${name}`, {
+      method: 'DELETE',
+      headers: geminiHeaders(),
+      signal: AbortSignal.timeout(10000),
+    });
   } catch {
     /* ignore */
   }
@@ -143,6 +151,11 @@ async function withGeminiModels(kind, fn) {
       }
     } catch (err) {
       lastError = err;
+      if (err.keyInvalid) {
+        logEvent('vision_bad_key', null, { status: err.status });
+        console.error(`🔑 gemini vision: ${err.message}`);
+        break;
+      }
       if (err.status === 429) {
         logEvent('vision_rate_limited', null, { provider: 'gemini', model });
         await new Promise((r) => setTimeout(r, 2500));

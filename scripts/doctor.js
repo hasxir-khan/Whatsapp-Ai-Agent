@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config, describeConfig } from '../src/config/env.js';
+import { GEMINI_BASE, geminiHeadersWith, isKeyError, explainGeminiError, maskKey, keyFormat } from '../src/utils/gemini.js';
 
 const ok = (m) => console.log(`  ✅ ${m}`);
 const warn = (m) => console.log(`  ⚠️  ${m}`);
@@ -122,27 +123,116 @@ async function checkGemini() {
     notes.push('Free key: https://aistudio.google.com/api-keys (needed for "see my video").');
     return;
   }
-  ok('Key present');
+
+  const format = keyFormat(config.keys.gemini);
+  ok(`Key present: ${maskKey(config.keys.gemini)} (${format === 'current' ? 'AQ. — current format' : format === 'legacy' ? 'AIza — legacy format, still valid' : 'unrecognised format'})`);
+  if (format === 'unknown') {
+    notes.push('Gemini keys start with "AQ." (current) or "AIza" (legacy). Yours looks truncated — re-copy the whole key.');
+  }
+
+  // 1. Is the key accepted at all? Try the configured auth style, then the other.
+  const styles = config.geminiAuthStyle === 'bearer' ? ['bearer', 'key'] : ['key', 'bearer'];
+  let workingStyle = null;
+  let lastFailure = null;
+
   try {
-    const res = await timedFetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${config.keys.gemini}`);
-    if (!res.ok) {
-      bad(`Gemini API returned ${res.status}`);
-      if (res.status === 400 || res.status === 403) problems.push('GEMINI_API_KEY is invalid or blocked.');
+    for (const style of styles) {
+      const res = await timedFetch(`${GEMINI_BASE}/models?pageSize=1`, { headers: geminiHeadersWith(style) });
+      const body = await res.text();
+      if (res.ok) {
+        workingStyle = style;
+        break;
+      }
+      lastFailure = { status: res.status, body };
+      // Only an auth failure is worth retrying with another auth style.
+      if (!isKeyError(res.status, body)) break;
+    }
+
+    if (!workingStyle) {
+      const { status, body } = lastFailure || { status: 0, body: '' };
+      bad(explainGeminiError(status, body));
+      if (isKeyError(status, body)) {
+        problems.push('GEMINI_API_KEY was rejected by Google — replace it in .env.');
+        notes.push(
+          'The key was refused, not the model: it may be revoked, deleted, restricted to other APIs, or from a project without the Gemini API enabled. Mint a new one at https://aistudio.google.com/api-keys (they start with "AQ.").'
+        );
+      }
       return;
     }
-    const data = await res.json();
+
+    ok(`Key accepted by Google (${workingStyle === 'key' ? 'x-goog-api-key' : 'Authorization: Bearer'} auth)`);
+    if (workingStyle !== config.geminiAuthStyle) {
+      notes.push(`This key needs a different auth style. Add \x1b[1mGEMINI_AUTH_STYLE=${workingStyle}\x1b[0m to .env`);
+    }
+
+    const data = JSON.parse(await (await timedFetch(`${GEMINI_BASE}/models?pageSize=200`, { headers: geminiHeadersWith(workingStyle) })).text());
     const names = (data.models || [])
       .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
       .map((m) => m.name.replace('models/', ''));
-    ok(`${names.length} usable models`);
-    for (const model of config.vision.geminiModels) {
-      info(`${names.includes(model) ? '✅' : '❌'} ${model}`);
+    if (names.length) info(`${names.length} models on this key, e.g. ${names.slice(0, 4).join(', ')}`);
+
+    // 2. Can we actually generate with the models we plan to use?
+    const chain = [...new Set([...config.vision.geminiModels, ...config.llm.geminiModels])];
+    info(`model chain: ${chain.join(' → ')}`);
+
+    let working = null;
+    for (const model of chain.slice(0, 4)) {
+      const modelRes = await timedFetch(
+        `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`,
+        {
+          method: 'POST',
+          headers: geminiHeadersWith(workingStyle, { 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: 'reply with the single word: ok' }] }],
+            generationConfig: { maxOutputTokens: 5, temperature: 0 },
+          }),
+        },
+        20000
+      );
+      const modelBody = await modelRes.text();
+
+      if (modelRes.ok) {
+        ok(`${model} works`);
+        working = working || model;
+        try {
+          const j = JSON.parse(modelBody);
+          const answer = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text).join('').trim();
+          if (answer) info(`it answered: "${answer.slice(0, 40)}"`);
+        } catch {
+          /* the answer text is a bonus, not a requirement */
+        }
+        break;
+      }
+
+      if (isKeyError(modelRes.status, modelBody)) {
+        bad(explainGeminiError(modelRes.status, modelBody));
+        problems.push('GEMINI_API_KEY was rejected by Google — replace it in .env.');
+        return;
+      }
+      if (modelRes.status === 404 || modelRes.status === 400) {
+        info(`❌ ${model} — not available on this key`);
+        continue;
+      }
+      if (modelRes.status === 429) {
+        warn(`${model} is rate-limited right now (free tier). It usually still works later.`);
+        break;
+      }
+      bad(`${model} — ${explainGeminiError(modelRes.status, modelBody)}`);
+      break;
     }
-    if (!config.vision.geminiModels.some((m) => names.includes(m))) {
-      notes.push(`None of your GEMINI_VISION_MODELS are available. Available example: ${names.slice(0, 5).join(', ')}`);
+
+    if (!working) {
+      problems.push(
+        `None of your Gemini models responded. Set GEMINI_VISION_MODEL to one from this list and retry: ${names.slice(0, 6).join(', ') || '(none listed)'}`
+      );
     }
   } catch (err) {
-    warn(`Could not reach Gemini: ${err.message}`);
+    if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|fetch failed|network|timed out/i.test(err.message)) {
+      warn(`Could not reach Gemini from this machine (${err.message.split('\n')[0]})`);
+      notes.push('No internet / firewall on this box — the key cannot be verified offline. Run `npm run doctor` on the machine that runs the bot.');
+    } else {
+      warn(`Gemini check failed: ${err.message.split('\n')[0]}`);
+    }
   }
 }
 
@@ -208,18 +298,23 @@ async function checkWhatsApp() {
 }
 
 async function main() {
+  // `npm run doctor -- gemini` runs only the checks whose name matches.
+  const only = process.argv.slice(2).join(' ').toLowerCase().trim();
+  const want = (...names) => !only || names.some((n) => n.includes(only) || only.includes(n));
+
   console.log('\n\x1b[1m🩺 WhatsApp Assistant — self check\x1b[0m');
+  if (only) console.log(`\n\x1b[2monly: ${only}\x1b[0m`);
   console.log('\n' + describeConfig());
 
-  await checkNode();
-  await checkFiles();
-  await checkOwner();
-  await checkGroq();
-  await checkGemini();
-  await checkOpenRouter();
-  await checkMedia();
-  await checkMemory();
-  await checkWhatsApp();
+  if (want('runtime')) await checkNode();
+  if (want('files')) await checkFiles();
+  if (want('identity', 'owner')) await checkOwner();
+  if (want('groq')) await checkGroq();
+  if (want('gemini', 'google')) await checkGemini();
+  if (want('openrouter')) await checkOpenRouter();
+  if (want('media', 'ffmpeg', 'vision')) await checkMedia();
+  if (want('memory', 'db', 'database')) await checkMemory();
+  if (want('whatsapp', 'session')) await checkWhatsApp();
 
   section('Summary');
   if (problems.length) {
