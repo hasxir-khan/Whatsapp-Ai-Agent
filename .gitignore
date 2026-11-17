@@ -1,17 +1,4 @@
 node_modules/
 sessions/
-data/
-tmp/
 .env
-.env.local
-config/owner.local.json
-qr.png
 *.log
-.DS_Store
-
-# each user's private workspace (keys, session, clients)
-tenants/
-qr-*.png
-
-# Backups are data, not code — keep them off the repo.
-backups/
