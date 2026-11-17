@@ -159,6 +159,28 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status, id);
 
+-- Cloud API: what we sent, and what Meta said happened to it.
+CREATE TABLE IF NOT EXISTS cloud_messages (
+  wa_id       TEXT PRIMARY KEY,
+  tenant      TEXT,
+  number      TEXT,
+  kind        TEXT,
+  status      TEXT DEFAULT 'sent',   -- sent | delivered | read | failed
+  outbox_id   INTEGER,
+  error       TEXT,
+  created_at  TEXT,
+  updated_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_status ON cloud_messages(status, updated_at);
+
+-- Cloud API: when each customer last wrote to us. That single timestamp decides
+-- whether Meta lets us send a free-form message (24-hour service window).
+CREATE TABLE IF NOT EXISTS cloud_windows (
+  number       TEXT PRIMARY KEY,
+  last_inbound TEXT,
+  updated_at   TEXT
+);
+
 CREATE TABLE IF NOT EXISTS calls (
   id          TEXT PRIMARY KEY,
   number      TEXT,
@@ -497,14 +519,30 @@ export function teamWorkload() {
 // ════════════════════════════════════════════════════════════
 // Outbox — replies that could not be sent yet (offline / dropped)
 // ════════════════════════════════════════════════════════════
-export function enqueueOutbox(jid, payload, { kind = 'text', error = null } = {}) {
+export function enqueueOutbox(jid, payload, { kind = 'text', error = null, status = 'pending' } = {}) {
   run(
     'INSERT INTO outbox (jid, payload, kind, status, error, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [jid, JSON.stringify(payload), kind, 'pending', error, new Date().toISOString()]
+    [jid, JSON.stringify(payload), kind, status, error, new Date().toISOString()]
   );
-  const row = get("SELECT * FROM outbox WHERE status = 'pending' ORDER BY id DESC LIMIT 1");
+  const row = get('SELECT * FROM outbox WHERE status = ? ORDER BY id DESC LIMIT 1', [status]);
   return row;
 }
+
+/**
+ * Cloud API only: hold a message until the 24-hour window reopens.
+ * A held row is deliberately invisible to dueOutbox(), so the retry loop will
+ * not hammer Meta with a send that is certain to be refused.
+ */
+export function holdOutbox(jid, payload, { kind = 'text', error = null } = {}) {
+  return enqueueOutbox(jid, payload, { kind, error, status: 'held' });
+}
+
+/** The customer wrote back → everything held for them can go now. */
+export function releaseHeld(jid) {
+  run("UPDATE outbox SET status = 'pending', error = NULL WHERE status = 'held' AND jid = ?", [jid]);
+  return get("SELECT COUNT(*) AS n FROM outbox WHERE status = 'pending' AND jid = ?", [jid])?.n || 0;
+}
+
 
 export function dueOutbox(limit = 25) {
   return all("SELECT * FROM outbox WHERE status = 'pending' ORDER BY id ASC LIMIT ?", [limit]);
@@ -535,7 +573,8 @@ export function outboxStats() {
   const pending = get("SELECT COUNT(*) AS n FROM outbox WHERE status = 'pending'")?.n || 0;
   const failed = get("SELECT COUNT(*) AS n FROM outbox WHERE status = 'failed'")?.n || 0;
   const sent = get("SELECT COUNT(*) AS n FROM outbox WHERE status = 'sent'")?.n || 0;
-  return { pending, failed, sent };
+  const held = get("SELECT COUNT(*) AS n FROM outbox WHERE status = 'held'")?.n || 0;
+  return { pending, failed, sent, held };
 }
 
 export function pruneOutbox(days = 14) {
@@ -1243,4 +1282,69 @@ export function recentIntents(limit = 15) {
 
 export function intentStatsForDay(dayKey = new Date().toISOString().slice(0, 10)) {
   return intentCountsSince(`${dayKey}T00:00:00.000Z`);
+}
+
+// ════════════════════════════════════════════════════════════
+// Cloud API — delivery tracking and the 24-hour window
+// ════════════════════════════════════════════════════════════
+
+export function cloudTrack({ waId, tenant = null, number = null, kind = 'text', outboxId = null } = {}) {
+  if (!waId) return null;
+  const now = new Date().toISOString();
+  run(
+    `INSERT INTO cloud_messages (wa_id, tenant, number, kind, status, outbox_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'sent', ?, ?, ?)
+     ON CONFLICT(wa_id) DO UPDATE SET updated_at = excluded.updated_at`,
+    [waId, tenant, number, kind, outboxId, now, now]
+  );
+  return get('SELECT * FROM cloud_messages WHERE wa_id = ?', [waId]);
+}
+
+export function cloudMarkStatus(waId, status, { error = null } = {}) {
+  if (!waId) return null;
+  const row = get('SELECT * FROM cloud_messages WHERE wa_id = ?', [waId]);
+  const now = new Date().toISOString();
+
+  if (!row) {
+    // A status for something we have no record of (e.g. sent before a restart).
+    run(
+      'INSERT INTO cloud_messages (wa_id, status, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      [waId, status, error, now, now]
+    );
+    return get('SELECT * FROM cloud_messages WHERE wa_id = ?', [waId]);
+  }
+
+  run('UPDATE cloud_messages SET status = ?, error = ?, updated_at = ? WHERE wa_id = ?', [
+    status,
+    error ?? row.error ?? null,
+    now,
+    waId,
+  ]);
+
+  // Mirror onto the outbox row this send came from, so one queue tells the truth.
+  if (row.outbox_id) {
+    if (status === 'failed') updateOutbox(row.outbox_id, { status: 'failed', error: error || 'delivery failed' });
+    else if (status === 'delivered' || status === 'read') updateOutbox(row.outbox_id, { status });
+  }
+  return get('SELECT * FROM cloud_messages WHERE wa_id = ?', [waId]);
+}
+
+export function cloudMessage(waId) {
+  return get('SELECT * FROM cloud_messages WHERE wa_id = ?', [waId]);
+}
+
+export function cloudDeliveryStats() {
+  return all('SELECT status, COUNT(*) AS n FROM cloud_messages GROUP BY status');
+}
+
+export function cloudWindowTouch(number, at = new Date().toISOString()) {
+  run(
+    `INSERT INTO cloud_windows (number, last_inbound, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(number) DO UPDATE SET last_inbound = excluded.last_inbound, updated_at = excluded.updated_at`,
+    [number, at, new Date().toISOString()]
+  );
+}
+
+export function cloudWindowGet(number) {
+  return get('SELECT * FROM cloud_windows WHERE number = ?', [number]);
 }

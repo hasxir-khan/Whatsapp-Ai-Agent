@@ -20,6 +20,8 @@ import { ttsStatus } from './services/tts.js';
 import { videoCapabilities } from './services/video.js';
 import { sttEnabled } from './services/transcription.js';
 import { hasFfmpeg } from './services/ffmpeg.js';
+import { handleWebhookRequest } from './transport/webhooks.js';
+import { getTransport } from './transport/index.js';
 
 const esc = (v) =>
   String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -42,6 +44,13 @@ function buildStatus() {
     pairingCode: botState.pairingCode,
     lastError: botState.lastError,
     dryRun: config.dryRun,
+    transport: {
+      kind: getTransport()?.kind || config.transport,
+      slug: getTransport()?.slug || config.tenant.slug,
+      status: getTransport()?.status || 'not started',
+      webhookPath: getTransport()?.webhookPath || null,
+      capabilities: getTransport()?.capabilities || null,
+    },
     botEnabled: getSetting('bot_enabled', true) !== false,
     stats,
     features: {
@@ -265,8 +274,13 @@ function page(data) {
         <span class="tag ${data.features.tts !== 'off' ? '' : 'off'}">voice out: ${data.features.tts}</span>
         <span class="tag ${data.features.videoReady ? '' : 'off'}">video</span>
         <span class="tag ${data.features.ffmpeg ? '' : 'off'}">ffmpeg</span>
+        <span class="tag">${esc(data.transport.kind)}</span>
       </div>
-      <div class="small" style="margin-top:10px;">Groups, channels and status updates are blocked by design.</div>
+      <div class="small" style="margin-top:10px;">
+        Transport: ${esc(data.transport.kind)}${data.transport.webhookPath ? ` · webhook ${esc(data.transport.webhookPath)}` : ''}
+        ${data.transport.capabilities && !data.transport.capabilities.presence ? '· no typing indicators' : ''}
+        <br />Groups, channels and status updates are blocked by design.
+      </div>
     </div>
   </div>
 
@@ -334,6 +348,10 @@ export function startServer() {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
     try {
+      // Cloud API webhooks: /webhook/<slug> (GET verification, POST messages).
+      // Unknown slugs answer honestly instead of pretending to be Meta's friend.
+      if (await handleWebhookRequest(req, res, url)) return;
+
       if (url.pathname === '/qr.png') {
         if (!botState.qr) {
           res.writeHead(404, { 'Content-Type': 'text/plain' });

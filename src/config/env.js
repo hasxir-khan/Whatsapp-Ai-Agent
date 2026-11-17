@@ -180,6 +180,25 @@ export const config = {
     openrouter: process.env.OPENROUTER_API_KEY || '',
   },
 
+  // ── how the bot talks to WhatsApp ────────────────────────
+  // "baileys" (default, unchanged, free, needs a phone) or "cloud" (Meta's
+  // official API, no phone needed, requires a Meta app + a public webhook).
+  transport: (process.env.TRANSPORT || 'baileys').trim().toLowerCase() === 'cloud' ? 'cloud' : 'baileys',
+
+  cloud: {
+    phoneId: process.env.CLOUD_PHONE_ID || '',
+    token: process.env.CLOUD_TOKEN || '',
+    verifyToken: process.env.CLOUD_VERIFY_TOKEN || '',
+    appSecret: process.env.CLOUD_APP_SECRET || '',
+    apiVersion: process.env.CLOUD_API_VERSION || 'v21.0',
+    // Webhook path is per tenant: /webhook/<slug>
+    slug: TENANT,
+    // Optional: an approved template to use when the 24-hour window is closed.
+    template: process.env.CLOUD_TEMPLATE_NAME
+      ? { name: process.env.CLOUD_TEMPLATE_NAME, language: process.env.CLOUD_TEMPLATE_LANG || 'en' }
+      : null,
+  },
+
   // Free-tier embeddings for the knowledge base (Phase 2 RAG).
   embed: {
     enabled: toBool(process.env.EMBEDDINGS, true),
@@ -431,6 +450,7 @@ export function describeConfig() {
     `Gemini key   : ${has(config.keys.gemini)}   (images + video)`,
     `OpenRouter   : ${has(config.keys.openrouter)}   (vision fallback)`,
     `Voice replies: ${config.tts.mode} via ${config.tts.providers.join(' > ')}`,
+    `Transport    : ${config.transport === 'cloud' ? `Cloud API (webhook /webhook/${config.cloud.slug})` : 'Baileys (QR / pairing code)'}`,
     `Missed calls: ${config.calls.enabled ? `answered in chat after ${config.calls.delaySeconds}s` : 'off'}`,
     `Team         : ${(config.owner.profile?.owner?.team || []).length} teammate(s) + owner`,
     `Dashboard    : ${config.server.enabled ? `http://0.0.0.0:${config.server.port}` : 'disabled'}`,
@@ -443,6 +463,12 @@ export function assertConfig() {
     problems.push('No AI key found. Set GROQ_API_KEY (free at console.groq.com) — that alone is enough to run.');
   }
   if (!config.owner.number) problems.push('MY_NUMBER is empty. Set it to your WhatsApp number in international format.');
+  if (config.transport === 'cloud') {
+    if (!config.cloud.phoneId) problems.push('TRANSPORT=cloud needs CLOUD_PHONE_ID (Meta → WhatsApp → API setup).');
+    if (!config.cloud.token) problems.push('TRANSPORT=cloud needs CLOUD_TOKEN (a permanent system-user token).');
+    if (!config.cloud.verifyToken) problems.push('TRANSPORT=cloud needs CLOUD_VERIFY_TOKEN (any word you choose; Meta echoes it back).');
+    if (!config.cloud.appSecret) problems.push('TRANSPORT=cloud needs CLOUD_APP_SECRET — without it webhooks cannot be verified and will be refused.');
+  }
   return problems;
 }
 

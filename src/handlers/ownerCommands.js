@@ -25,6 +25,8 @@ import { sttEnabled } from '../services/transcription.js';
 import { hasFfmpeg } from '../services/ffmpeg.js';
 import { pendingFollowUps, intentStatsForDay } from '../utils/db.js';
 import { intentSummary, managerEnabled, AGENTS } from '../core/manager.js';
+import { getTransport } from '../transport/index.js';
+import { describeCapabilities } from '../transport/base.js';
 import { outboxStatus } from '../services/outbox.js';
 import { knowledgeSources, knowledgeStats, knowledgeEmbeddingStats, recentToolCalls, toolCallStats } from '../utils/db.js';
 import { toolNames, toolCallingEnabled } from '../core/tools.js';
@@ -68,6 +70,22 @@ const HELP = `*Bot commands*
 .tools – last 10 actions the bot took
 .intents – who answered what today (sales / support / booking / complaint)
 .ping`;
+
+/** What this process is talking to, and what that transport cannot do. */
+export function transportLines() {
+  const t = getTransport();
+  if (!t) return [`Transport: ${config.transport} (not connected in this process)`];
+  const { supported, unsupported } = describeCapabilities(t.capabilities);
+  const lines = [
+    `Transport: ${t.kind}${t.kind === 'cloud' ? ` · webhook ${t.webhookPath}` : ''} · ${t.status}`,
+  ];
+  if (t.kind === 'cloud') {
+    const stats = outboxStatus();
+    lines.push(`Window: 24h customer-service rule${stats.held ? ` · ${stats.held} message(s) held` : ''}`);
+  }
+  if (unsupported.length) lines.push(`Not on ${t.kind}: ${unsupported.join(', ')}`);
+  return lines;
+}
 
 function parseTarget(raw = '') {
   const cleaned = raw.replace(/[+()\s-]/g, '');
@@ -394,6 +412,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         `Outbox: ${outboxStatus().pending} queued · ${outboxStatus().failed} failed`,
         `Bot globally: ${getSetting('bot_enabled', true) ? 'ON' : 'OFF'}`,
         `Routing: ${managerEnabled() ? 'manager agent on' : 'single brain (managerAgent off)'}`,
+        ...transportLines(),
       ];
       return { handled: true, reply: lines.join('\n') };
     }

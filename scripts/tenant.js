@@ -193,6 +193,14 @@ GEMINI_API_KEY=
 # Optional vision fallback
 OPENROUTER_API_KEY=
 
+# ── Transport ───────────────────────────────────────────────
+# baileys (default, free) or cloud (Meta's official API — see README)
+TRANSPORT=baileys
+# CLOUD_PHONE_ID=
+# CLOUD_TOKEN=
+# CLOUD_VERIFY_TOKEN=
+# CLOUD_APP_SECRET=
+
 # ── Dashboard ───────────────────────────────────────────────
 ENABLE_WEB=true
 PORT=${port}

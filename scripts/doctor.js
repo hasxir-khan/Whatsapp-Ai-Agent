@@ -134,6 +134,37 @@ async function checkBusiness() {
     info('Tool calling is off (.set features.toolCalling true to let it book and order)');
   }
 
+  // transport
+  {
+    const { BAILEYS_CAPABILITIES } = await import('../src/transport/baileys.js');
+    const { CLOUD_CAPABILITIES } = await import('../src/transport/cloud.js');
+    const { describeCapabilities } = await import('../src/transport/base.js');
+    const isCloud = config.transport === 'cloud';
+    const caps = isCloud ? CLOUD_CAPABILITIES : BAILEYS_CAPABILITIES;
+    ok(`Transport: ${isCloud ? 'Cloud API (official)' : 'Baileys (default)'}`);
+    const view = describeCapabilities(caps);
+    info(`Supports: ${view.supported.join(', ')}`);
+    if (view.unsupported.length) info(`Not on this transport: ${view.unsupported.join(', ')} — those features switch off instead of crashing`);
+
+    if (isCloud) {
+      const missing = ['phoneId', 'token', 'verifyToken', 'appSecret'].filter((k) => !config.cloud[k]);
+      if (missing.length) {
+        bad(`Cloud API is selected but missing: ${missing.map((m) => ({ phoneId: 'CLOUD_PHONE_ID', token: 'CLOUD_TOKEN', verifyToken: 'CLOUD_VERIFY_TOKEN', appSecret: 'CLOUD_APP_SECRET' }[m])).join(', ')}`);
+        problems.push('Cloud API config incomplete');
+      } else {
+        ok(`Cloud API configured · webhook path /webhook/${config.cloud.slug}`);
+        notes.push(`Register https://<your-tunnel>/webhook/${config.cloud.slug} in Meta → WhatsApp → Configuration`);
+      }
+      if (!featureOn('cloudApi')) {
+        warn('features.cloudApi is off — the bot will refuse to start on the Cloud API until you set it (".set features.cloudApi true")');
+      }
+      info('24-hour rule: outside the window only an approved template goes out, otherwise the message is held for the owner');
+      if (!config.cloud.template) info('No CLOUD_TEMPLATE_NAME set — closed-window replies will be held and reported instead of templated');
+    } else {
+      info('Missed-call rescue, read receipts, typing indicators and delete-for-everyone all work on Baileys');
+    }
+  }
+
   // intent routing
   if (featureOn('managerAgent') || featureOn('manager')) {
     const { AGENTS } = await import('../src/core/manager.js');

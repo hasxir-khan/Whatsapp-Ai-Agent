@@ -10,6 +10,8 @@
 //     messages) are never punished
 
 import { config, isFriend, friendName, isTeam, teamMember, teamMembers } from '../config/env.js';
+import { normalizeBaileys } from '../transport/baileys.js';
+import { normalizeIncoming } from '../transport/base.js';
 import * as db from '../utils/db.js';
 import * as media from '../services/media.js';
 import { detectLanguage, detectTone, fromWhisperLanguage } from '../services/language.js';
@@ -60,15 +62,19 @@ const isPaused = (contact) =>
 // ════════════════════════════════════════════════════════════
 // Entry point — called for every upserted message
 // ════════════════════════════════════════════════════════════
-export async function handleIncoming(sock, msg) {
+export async function handleIncoming(transport, rawIncoming) {
   try {
-    if (!msg?.message || !msg.key?.remoteJid) return;
+    // The handler only ever sees the internal shape. A Baileys message handed
+    // in directly (tests, older callers) is normalised at the door, exactly
+    // like the Baileys transport would have done it.
+    const incoming = rawIncoming?.key ? normalizeBaileys(rawIncoming) : normalizeIncoming(rawIncoming || {});
+    if (!incoming.chat || !incoming.number) return;
 
-    const msgId = msg.key.id;
+    const msgId = incoming.id;
     if (msgId && processedIds.has(msgId)) return;
     track(processedIds, msgId);
 
-    const jid = msg.key.remoteJid;
+    const jid = incoming.chat;
     const kind = media.chatKind(jid);
 
     // ── only 1-to-1 chats are allowed, ever ────────────────
@@ -79,37 +85,37 @@ export async function handleIncoming(sock, msg) {
       return;
     }
 
-    const info = media.describeMessage(msg);
-    const number = media.resolveNumber(msg);
-    if (!number) return;
+    const info = incoming;
+    const number = incoming.number;
 
     // ── the owner's own messages ───────────────────────────
-    if (msg.key.fromMe) {
+    if (incoming.fromMe) {
       if (ownSentIds.has(msgId)) return; // our own send echoed back
-      return await handleOwnerSide(sock, { jid, number, info, msg });
+      return await handleOwnerSide(transport, { jid, number, info, incoming });
     }
 
     if (number === config.owner.number) {
       // Message to yourself from another device
-      if (isCommand(info.text)) return await runCommand(sock, jid, info.text, number);
+      if (isCommand(info.text)) return await runCommand(transport, jid, info.text, number);
       return;
     }
 
     // ── team members (multi-user) ──────────────────────────
     // A teammate messaging the bot is an operator, never a client.
     if (isTeam(number)) {
-      return await handleTeammate(sock, jid, number, info);
+      return await handleTeammate(transport, jid, number, info);
     }
 
     // ── bookkeeping ────────────────────────────────────────
-    rememberMessage(msg); // so "delete for everyone" can be recovered
+    // Only transports that can report a deletion are worth remembering.
+    if (transport.can?.('deletedMessages') !== false && incoming.raw) rememberMessage(incoming.raw);
 
     const existing = db.getContact(number);
     const friend = isFriend(number);
     const contact = db.upsertContact(number, {
       jid,
-      push_name: msg.pushName || existing?.push_name || null,
-      name: existing?.name || friendName(number) || msg.pushName || null,
+      push_name: incoming.pushName || existing?.push_name || null,
+      name: existing?.name || friendName(number) || incoming.pushName || null,
       category: friend ? 'friend' : existing?.category || 'new',
       increment_messages: true,
     });
@@ -136,12 +142,12 @@ export async function handleIncoming(sock, msg) {
       return;
     }
     if (spam.isScam) {
-      await sendTyping(sock, jid, WARN_MESSAGE, { delay: 900 });
-      await notifyOwner(sock, `🚫 Possible scam from +${number}\n${(info.text || '').slice(0, 200)}\nBlocked: ${spam.action === 'block' ? 'yes' : 'no'}`);
+      await sendTyping(transport, jid, WARN_MESSAGE, { delay: 900 });
+      await notifyOwner(transport, `🚫 Possible scam from +${number}\n${(info.text || '').slice(0, 200)}\nBlocked: ${spam.action === 'block' ? 'yes' : 'no'}`);
       return;
     }
 
-    await markRead(sock, [msg.key]);
+    await markRead(transport, [{ id: incoming.id }]);
 
     // ── quiet hours: hold the reply for the morning ────────
     if (config.behavior.deferQuietHours && isQuietNow()) {
@@ -165,13 +171,13 @@ export async function handleIncoming(sock, msg) {
       const geo = lookupNumber(number);
       const preview = (info.text || info.caption || `[${info.kind}]`).slice(0, 180);
       await notifyOwner(
-        sock,
-        `🆕 New chat: ${msg.pushName || 'unknown'}\n+${number} · ${geo.country} · ${geo.currency}\n“${preview}”`
+        transport,
+        `🆕 New chat: ${incoming.pushName || 'unknown'}\n+${number} · ${geo.country} · ${geo.currency}\n“${preview}”`
       );
       db.logEvent('new_contact', number, { country: geo.country });
     }
 
-    enqueue(sock, jid, number, { msg, info });
+    enqueue(transport, jid, number, { incoming });
   } catch (err) {
     console.error('❌ handleIncoming:', err.message);
     db.logEvent('handler_error', null, err.message);
@@ -184,7 +190,7 @@ export async function handleIncoming(sock, msg) {
 const SAFE_IN_CLIENT_CHAT = new Set(['pause', 'resume', 'block', 'unblock', 'reset', 'quote', 'ping']);
 const TARGET_COMMANDS = new Set(['pause', 'resume', 'block', 'unblock', 'reset', 'quote']);
 
-async function handleOwnerSide(sock, { jid, number, info, msg }) {
+async function handleOwnerSide(sock, { jid, number, info, incoming }) {
   const text = (info.text || '').trim();
   const isSelfChat = number === config.owner.number;
 
@@ -198,9 +204,10 @@ async function handleOwnerSide(sock, { jid, number, info, msg }) {
 
     // A command typed inside a client's chat should not be read by the client:
     // delete our own command bubble right after running it.
-    if (!isSelfChat) {
+    // Deleting our own command bubble needs a transport that can unsend.
+    if (!isSelfChat && (sock.can?.('deleteMessage') ?? false) && incoming.raw?.key) {
       try {
-        await sock.sendMessage(jid, { delete: msg.key });
+        await sock.sendMessage(jid, { delete: incoming.raw.key });
       } catch {
         /* older than 2 days or no permission — ignore */
       }
@@ -384,15 +391,13 @@ export function startPendingFlusher(sock) {
       try {
         await sendTyping(sock, jid, 'Morning! Sorry for the late reply — saw this after hours.', { delay: 700 });
         enqueue(sock, jid, row.number, {
-          msg: { key: { remoteJid: jid }, message: {} },
-          info: {
+          incoming: normalizeIncoming({
+            chat: jid,
+            number: row.number,
             kind: 'text',
             text,
             caption: payload.caption || '',
-            mimetype: '',
-            fileName: '',
-            seconds: 0,
-          },
+          }),
         });
       } catch (err) {
         db.logEvent('pending_flush_error', row.number, err.message);
@@ -418,17 +423,17 @@ async function processBatch(sock, jid, number, items) {
   const problems = [];
   let clientSentVoice = false;
 
-  for (const { msg, info } of items.slice(0, 5)) {
+  for (const { incoming } of items.slice(0, 5)) {
     try {
-      const part = await interpretItem({ msg, info, number });
+      const part = await interpretItem({ transport: sock, incoming, number });
       if (part) {
         parts.push(part);
         if (part.kind === 'voice') clientSentVoice = true;
       }
     } catch (err) {
-      console.error(`Media (${info.kind}) error:`, err.message);
-      db.logEvent('media_error', number, { kind: info.kind, error: err.message });
-      problems.push(info.kind === 'voice' ? 'voice' : 'media');
+      console.error(`Media (${incoming.kind}) error:`, err.message);
+      db.logEvent('media_error', number, { kind: incoming.kind, error: err.message });
+      problems.push(incoming.kind === 'voice' ? 'voice' : 'media');
     }
   }
 
@@ -619,10 +624,14 @@ async function processBatch(sock, jid, number, items) {
 }
 
 // ── turning one incoming item into a text part ─────────────
-async function interpretItem({ msg, info, number }) {
-  const caption = info.caption || '';
+async function interpretItem({ transport, incoming, number }) {
+  const info = incoming;
+  const caption = incoming.caption || '';
+  // One call, whatever the transport: Baileys downloads the proto it kept,
+  // the Cloud API fetches by media id. The handler does not care which.
+  const download = () => transport.getMedia(incoming);
 
-  switch (info.kind) {
+  switch (incoming.kind) {
     case 'text': {
       const text = info.text.trim();
       return text ? { kind: 'text', text } : null;
@@ -631,7 +640,7 @@ async function interpretItem({ msg, info, number }) {
     case 'voice':
     case 'audio': {
       if (!sttEnabled()) return { kind: 'voice', text: '[Voice note — could not be transcribed]', unreadable: true };
-      const { buffer, mimetype } = await media.downloadMedia(msg, info);
+      const { buffer, mimetype } = await download();
       const result = await transcribe(buffer, { mimetype });
       if (!result?.text || !looksMeaningful(result.text)) {
         return { kind: 'voice', text: '[Voice note — could not be transcribed]', unreadable: true };
@@ -653,7 +662,7 @@ async function interpretItem({ msg, info, number }) {
           unreadable: !caption,
         };
       }
-      const { buffer, mimetype } = await media.downloadMedia(msg, info);
+      const { buffer, mimetype } = await download();
       const dossier = memory.getDossier(number);
       const context = describeContext(dossier);
       const vision = await analyzeImage({ buffer, mimetype, caption, context });
@@ -673,7 +682,7 @@ async function interpretItem({ msg, info, number }) {
       if (!caps.ready) {
         return { kind: 'video', text: caption || '[Video sent — I cannot watch videos right now]', unreadable: !caption };
       }
-      const { buffer, mimetype } = await media.downloadMedia(msg, info);
+      const { buffer, mimetype } = await download();
       const dossier = memory.getDossier(number);
       const vision = await understandVideo({
         buffer,
@@ -695,7 +704,7 @@ async function interpretItem({ msg, info, number }) {
     }
 
     case 'document': {
-      const { buffer, mimetype } = await media.downloadMedia(msg, info);
+      const { buffer, mimetype } = await download();
       const text = await extractText(buffer, { mimetype, fileName: info.fileName });
       if (!text) {
         return {
@@ -729,9 +738,9 @@ async function interpretItem({ msg, info, number }) {
     }
 
     case 'location': {
-      const loc = info.content.locationMessage || info.content.liveLocationMessage || {};
-      const lat = loc.degreesLatitude;
-      const lng = loc.degreesLongitude;
+      const loc = incoming.location || {};
+      const lat = loc.lat;
+      const lng = loc.lng;
       return {
         kind: 'location',
         text: `[Location shared${loc.name ? `: ${loc.name}` : ''}${lat ? ` — https://maps.google.com/?q=${lat},${lng}` : ''}]`,
@@ -739,10 +748,7 @@ async function interpretItem({ msg, info, number }) {
     }
 
     case 'contact': {
-      const c = info.content.contactMessage;
-      const arr = info.content.contactsArrayMessage;
-      const name = c?.displayName || arr?.displayName || 'contact';
-      return { kind: 'contact', text: `[Contact card: ${name}]` };
+      return { kind: 'contact', text: `[Contact card: ${incoming.contactName || 'contact'}]` };
     }
 
     case 'reaction':

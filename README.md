@@ -16,16 +16,17 @@ Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but bu
 6. [Business setup — three ways](#business-setup--three-ways)
 7. [Actions the bot can take](#actions-the-bot-can-take)
 8. [Who answers: the manager agent](#who-answers-the-manager-agent)
-9. [Lead intelligence](#lead-intelligence)
-10. [Languages](#languages)
-11. [Missed calls](#missed-calls)
-12. [Offline & bad internet](#offline--bad-internet)
-13. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
-14. [Commands](#commands)
-15. [Dashboard](#dashboard)
-16. [Deploy for free](#deploy-for-free)
-17. [Troubleshooting](#troubleshooting)
-18. [Honest limitations](#honest-limitations)
+9. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
+10. [Lead intelligence](#lead-intelligence)
+11. [Languages](#languages)
+12. [Missed calls](#missed-calls)
+13. [Offline & bad internet](#offline--bad-internet)
+14. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
+15. [Commands](#commands)
+16. [Dashboard](#dashboard)
+17. [Deploy for free](#deploy-for-free)
+18. [Troubleshooting](#troubleshooting)
+19. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -467,7 +468,7 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `toolCalling` | 2 | The five actions, with validation, confirmation and logging |
 | `rag` | 2 | Hybrid retrieval: excerpts from learned documents in every reply |
 | `managerAgent` | 2 | Intent router with specialist agents |
-| `cloudApi` | 2 | WhatsApp Cloud API transport alongside Baileys |
+| `cloudApi` | 2 | WhatsApp Cloud API transport alongside Baileys (see [Switching to the official Cloud API](#switching-to-the-official-cloud-api)) |
 | `booking` | 3 | Appointment slots, reminders, no-show rebooking |
 | `followUps` | 3 | Automatic nudges for quiet leads |
 | `closer` | 3 | Objection handling, payment links |
@@ -647,6 +648,161 @@ the `message_intents` table if you want to look at it later.
 Back to one brain, immediately. Nothing is lost — the log stays, the tools stay,
 the flag is the only switch.
 
+
+---
+
+## Switching to the official Cloud API
+
+Baileys is the default because it is free and needs no approval: one QR scan and
+the bot is on your own number. But it runs on WhatsApp's web protocol, which has
+two real costs — the phone must stay linked, and the number can be shut out of
+web sessions.
+
+Meta's **Cloud API** is the official path. No phone needed while the bot runs,
+no QR, no ban-by-protocol. In exchange: a free Meta developer account, a public
+HTTPS address for webhooks, and Meta's rules about what you may send and when.
+
+Everything else — memory, intake, quotes, tools, the manager agent, the outbox,
+follow-ups, owner commands — is identical. That is the point of the transport
+layer: only the wire changes.
+
+### 1. Get the numbers from Meta (free)
+
+1. Create a free app at [developers.facebook.com](https://developers.facebook.com) → **Create app** → type **Business**.
+2. Add the **WhatsApp** product. Meta gives you a **test number** and a free
+   sandbox — enough to run a real conversation at $0.
+3. In **WhatsApp → API Setup** note two things:
+   - **Phone number ID** (a long number, not the phone number) → `CLOUD_PHONE_ID`
+   - a **temporary access token** (24 hours) — fine for a first test
+4. Add your own phone as a **test recipient** on that page, then message the
+   test number once. That opens the 24-hour window for you.
+
+For anything longer than a day, create a **permanent token**:
+**Business settings → Users → System users** → add a system user → *Generate
+token* → choose your app → permission `whatsapp_business_messaging` →
+`CLOUD_TOKEN`.
+
+### 2. Fill in the four values
+
+In `.env` (or the tenant's `.env` if you run several users):
+
+```bash
+TRANSPORT=cloud
+
+CLOUD_PHONE_ID=123456789012345
+CLOUD_TOKEN=EAAG...                    # permanent token, not the 24h test one
+CLOUD_VERIFY_TOKEN=any-word-you-choose # you invent this; Meta echoes it back
+CLOUD_APP_SECRET=abcdef123456          # App settings → Basic → App secret
+
+# optional: a template used outside the 24-hour window
+# CLOUD_TEMPLATE_NAME=hello_world
+# CLOUD_TEMPLATE_LANG=en
+```
+
+Then, once, turn the feature on:
+
+```
+.set features.cloudApi true
+```
+
+The bot refuses to start on the Cloud API without all four values, and refuses
+unsigned webhooks outright. No token ever appears in a log line.
+
+### 3. Give Meta a webhook URL
+
+Meta needs a public HTTPS address. On a laptop or a free host, a tunnel is the
+easiest way:
+
+```bash
+# option A — cloudflared (no account needed for a quick tunnel)
+cloudflared tunnel --url http://localhost:3000
+
+# option B — ngrok
+ngrok http 3000
+```
+
+Both print an address like `https://random-words.trycloudflare.com`.
+Your webhook URL is:
+
+```
+https://random-words.trycloudflare.com/webhook/<slug>
+```
+
+`<slug>` is `default` for a single install, or the tenant's slug
+(`ayesha-designs`, …). Put it in **Meta → WhatsApp → Configuration → Webhook**,
+type the same `CLOUD_VERIFY_TOKEN` you set, and press **Verify and save**.
+
+Meta sends a `GET` with your token; the bot answers with the challenge. It also
+subscribes to the `messages` field — remember to click **Manage** and tick
+`messages`, or nothing will arrive.
+
+Check it from the outside in one line:
+
+```bash
+curl "https://<your-tunnel>/webhook/default?hub.mode=subscribe&hub.verify_token=<your-token>&hub.challenge=123"
+# → 123
+```
+
+### 4. The 24-hour rule (the part that surprises people)
+
+The Cloud API only lets you send a **free-form** message inside a 24-hour
+window, and only the *customer* opens that window by writing to you. Outside it:
+
+- if you configured `CLOUD_TEMPLATE_NAME`, the bot sends that approved template
+  with the reply as its body parameter;
+- if you did not, the message is **held in the outbox**, you are told in your
+  own chat, and it goes out automatically the moment the customer writes again.
+
+Nothing is ever dropped silently. `.status` shows how many messages are held,
+and `node scripts/doctor.js` explains the rule and whether a template is set.
+
+Templates must be approved by Meta first (**WhatsApp → Message templates**).
+`hello_world` is approved out of the box and is fine for a first test.
+
+### 5. What does not exist on the Cloud API
+
+These switch themselves off instead of throwing — `.status` and
+`node scripts/doctor.js` list them for the transport you are on:
+
+| Feature | Baileys | Cloud API |
+|---|---|---|
+| Typing indicator / "recording" | ✅ | ✗ (no such thing) |
+| Delete for everyone | ✅ | ✗ |
+| Missed-call rescue | ✅ | ✗ (calls never reach the API) |
+| Recover a deleted message | ✅ | ✗ |
+| Reactions | ✅ | ✗ |
+| Groups / channels | never, by design | never, by design |
+| Approved templates | ✗ | ✅ |
+| No phone linked while running | ✗ | ✅ |
+
+The bot still behaves like a person: same persona, same languages, same memory.
+
+### 6. Several cloud tenants on one public port
+
+A tunnel exposes one port. `scripts/webhooks.js` puts every cloud tenant behind
+it, each on its own path:
+
+```bash
+node scripts/run-all.js      # the bots (each on its own port)
+node scripts/webhooks.js     # one public port, /webhook/<slug> per tenant
+
+cloudflared tunnel --url http://localhost:8080
+# → https://<tunnel>/webhook/ayesha-designs  →  her process
+# → https://<tunnel>/webhook/burger-point    →  his process
+```
+
+The gateway forwards the raw bytes untouched, because Meta's signature is
+computed over exactly those bytes.
+
+### 7. Switching back
+
+```bash
+TRANSPORT=baileys
+```
+
+Restart, scan the QR once, done. Nothing in the database is transport-specific:
+the same contacts, messages, leads and quotes are waiting.
+
 ---
 
 ## Lead intelligence
@@ -717,7 +873,7 @@ Force one register with `bot.formality` if you prefer.
 
 ## Missed calls
 
-**Honest version:** WhatsApp's Web protocol — the only free way in — lets a bot *see* calls but **not carry the audio**. Picking up and talking needs the official Cloud API, which is not part of the $0 stack.
+**Honest version:** WhatsApp's Web protocol lets a bot *see* calls but **not carry the audio** — and the Cloud API transport in this project does not carry call audio either. So the assistant does the closest useful thing: the missed call becomes a message while the caller is still holding the phone.
 
 What this bot does instead:
 
@@ -809,7 +965,7 @@ Type in your own WhatsApp chat (message yourself):
 | `.calls` | recent calls and what the bot did |
 | `.report` | today's brief now |
 | `.usage` | free-tier usage today |
-| `.status` | providers, memory, outbox, ffmpeg, follow-ups, routing |
+| `.status` | providers, memory, outbox, ffmpeg, follow-ups, routing, transport |
 | `.voice off\|request\|match\|always` | voice-reply behaviour |
 | `.ai on\|off` | global kill switch |
 | `.export` | JSON backup of contacts + leads |
@@ -892,8 +1048,8 @@ Notes:
 
 ## Honest limitations
 
-- **Baileys is an unofficial WhatsApp client.** Automating a personal number can get it banned. Use a spare number for anything valuable, or move to the official Cloud API.
-- **Calls are answered in chat, not with audio.** WhatsApp Web carries no call audio; that requires the paid Cloud API.
+- **Baileys is an unofficial WhatsApp client.** Automating a personal number can get it banned. Use a spare number for anything valuable, or [switch to the official Cloud API](#switching-to-the-official-cloud-api), which is supported.
+- **Calls are answered in chat, not with audio.** Neither transport carries call audio here — a missed call becomes a message, not a conversation.
 - **The bot must be running.** Downloads, sleep and dead batteries mean unanswered messages until it's back — then they're answered in order.
 - **AI can be wrong.** Facts and prices come from config, but free models occasionally phrase things badly. Watch the first week.
 - **Free-tier data:** Gemini's free tier and Groq may use inputs to improve their services. Don't paste confidential material.
@@ -943,6 +1099,12 @@ src/
     tools.js            the five actions: schemas, validation, confirmations
     hours.js            opening hours parsed and checked in the business timezone
     manager.js          intent rules, the model router, specialist agents
+  transport/            how the bot talks to WhatsApp, behind one interface
+    base.js             the interface + the internal message shape
+    baileys.js          Baileys (default), wrapped unchanged
+    cloud.js            Cloud API: webhook, signatures, media, 24-hour window
+    webhooks.js         /webhook/<slug> on a plain http server
+    gateway.js          many cloud tenants, one public port
     toolCalling.js      the model loop: native function calling or JSON fallback
     leads.js            lead scoring, next actions, pipeline summary
     outbox.js           offline queue: never lose a reply
@@ -962,7 +1124,7 @@ scripts/
   learn.js              ingest one document into a tenant's knowledge base
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   271 tests (node:test, no dependencies)
+test/                   323 tests (node:test, no dependencies)
 ```
 
 ---
@@ -970,7 +1132,7 @@ test/                   271 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test          # 271 tests: manager, hours, tools, rag, profile, templates, leads, outbox…
+npm test          # 323 tests: transport, manager, hours, tools, rag, profile, leads, outbox…
 npm run doctor    # environment + live API checks
 npm run chat -- --mock   # talk to the brain with no keys
 ```
