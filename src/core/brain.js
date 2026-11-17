@@ -11,7 +11,7 @@
 import { config } from '../config/env.js';
 import { chat, hasLLM } from './llm.js';
 import { buildDossierText, buildHistoryMessages } from '../services/memory.js';
-import { mirrorInstruction } from '../services/language.js';
+import { mirrorInstruction, toneInstruction } from '../services/language.js';
 import { intakePromptBlock } from './projectIntake.js';
 import { ownerClock } from './humanizer.js';
 import { localTime } from '../services/geo.js';
@@ -149,6 +149,8 @@ export function systemPrompt({
   chatType = 'client',
   today = new Date(),
   features = {},
+  tone = 'neutral',
+  formality = null,
 }) {
   const parts = [];
   const ownerName = OWNER.name || 'the owner';
@@ -218,6 +220,8 @@ export function systemPrompt({
   parts.push('');
   parts.push('── HOW TO WRITE ──');
   parts.push(mirrorInstruction(langInfo));
+  parts.push(toneInstruction({ tone, formality: formality || OWNER.formality || 'auto' }));
+  parts.push('You understand and write every major language: Urdu, Hindi, Arabic, Persian, Pashto, Bengali, Punjabi, Tamil, Turkish, Russian, Chinese, Japanese, Korean, Spanish, French, German, Portuguese, Indonesian, Swahili and the rest. The prompt is in English only for your benefit — answer in the client\'s language, whatever it is.');
   parts.push('WhatsApp style: 1–3 short bubbles, max ~320 characters per bubble. No headings, no "Dear sir", no signature, no long preambles.');
   parts.push('Casual, direct, human. Contractions. Occasional short reactions ("Got it", "Ah nice", "Makes sense"). Max 1–2 emojis, often none.');
   parts.push('Answer the actual question first. Ask at most ONE question per reply, at the very end.');
@@ -256,6 +260,7 @@ export async function generateReply({
   features = {},
   chatType = 'client',
   extraNote = '',
+  tone = 'neutral',
 }) {
   if (!hasLLM()) {
     return {
@@ -265,7 +270,7 @@ export async function generateReply({
     };
   }
 
-  const system = systemPrompt({ dossier, intakeState, langInfo, chatType, features });
+  const system = systemPrompt({ dossier, intakeState, langInfo, chatType, features, tone });
   const history = buildHistoryMessages(dossier);
 
   const userContent = extraNote ? `${text}\n\n[system note: ${extraNote}]` : text;

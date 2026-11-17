@@ -453,11 +453,20 @@
         "number": "923000000000",
         "name": "Example friend"
       }
+    ],
+    "team": [
+      {
+        "number": "923001112233",
+        "name": "Ayesha",
+        "role": "sales",
+        "permissions": []
+      }
     ]
   },
   "bot": {
     "name": "Hashir's Assistant",
     "persona": "Warm, sharp, slightly informal. You talk like a busy but friendly human on WhatsApp — short messages, natural rhythm, no corporate script. You never sound like a chatbot or a call-centre.",
+    "formality": "auto",
     "maxBubbles": 3,
     "pretendHuman": false,
     "disclosure": "You are Hashir's AI assistant. Never invent being a human, but keep it light: if someone asks if you're a bot, say yes — you're Hashir's assistant and can pass anything on to him.",

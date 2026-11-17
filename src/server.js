@@ -5,9 +5,12 @@
 
 import http from 'node:http';
 import QRCode from 'qrcode';
-import { config } from './config/env.js';
+import { config, teamMembers } from './config/env.js';
 import { botState, uptimeMinutes } from './state.js';
-import { dbStats, recentEvents, getUsage, getSetting, listLeads, getContact } from './utils/db.js';
+import {
+  dbStats, recentEvents, getUsage, getSetting, listLeads, getContact,
+  teamWorkload, recentCalls, callsToday,
+} from './utils/db.js';
 import { formatMoney } from './services/geo.js';
 import { llmStatus } from './core/llm.js';
 import { visionStatus } from './services/vision.js';
@@ -70,6 +73,28 @@ function buildStatus() {
           at: e.created_at,
         };
       }),
+    team: [
+      { name: config.owner.name, role: 'owner', number: config.owner.number, chats: null },
+      ...teamMembers().map((m) => ({
+        name: m.name,
+        role: m.role,
+        number: m.number,
+        chats: teamWorkload().find((w) => w.operator === m.name)?.chats || 0,
+      })),
+    ],
+    calls: {
+      today: callsToday(),
+      recent: recentCalls(5).map((c) => ({
+        number: c.number,
+        name: c.name || getContact(c.number)?.name || '',
+        video: !!c.video,
+        status: c.status,
+        outcome: c.outcome || '',
+        at: c.created_at,
+      })),
+      enabled: config.calls.enabled,
+      delaySeconds: config.calls.delaySeconds,
+    },
     leads: listLeads(null, 6).map((l) => ({
       name: l.name || `+${l.number}`,
       project: l.project_type || '—',
@@ -88,6 +113,11 @@ const EVENT_LABELS = {
   escalation: 'needs you',
   new_contact: 'new chat',
   memory_summary: 'memory updated',
+  call_incoming: 'incoming call',
+  call_answered: 'call answered',
+  call_fallback: 'missed call → answered in chat',
+  call_fallback_skipped: 'missed call (daily cap)',
+  call_tts_failed: 'voice note failed on a call',
   followup_scheduled: 'follow-up queued',
   followup_sent: 'follow-up sent',
   handoff: 'you took over',
@@ -237,6 +267,41 @@ function page(data) {
     <table>
       ${leads || '<tr><td class="small">No leads yet — the first real client conversation will appear here.</td></tr>'}
     </table>
+  </div>
+
+  <div class="row" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap:14px; margin-bottom:14px;">
+    <div class="card" style="margin:0;">
+      <h2>Team</h2>
+      <table>
+        ${data.team
+          .map(
+            (m) => `<tr><td>${esc(m.name)}</td>
+              <td class="small">${esc(m.role)}</td>
+              <td class="small">${m.chats === null ? 'everything' : `${m.chats} chat${m.chats === 1 ? '' : 's'}`}</td></tr>`
+          )
+          .join('')}
+      </table>
+      <div class="small" style="margin-top:8px;">
+        ${data.team.length > 1 ? 'Teammates can use .mine .takeover .release from their own WhatsApp.' : 'Add teammates in config/owner.json → owner.team to share the workload.'}
+      </div>
+    </div>
+
+    <div class="card" style="margin:0;">
+      <h2>Calls</h2>
+      <div class="k">${data.calls.today}</div>
+      <div class="small">
+        ${data.calls.enabled ? `unanswered calls are answered in chat after ${data.calls.delaySeconds}s` : 'missed-call rescue is off'}
+      </div>
+      <table style="margin-top:10px;">
+        ${data.calls.recent
+          .map(
+            (c) => `<tr><td>${esc(c.name || `+${c.number}`)}</td>
+              <td class="small">${c.video ? 'video' : 'voice'}</td>
+              <td><span class="tag">${esc(c.status)}</span></td></tr>`
+          )
+          .join('') || '<tr><td class="small">No calls yet.</td></tr>'}
+      </table>
+    </div>
   </div>
 
   <div class="card">

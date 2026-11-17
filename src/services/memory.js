@@ -95,6 +95,8 @@ export function getDossier(number, { recentLimit = config.llm.historyTurns } = {
     timezone: geo.timezone,
     localTime: now,
     voicePref: contact.voice_pref || 'unknown',
+    tone: contact.tone || 'neutral',
+    assignedTo: contact.assigned_to || null,
     messageCount: total,
     isBlocked: !!contact.is_blocked,
     pausedUntil: contact.bot_paused_until || null,

@@ -55,7 +55,8 @@
         "number": "923175882062",
         "name": "Imad"
       }
-    ]
+    ],
+    "team": []
   },
   "bot": {
     "name": "Hashir's Assistant",
@@ -68,7 +69,8 @@
         "hi": "hi-IN-SwaraNeural",
         "ar": "ar-SA-ZariyahNeural"
       }
-    }
+    },
+    "formality": "auto"
   },
   "currency": {
     "base": "PKR",

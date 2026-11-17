@@ -21,6 +21,9 @@ Built for one specific job: running your client conversations on WhatsApp while 
 | **Sees previous chats** | SQLite memory with three layers: last ~16 turns, a rolling summary, and structured facts (company, budget, timeline, preferences). Restarts don't lose anything. |
 | **Cannot access groups or channels** | Hard-blocked at the router: groups (`@g.us`), channels (`@newsletter`), broadcasts and status updates never reach the AI. |
 | **Friends stay friends** | Numbers in `owner.friends` get a casual, no-sales persona — no discovery questions, no quotes. |
+| **Speaks every language** | 80+ languages and scripts — Urdu, Hindi, Arabic, Persian, Pashto, Bengali, Tamil, Turkish, Russian, Chinese, Japanese, Korean, Spanish, French, German, Portuguese, Vietnamese, Swahili… It also matches **register**: formal (aap/vous/Sie/usted) or casual (tu/yaar/bhai). |
+| **Catches missed calls** | If a client calls and you don't pick up within 60s, the assistant answers **in chat** — a voice note and/or message in their language, then keeps the conversation going. |
+| **Multi-user (team)** | Add teammates with roles (sales, support, manager). They DM the bot, take chats over, see their own queue, and get pinged when their client needs a human. |
 
 Plus the boring-but-essential bits: scam filtering that doesn't punish normal clients, "delete for everyone" alerts, daily brief to you, lead pipeline, Google Sheets export, and a live dashboard.
 
@@ -176,6 +179,103 @@ Language is automatic: the assistant mirrors whatever the client writes — Engl
 
 ---
 
+## Languages
+
+Detection is three-layered: Unicode script first (a message in Thai or Hebrew is
+identifiable with certainty), then common-word voting (short WhatsApp messages
+are too short for statistics), then `franc` for anything long and ambiguous.
+
+**86 language profiles**, all with a neural voice for replies:
+
+- **South Asia** — Urdu, Hindi, Bengali, Punjabi, Gujarati, Marathi, Nepali, Sinhala, Tamil, Telugu, Kannada, Malayalam, Sindhi
+- **Middle East / Central Asia** — Arabic, Persian, Pashto, Hebrew, Turkish, Azerbaijani, Kazakh, Uzbek, Kyrgyz, Tajik, Kurdish
+- **Europe** — English, Russian, Ukrainian, Bulgarian, Serbian, Croatian, Polish, Czech, Slovak, Hungarian, Romanian, Greek, German, Dutch, French, Italian, Spanish, Portuguese, Catalan, Swedish, Danish, Norwegian, Finnish, Lithuanian, Latvian, Estonian, Albanian, Icelandic
+- **Asia-Pacific** — Chinese (both scripts), Japanese, Korean, Vietnamese, Thai, Lao, Khmer, Burmese, Indonesian, Malay, Filipino, Mongolian, Tibetan
+- **Africa** — Swahili, Amharic, Somali, Hausa, Yoruba, Igbo, Zulu, Xhosa, Afrikaans
+- **Roman Urdu / Hinglish** — special-cased, because it borrows English tech words constantly
+
+Register matters as much as language. The bot reads whether the client is being
+formal or casual and mirrors it:
+
+| Client writes | Bot answers |
+|---|---|
+| "Assalam o alaikum sir, kindly share the price" | formal — aap/آپ, no slang |
+| "yaar kya haal hai, price batao" | casual — tum/yaar energy |
+| "Bonjour madame, pourriez-vous…" | vous |
+| "hey du, was kostet das?" | du |
+
+Prefer a fixed register regardless of the client? Set `bot.formality` in
+`config/owner.json` to `formal` or `casual` (default `auto` = mirror theirs).
+Voice replies follow the same rules — Urdu gets an Urdu voice, German a German
+one — so a voice note never arrives in the wrong language.
+
+---
+
+## Missed calls
+
+**The honest version:** WhatsApp's Web protocol — the only free way in — lets a
+bot *see* calls (ringing, accepted, rejected, timed out) but **not carry the
+audio**. So no bot on Baileys can literally pick up and talk; that needs the
+official Cloud API calling product, which isn't part of the $0 stack.
+
+What this bot does instead, and it works well:
+
+1. A client calls. You get a WhatsApp notification instantly: *"📞 Incoming call from Emma."*
+2. If you don't answer within `CALL_FALLBACK_SECONDS` (default **60**), the assistant messages the caller:
+   > "Hey — saw your call just now, sorry I couldn't pick up. This is HasDevs' assistant. Tell me here what you need and Hashir can call you back."
+3. The message is written in **their** language and register, sent as a **voice note** (default; sounds like a person picking up) or text.
+4. They reply → normal conversation continues, with all the intake, quoting and memory behaviour.
+5. You get a summary: *"☎️ Missed call from Emma — assistant replied by voice note in English."*
+
+```env
+CALLS_ENABLED=true
+CALL_FALLBACK_SECONDS=60          # 0 = instant, 600 = give yourself 10 minutes
+CALL_FALLBACK_MODE=auto           # auto | voice_note | text
+CALL_FALLBACK_TONE=auto           # auto | formal | casual
+CALL_FALLBACK_MAX_PER_DAY=3       # never spam someone who butt-dials you
+```
+
+Accepted calls are left alone, groups and channels are excluded, and `.calls`
+lists what happened.
+
+---
+
+## Team (multi-user)
+
+The bot is one WhatsApp account, but the work doesn't have to be one person.
+Add people in `config/owner.json`:
+
+```jsonc
+"owner": {
+  "team": [
+    { "number": "923001112233", "name": "Ayesha", "role": "sales" },
+    { "number": "923004445566", "name": "Bilal", "role": "support", "permissions": ["quotes"] }
+  ]
+}
+```
+
+| Role | Can do |
+|---|---|
+| `owner` | everything (you) |
+| `admin` | everything |
+| `manager` | leads, chats, quotes, pause/resume, assign, reports, calls |
+| `sales` | leads, chats, quotes, pause/resume, calls |
+| `support` | chats, pause/resume, calls |
+
+How it works in practice:
+
+- A teammate messages the bot on WhatsApp — it answers as their assistant, not as a client bot, and knows their queue.
+- `.takeover 92300…` → the chat is assigned to them and the bot goes quiet there for 45 minutes.
+- `.assign 92300… Ayesha` (owner/manager) → hands a chat over and pings Ayesha.
+- `.mine` → their queue. `.release 92300…` → back to the bot.
+- Escalations and quotes in an assigned chat also ping **that** teammate, not just you.
+- Permissions are enforced in code: support can't quote, sales can't `.export` or `.ai off`, strangers get nothing.
+
+Every chat can be handled by a different person and the memory stays shared —
+whoever opens it next sees the full history, facts and stage.
+
+---
+
 ## What a real conversation looks like
 
 ```
@@ -239,6 +339,12 @@ Follow-up scheduled in 20h.
 | `.block` / `.unblock` | spam control |
 | `.reset 92300…` | clear the project intake |
 | `.quote 92300…` | rebuild and send a quote |
+| `.team` | roster + how many chats each person has |
+| `.mine` | chats assigned to you (teammates) |
+| `.takeover 92300…` | assign a chat to yourself; bot steps back |
+| `.release 92300…` | give it back to the bot |
+| `.assign 92300… Ayesha` | hand a chat to a teammate |
+| `.calls` | recent incoming calls and what the bot did |
 | `.report` | today's brief right now |
 | `.usage` | free-tier usage today |
 | `.status` | providers, memory, ffmpeg, pending follow-ups |
@@ -311,7 +417,7 @@ npm run chat -- --mock # no API keys needed at all
 Inside the simulator: `/image photo.jpg`, `/voice note.ogg`, `/video demo.mp4`, `/doc brief.pdf`, `/state`, `/leads`, `/reset`.
 
 ```bash
-npm test               # 95 tests: language, memory, intake, pricing, guards, router
+npm test               # 108 tests: language, memory, intake, pricing, guards, router
 npm run doctor         # environment + live API checks
 ```
 
@@ -424,7 +530,7 @@ src/
   dev/mockLlm.js        offline fake provider for demos and tests
 scripts/
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   95 tests (node:test, no dependencies)
+test/                   108 tests (node:test, no dependencies)
 ```
 
 ---

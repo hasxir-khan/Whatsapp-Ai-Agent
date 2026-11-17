@@ -24,6 +24,7 @@ import { startDailyReport } from './services/report.js';
 import { startFollowUpLoop } from './services/followUps.js';
 import { initSheet } from './services/sheets.js';
 import { restoreSession } from './utils/sessionBackup.js';
+import { registerCalls } from './services/calls.js';
 import { sweepTemp } from './services/media.js';
 import { hasLLM } from './core/llm.js';
 import { visionEnabled } from './services/vision.js';
@@ -117,6 +118,10 @@ async function connect() {
   });
 
   sock.ev.on('creds.update', saveCreds);
+
+  // Missed-call rescue: when nobody picks up within CALL_FALLBACK_SECONDS,
+  // the assistant starts the conversation in chat instead.
+  if (config.calls.enabled) registerCalls(sock);
 
   // ── pairing code (nicer than a QR on a headless host) ────
   if (!state.creds.registered && config.session.pairingNumber) {

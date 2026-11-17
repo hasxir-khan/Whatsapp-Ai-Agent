@@ -3,10 +3,13 @@
 // Everything is prefixed with a dot so normal messages never trigger them.
 
 import fs from 'node:fs';
-import { config, normalizePhone } from '../config/env.js';
+import {
+  config, normalizePhone, teamMembers, teamMember, can, teamPermissions,
+} from '../config/env.js';
 import {
   listLeads, getLead, listContacts, blockContact, setContactPaused, setSetting,
   getSetting, dbStats, getUsage, listIntakes, exportAll, writeExport, countLeads,
+  assignContact, contactsFor, teamWorkload, recentCalls,
 } from '../utils/db.js';
 import { buildReport } from '../services/report.js';
 import { buildOwnerBrief } from '../services/memory.js';
@@ -31,6 +34,12 @@ const HELP = `*Bot commands*
 .block / .unblock 92300…
 .reset 92300… – clear project intake for a chat
 .quote 92300… – rebuild + send a quote
+.team – who's on the team + workload
+.mine – chats assigned to me
+.takeover 92300… – I'm handling this one (bot steps back)
+.release 92300… – give it back to the bot
+.assign 92300… Name – hand a chat to a teammate
+.calls – recent incoming calls
 .report – today's brief
 .usage – free-tier usage
 .status – system health
@@ -47,6 +56,14 @@ function parseTarget(raw = '') {
   return num && num.length >= 8 ? num : null;
 }
 
+async function dbNotify(sock, text) {
+  try {
+    await sock.sendMessage(config.owner.jid, { text });
+  } catch {
+    /* ignore */
+  }
+}
+
 function fmtLead(lead, index) {
   const who = lead.name || `+${lead.number}`;
   const price = lead.quote_min
@@ -59,15 +76,63 @@ export function isCommand(text = '') {
   return /^[.!/]\w+/i.test(String(text).trim());
 }
 
+// Which permission each command needs. Anything not listed is harmless
+// read-only stuff that every teammate may use.
+const COMMAND_PERMISSION = {
+  pause: 'pause',
+  resume: 'pause',
+  block: 'pause',
+  unblock: 'pause',
+  reset: 'pause',
+  quote: 'quotes',
+  report: 'report',
+  assign: 'assign',
+  takeover: 'pause',
+  release: 'pause',
+  calls: 'calls',
+  leads: 'leads',
+  lead: 'leads',
+  intakes: 'intakes',
+  sync: 'owner',
+  export: 'owner',
+  ai: 'owner',
+  voice: 'owner',
+  team: 'chats',
+};
+
+const OWNER_ONLY = new Set(['export', 'sync', 'ai', 'voice', 'block', 'unblock']);
+
 /**
  * @returns {Promise<{handled:boolean, reply?:string, voice?:object}>}
  */
-export async function handleOwnerCommand(sock, chatJid, text) {
+export async function handleOwnerCommand(sock, chatJid, text, from = config.owner.number) {
   const input = String(text).trim();
   const [rawCmd, ...args] = input.slice(1).split(/\s+/);
   const cmd = (rawCmd || '').toLowerCase();
   const arg = args.join(' ').trim();
   const target = args.length ? parseTarget(args[0]) : null;
+
+  // ── who is asking? ───────────────────────────────────────
+  const sender = normalizePhone(from || config.owner.number);
+  const member = teamMember(sender);
+  const isOwner = sender === config.owner.number;
+  const known = isOwner || !!member;
+  const me = member?.name || (isOwner ? 'owner' : sender);
+
+  if (!known) {
+    return { handled: true, reply: 'This bot is private. Commands only work for the owner and the team.' };
+  }
+
+  const needed = COMMAND_PERMISSION[cmd];
+  if (!isOwner) {
+    if (OWNER_ONLY.has(cmd)) {
+      return { handled: true, reply: `.${cmd} is owner-only.` };
+    }
+    if (needed && !can(sender, needed)) {
+      const perms = [...teamPermissions(sender)].join(', ');
+      return { handled: true, reply: `Your role (${member.role}) can't use .${cmd}.\nYou can: ${perms}` };
+    }
+  }
 
   switch (cmd) {
     case 'help':
@@ -260,6 +325,83 @@ export async function handleOwnerCommand(sock, chatJid, text) {
       for (const row of rows) {
         const fields = row.fields || {};
         lines.push(`• +${row.number} — ${fields.projectType || 'unknown'} (${row.stage})`);
+      }
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    // ── team (multi-user) ───────────────────────────────────
+    case 'team': {
+      const workload = Object.fromEntries(teamWorkload().map((w) => [w.operator, w]));
+      const lines = ['*Team*', `• ${config.owner.name} — owner · +${config.owner.number}`];
+      for (const m of teamMembers()) {
+        const load = workload[m.name]?.chats || 0;
+        lines.push(`• ${m.name} — ${m.role} · +${m.number} · ${load} chat${load === 1 ? '' : 's'}`);
+      }
+      if (!teamMembers().length) {
+        lines.push('', 'No teammates yet. Add them to config/owner.json → owner.team');
+      }
+      lines.push('', 'Add: {"number":"92300…","name":"Ayesha","role":"sales"}');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'mine': {
+      if (isOwner) return { handled: true, reply: 'You own everything — try .leads or .chats.' };
+      const chats = contactsFor(me, 10);
+      if (!chats.length) return { handled: true, reply: `No chats assigned to you yet.\nTake one with: .takeover 92300…` };
+      const lines = [`*Your chats (${chats.length})*`];
+      for (const c of chats) {
+        const t = localTime(c.number);
+        lines.push(`• ${c.name || c.push_name || `+${c.number}`} — ${c.stage} · ${c.message_count} msgs · ${t.clock}`);
+      }
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'takeover': {
+      if (!target) return { handled: true, reply: 'Usage: .takeover 923001234567' };
+      const minutes = parseInt(args[1], 10) || config.behavior.handoffMinutes;
+      assignContact(target, me, minutes);
+      dbNotify(sock, `🙋 ${me} took over +${target} for ${minutes} min.`);
+      return {
+        handled: true,
+        reply: `You've got +${target} for the next ${minutes} min — the bot is quiet there.\nSee the dossier with .lead ${target}`,
+      };
+    }
+
+    case 'release': {
+      if (!target) return { handled: true, reply: 'Usage: .release 923001234567' };
+      assignContact(target, null, null);
+      setContactPaused(target, null);
+      dbNotify(sock, `↩️ ${me} released +${target} back to the bot.`);
+      return { handled: true, reply: `+${target} is back with the bot.` };
+    }
+
+    case 'assign': {
+      const name = args.slice(1).join(' ').trim();
+      if (!target || !name) {
+        return { handled: true, reply: 'Usage: .assign 923001234567 Ayesha\n(team: ' + (teamMembers().map((m) => m.name).join(', ') || 'none') + ')' };
+      }
+      const person = teamMembers().find((m) => m.name.toLowerCase() === name.toLowerCase());
+      if (!person) return { handled: true, reply: `No teammate called "${name}". Try .team` };
+      assignContact(target, person.name, config.behavior.handoffMinutes);
+      try {
+        await sock.sendMessage(`${person.number}@s.whatsapp.net`, {
+          text: `📌 ${me} assigned you a chat: +${target}.\nOpen it and send .lead ${target} for the full picture.`,
+        });
+      } catch {
+        /* their number may not have WhatsApp */
+      }
+      return { handled: true, reply: `Assigned +${target} to ${person.name}.` };
+    }
+
+    case 'calls': {
+      const calls = recentCalls(10);
+      if (!calls.length) return { handled: true, reply: 'No calls yet.' };
+      const lines = ['*Recent calls*'];
+      for (const c of calls) {
+        const when = new Date(c.created_at).toLocaleString('en-GB', { timeZone: config.timezone });
+        lines.push(
+          `• ${c.name || `+${c.number}`} — ${c.video ? 'video' : 'voice'} · ${c.status}${c.outcome ? ` · ${c.outcome}` : ''}\n  ${when}`
+        );
       }
       return { handled: true, reply: lines.join('\n') };
     }

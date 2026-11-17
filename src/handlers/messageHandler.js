@@ -9,10 +9,10 @@
 //   • scam patterns are filtered, but normal clients (links, caps, short
 //     messages) are never punished
 
-import { config, isFriend, friendName } from '../config/env.js';
+import { config, isFriend, friendName, isTeam, teamMember, teamMembers } from '../config/env.js';
 import * as db from '../utils/db.js';
 import * as media from '../services/media.js';
-import { detectLanguage } from '../services/language.js';
+import { detectLanguage, detectTone, fromWhisperLanguage } from '../services/language.js';
 import { generateReply, detectMood, needsOwner } from '../core/brain.js';
 import { ingest, markAsked, markQuoted, getState, mergeExternalFields } from '../core/projectIntake.js';
 import { buildQuote, formatQuote } from '../core/pricing.js';
@@ -85,8 +85,14 @@ export async function handleIncoming(sock, msg) {
 
     if (number === config.owner.number) {
       // Message to yourself from another device
-      if (isCommand(info.text)) return await runCommand(sock, jid, info.text);
+      if (isCommand(info.text)) return await runCommand(sock, jid, info.text, number);
       return;
+    }
+
+    // ── team members (multi-user) ──────────────────────────
+    // A teammate messaging the bot is an operator, never a client.
+    if (isTeam(number)) {
+      return await handleTeammate(sock, jid, number, info);
     }
 
     // ── bookkeeping ────────────────────────────────────────
@@ -247,10 +253,85 @@ async function answerOwnerQuestion(sock, jid, text) {
   await sendTyping(sock, jid, result.text || 'Hmm, nothing came back.', { delay: 500 });
 }
 
-async function runCommand(sock, jid, text) {
+// ════════════════════════════════════════════════════════════
+// Team member DMing the bot (multi-user)
+// ════════════════════════════════════════════════════════════
+async function handleTeammate(sock, jid, number, info) {
+  const member = teamMember(number);
+  const text = (info.text || '').trim();
+  if (!text) return;
+
+  if (isCommand(text)) return runCommand(sock, jid, text, number);
+
+  const mine = db.contactsFor(member.name, 5);
+  const extraNote =
+    `You are talking to ${member.name}, a ${member.role} on the team (not a client). ` +
+    'Answer briefly and practically, in their language. They can take over a chat with .takeover <number>, ' +
+    'see their queue with .mine, and see the roster with .team.' +
+    (mine.length
+      ? ` Their chats right now: ${mine.map((c) => `+${c.number} (${c.stage})`).join(', ')}.`
+      : ' They have no chats assigned yet.');
+
+  const result = await generateReply({
+    number,
+    text,
+    langInfo: detectLanguage(text),
+    dossier: {
+      number,
+      name: member.name,
+      country: 'Pakistan',
+      currency: 'PKR',
+      localTime: { label: config.timezone },
+      stage: 'team',
+      messageCount: 0,
+      facts: [],
+      summary: `Team member: ${member.name} (${member.role}).`,
+      recent: [],
+      category: 'team',
+    },
+    intakeState: null,
+    features: {
+      visionEnabled: visionEnabled(),
+      videoEnabled: videoCapabilities().ready,
+      ttsEnabled: ttsEnabled(),
+      sttEnabled: sttEnabled(),
+    },
+    chatType: 'owner',
+    extraNote,
+  });
+
+  const reply = (result?.text || '').trim();
+  if (reply) return sendTyping(sock, jid, reply, { delay: 350 });
+
+  // No model available — fall back to their little dashboard
+  const lines = [`👋 ${member.name} — ${member.role}`];
+  if (mine.length) {
+    lines.push('', '*Your chats*');
+    for (const c of mine) lines.push(`• ${c.name || `+${c.number}`} — ${c.stage} · ${c.message_count} msgs`);
+  } else {
+    lines.push('', 'No chats assigned to you yet.');
+  }
+  lines.push('', '.mine .leads .calls .takeover 92… .release 92… .quote 92…');
+  return sendTyping(sock, jid, lines.join('\n'), { delay: 350 });
+}
+
+/** Ping whoever owns this chat, if it isn't the owner himself. */
+async function notifyOperator(sock, number, text) {
+  const contact = db.getContact(number);
+  if (!contact?.assigned_to) return;
+  const member = teamMembers().find((m) => m.name === contact.assigned_to);
+  if (!member) return;
+  try {
+    await sendTyping(sock, `${member.number}@s.whatsapp.net`, text, { delay: 150 });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function runCommand(sock, jid, text, from = config.owner.number) {
   if (!config.behavior.ownerCommands) return;
   try {
-    const result = await handleOwnerCommand(sock, jid, text);
+    const result = await handleOwnerCommand(sock, jid, text, from);
     if (result?.reply) await sendTyping(sock, jid, result.reply, { delay: 250 });
   } catch (err) {
     console.error('Command error:', err.message);
@@ -358,10 +439,17 @@ async function processBatch(sock, jid, number, items) {
 
   const modelText = renderForModel(parts);
   const detected = detectLanguage(humanText || 'voice');
-  const langInfo = detected.code === 'unknown' && contact.language
-    ? detectLanguage(contact.language)
-    : detected;
+  let langInfo = detected;
+  if (detected.code === 'unknown') {
+    // A voice note carries its own language tag from Whisper — trust it
+    const voicePart = parts.find((p) => p.kind === 'voice' && p.lang);
+    const fromVoice = voicePart ? fromWhisperLanguage(voicePart.lang) : null;
+    if (fromVoice) langInfo = fromVoice;
+    else if (contact.language) langInfo = detectLanguage(contact.language);
+  }
   const mood = detectMood(humanText);
+  const toneInfo = detectTone(humanText, langInfo.code);
+  const tone = toneInfo.tone !== 'neutral' ? toneInfo.tone : 'neutral';
 
   // Long-term context BEFORE this turn is stored, so it isn't duplicated
   const dossier = { ...memory.getDossier(number), mood };
@@ -402,6 +490,7 @@ async function processBatch(sock, jid, number, items) {
     intakeState: intake.state,
     features,
     extraNote,
+    tone: toneInfo.tone !== 'neutral' ? toneInfo.tone : contact.tone || 'neutral',
   });
 
   const replyText = (reply?.text || '').trim();
@@ -441,6 +530,7 @@ async function processBatch(sock, jid, number, items) {
   db.upsertContact(number, {
     language: langInfo.code,
     locale: langInfo.locale,
+    tone: toneInfo.tone !== 'neutral' ? toneInfo.tone : contact.tone || 'neutral',
     category: intake.state.stage === 'quoted' ? 'lead' : contact.category || 'lead',
     stage: intake.state.stage === 'quoted' ? 'quoted' : contact.stage === 'new' ? 'discovering' : contact.stage,
     voice_pref: voice ? 'yes' : clientSentVoice ? (contact.voice_pref || 'unknown') : contact.voice_pref,
@@ -467,6 +557,7 @@ async function processBatch(sock, jid, number, items) {
   if (esc.required && config.behavior.escalateToOwner) {
     db.logEvent('escalation', number, { reason: esc.reason });
     await notifyOwner(sock, `⚠️ Needs you — +${number} (${esc.reason})\n\n${memory.buildOwnerBrief(number)}`);
+    await notifyOperator(sock, number, `⚠️ Your chat +${number} needs a human (${esc.reason}).`);
   }
 
   // ── memory roll-up every N messages ─────────────────────
@@ -674,6 +765,7 @@ async function deliverQuote(sock, jid, number, intake, quote) {
     scheduleFollowUp(number, { attempt: 1 });
     saveLeadToSheet(lead).catch(() => {});
 
+    await notifyOperator(sock, number, `💰 A quote went out to your client +${number} (${quote.local.minText} – ${quote.local.maxText}).`);
     await notifyOwner(
       sock,
       `💰 Quote sent to ${contact.name || `+${number}`}\n` +

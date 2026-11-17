@@ -230,6 +230,21 @@ export const config = {
     notifyNewChats: toBool(process.env.NOTIFY_NEW_CHATS, true),
   },
 
+  // ── missed-call handling ──────────────────────────────────
+  // The WhatsApp Web protocol cannot carry audio into a live call, so the
+  // assistant "picks up" the conversation in chat (voice note + text) when a
+  // call goes unanswered.
+  calls: {
+    enabled: toBool(process.env.CALLS_ENABLED, true),
+    delaySeconds: toInt(process.env.CALL_FALLBACK_SECONDS, 60),
+    // auto | voice_note | text
+    mode: (process.env.CALL_FALLBACK_MODE || 'auto').toLowerCase(),
+    // auto | formal | casual  (auto follows the client's own register)
+    tone: (process.env.CALL_FALLBACK_TONE || 'auto').toLowerCase(),
+    maxPerNumberPerDay: toInt(process.env.CALL_FALLBACK_MAX_PER_DAY, 3),
+    notifyOwner: toBool(process.env.CALL_NOTIFY_OWNER, true),
+  },
+
   limits: {
     // Keeps a $0 Groq/Gemini free tier comfortably inside its daily quota
     dailyLlmCalls: toInt(process.env.DAILY_LLM_CALLS, 700),
@@ -277,6 +292,54 @@ export function friendName(number) {
   return match?.name || null;
 }
 
+// ════════════════════════════════════════════════════════════
+// Team (multi-operator)
+// ════════════════════════════════════════════════════════════
+const ROLE_PERMISSIONS = {
+  owner: ['*'],
+  admin: ['*'],
+  manager: ['leads', 'chats', 'quotes', 'pause', 'resume', 'assign', 'report', 'calls', 'intakes'],
+  sales: ['leads', 'chats', 'quotes', 'pause', 'resume', 'calls', 'intakes'],
+  support: ['chats', 'pause', 'resume', 'calls', 'intakes'],
+};
+
+export function teamMembers() {
+  const team = config.owner.profile?.owner?.team || [];
+  return team
+    .map((m) => ({ ...m, number: normalizePhone(m.number || '') }))
+    .filter((m) => m.number);
+}
+
+export function teamMember(number) {
+  const digits = normalizePhone(number);
+  return teamMembers().find((m) => m.number === digits) || null;
+}
+
+export function isTeam(number) {
+  return !!teamMember(number);
+}
+
+/** Is this the owner, or someone acting with the owner's rights? */
+export function isOwnerOrAdmin(number) {
+  if (normalizePhone(number) === config.owner.number) return true;
+  const member = teamMember(number);
+  return member?.role === 'admin';
+}
+
+export function teamPermissions(number) {
+  if (normalizePhone(number) === config.owner.number) return new Set(['*']);
+  const member = teamMember(number);
+  if (!member) return new Set();
+  const rolePerms = ROLE_PERMISSIONS[member.role] || ROLE_PERMISSIONS.support;
+  const extra = Array.isArray(member.permissions) ? member.permissions : [];
+  return new Set([...rolePerms, ...extra]);
+}
+
+export function can(number, permission) {
+  const perms = teamPermissions(number);
+  return perms.has('*') || perms.has(permission);
+}
+
 /** Human-readable summary of what is configured — printed at boot. */
 export function describeConfig() {
   const has = (v) => (v ? '✅' : '—');
@@ -286,6 +349,8 @@ export function describeConfig() {
     `Gemini key   : ${has(config.keys.gemini)}   (images + video)`,
     `OpenRouter   : ${has(config.keys.openrouter)}   (vision fallback)`,
     `Voice replies: ${config.tts.mode} via ${config.tts.providers.join(' > ')}`,
+    `Missed calls: ${config.calls.enabled ? `answered in chat after ${config.calls.delaySeconds}s` : 'off'}`,
+    `Team         : ${(config.owner.profile?.owner?.team || []).length} teammate(s) + owner`,
     `Dashboard    : ${config.server.enabled ? `http://0.0.0.0:${config.server.port}` : 'disabled'}`,
   ].join('\n');
 }

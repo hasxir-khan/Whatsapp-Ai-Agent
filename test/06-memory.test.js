@@ -91,7 +91,8 @@ test('system prompt contains self-knowledge, capabilities and memory', () => {
   assert.match(prompt, /voice note/i);
   assert.match(prompt, /groups/i);
   assert.match(prompt, /never invent prices/i);
-  assert.match(prompt, /Reply in natural English/);
+  assert.match(prompt, /Reply in English/);
+  assert.match(prompt, /every major language/i);
   assert.match(prompt, /WHO YOU ARE TALKING TO/);
 });
 

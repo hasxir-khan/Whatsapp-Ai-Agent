@@ -5,7 +5,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { config, describeConfig } from '../src/config/env.js';
+import { config, describeConfig, teamMembers } from '../src/config/env.js';
 import { GEMINI_BASE, geminiHeadersWith, isKeyError, explainGeminiError, maskKey, keyFormat } from '../src/utils/gemini.js';
 
 const ok = (m) => console.log(`  ✅ ${m}`);
@@ -250,6 +250,33 @@ async function checkOpenRouter() {
   }
 }
 
+async function checkTeamAndCalls() {
+  section('Team & calls');
+
+  const team = teamMembers();
+  if (team.length) {
+    ok(`${team.length} teammate(s): ${team.map((m) => `${m.name} (${m.role})`).join(', ')}`);
+    const dupes = team.map((m) => m.number).filter((n, i, arr) => arr.indexOf(n) !== i);
+    if (dupes.length) {
+      bad(`duplicate team numbers: ${[...new Set(dupes)].join(', ')}`);
+      problems.push('Two teammates share a number in config/owner.json — one entry per person.');
+    }
+    if (team.some((m) => m.number === config.owner.number)) {
+      problems.push('A teammate has the owner\'s own number. Remove that entry — the owner is always authorised.');
+    }
+  } else {
+    warn('no teammates configured — the bot is single-user');
+    notes.push('Add people to config/owner.json → owner.team, e.g. {"number":"92300…","name":"Ayesha","role":"sales"}');
+  }
+
+  if (!config.calls.enabled) {
+    warn('missed-call rescue is off');
+  } else {
+    ok(`missed calls answered in chat after ${config.calls.delaySeconds}s (mode: ${config.calls.mode})`);
+    info('WhatsApp Web cannot carry live call audio — the assistant replies in chat instead.');
+  }
+}
+
 async function checkMedia() {
   section('Media');
   const { hasFfmpeg, ffmpegPath } = await import('../src/services/ffmpeg.js');
@@ -312,6 +339,7 @@ async function main() {
   if (want('groq')) await checkGroq();
   if (want('gemini', 'google')) await checkGemini();
   if (want('openrouter')) await checkOpenRouter();
+  if (want('team', 'calls')) await checkTeamAndCalls();
   if (want('media', 'ffmpeg', 'vision')) await checkMedia();
   if (want('memory', 'db', 'database')) await checkMemory();
   if (want('whatsapp', 'session')) await checkWhatsApp();

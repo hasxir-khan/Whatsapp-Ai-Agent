@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS contacts (
   spam_score        INTEGER DEFAULT 0,
   is_blocked        INTEGER DEFAULT 0,
   bot_paused_until  TEXT,
+  tone              TEXT,                   -- formal | casual | neutral
+  assigned_to       TEXT,                   -- team member handling this chat
+  assigned_at       TEXT,
   notes             TEXT,
   first_seen        TEXT,
   last_seen         TEXT
@@ -140,6 +143,18 @@ CREATE TABLE IF NOT EXISTS events (
   created_at  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS calls (
+  id          TEXT PRIMARY KEY,
+  number      TEXT,
+  name        TEXT,
+  video       INTEGER DEFAULT 0,
+  status      TEXT,          -- offer | accepted | missed | rejected | handled
+  outcome     TEXT,          -- what the assistant did about it
+  created_at  TEXT,
+  handled_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_calls_created ON calls(created_at);
+
 CREATE TABLE IF NOT EXISTS settings (
   key         TEXT PRIMARY KEY,
   value       TEXT
@@ -165,6 +180,7 @@ export async function initDB({ file = DB_FILE } = {}) {
 
   db.run('PRAGMA journal_mode = MEMORY;');
   db.run(SCHEMA);
+  migrate();
   saveDB(true);
 
   // Persist regularly and on exit so a crash never loses a client conversation
@@ -175,6 +191,33 @@ export async function initDB({ file = DB_FILE } = {}) {
   process.once('SIGTERM', () => saveDB(true));
 
   return db;
+}
+
+/** Forward-only schema fixes for databases created by older versions. */
+function migrate() {
+  const columns = (table) => {
+    try {
+      return all(`PRAGMA table_info(${table})`).map((c) => c.name);
+    } catch {
+      return [];
+    }
+  };
+
+  const add = (table, column, definition) => {
+    if (columns(table).includes(column)) return;
+    try {
+      db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      console.log(`🔧 Migrated ${table}.${column}`);
+    } catch (err) {
+      console.error(`Migration ${table}.${column} failed:`, err.message);
+    }
+  };
+
+  add('contacts', 'tone', 'TEXT');
+  add('contacts', 'assigned_to', 'TEXT');
+  add('contacts', 'assigned_at', 'TEXT');
+  add('calls', 'video', 'INTEGER DEFAULT 0');
+  add('calls', 'outcome', 'TEXT');
 }
 
 export function getDB() {
@@ -244,7 +287,8 @@ export function upsertContact(number, data = {}) {
     const values = [];
     for (const key of [
       'jid', 'name', 'push_name', 'category', 'language', 'locale', 'country',
-      'currency', 'stage', 'voice_pref', 'notes', 'bot_paused_until',
+      'currency', 'stage', 'voice_pref', 'tone', 'assigned_to', 'assigned_at',
+      'notes', 'bot_paused_until',
     ]) {
       if (data[key] !== undefined && data[key] !== null) {
         fields.push(`${key} = ?`);
@@ -301,6 +345,97 @@ export function blockContact(number, blocked = true) {
     blocked ? 'spam' : 'new',
     number,
   ]);
+}
+
+// ════════════════════════════════════════════════════════════
+// Team (multi-operator)
+// ════════════════════════════════════════════════════════════
+export function assignContact(number, operator, minutes = null) {
+  const now = new Date().toISOString();
+  const exists = getContact(number);
+  if (!exists) upsertContact(number, { jid: `${number}@s.whatsapp.net` });
+  run('UPDATE contacts SET assigned_to = ?, assigned_at = ?, category = ? WHERE number = ?', [
+    operator || null,
+    operator ? now : null,
+    operator ? 'client' : 'new',
+    number,
+  ]);
+  if (minutes) setContactPaused(number, new Date(Date.now() + minutes * 60000).toISOString());
+  return getContact(number);
+}
+
+export function contactsFor(operator, limit = 20) {
+  return all(
+    'SELECT * FROM contacts WHERE assigned_to = ? ORDER BY last_seen DESC LIMIT ?',
+    [operator, limit]
+  );
+}
+
+export function teamWorkload() {
+  return all(
+    `SELECT assigned_to AS operator, COUNT(*) AS chats,
+            SUM(CASE WHEN last_seen > ? THEN 1 ELSE 0 END) AS active_today
+       FROM contacts
+      WHERE assigned_to IS NOT NULL AND assigned_to <> ''
+      GROUP BY assigned_to
+      ORDER BY chats DESC`,
+    [new Date(Date.now() - 86400000).toISOString()]
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// Calls (whatsapp voice/video call events)
+// ════════════════════════════════════════════════════════════
+export function recordCall({ id, number, name = null, video = false, status = 'offer' }) {
+  if (!id) return null;
+  run(
+    `INSERT INTO calls (id, number, name, video, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET status = excluded.status, video = excluded.video`,
+    [id, number, name, video ? 1 : 0, status, new Date().toISOString()]
+  );
+  return getCall(id);
+}
+
+export function updateCall(id, { status, outcome } = {}) {
+  if (!id) return null;
+  const fields = [];
+  const values = [];
+  if (status) {
+    fields.push('status = ?');
+    values.push(status);
+  }
+  if (outcome) {
+    fields.push('outcome = ?');
+    values.push(outcome);
+  }
+  if (status && ['accepted', 'missed', 'rejected', 'handled'].includes(status)) {
+    fields.push('handled_at = ?');
+    values.push(new Date().toISOString());
+  }
+  if (!fields.length) return getCall(id);
+  values.push(id);
+  run(`UPDATE calls SET ${fields.join(', ')} WHERE id = ?`, values);
+  return getCall(id);
+}
+
+export function getCall(id) {
+  return get('SELECT * FROM calls WHERE id = ?', [id]);
+}
+
+export function recentCalls(limit = 10) {
+  return all('SELECT * FROM calls ORDER BY created_at DESC LIMIT ?', [limit]);
+}
+
+export function callsToday() {
+  const since = new Date();
+  since.setHours(0, 0, 0, 0);
+  const row = get('SELECT COUNT(*) AS n FROM calls WHERE created_at >= ?', [since.toISOString()]);
+  return row?.n || 0;
+}
+
+export function lastCallFor(number) {
+  return get('SELECT * FROM calls WHERE number = ? ORDER BY created_at DESC LIMIT 1', [number]);
 }
 
 export function listContacts(limit = 100) {
