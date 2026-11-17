@@ -1,4 +1,10 @@
 node_modules/
 sessions/
+data/
+tmp/
 .env
+.env.local
+config/owner.local.json
+qr.png
 *.log
+.DS_Store

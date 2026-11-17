@@ -1,25 +1,47 @@
 {
-  "name": "whatsapp-personal-ai-bot",
-  "version": "2.0.0",
-  "description": "Personal AI Clone for WhatsApp - Powered by Groq",
+  "name": "whatsapp-self-knowledge-assistant",
+  "version": "8.0.0",
+  "description": "A self-knowledge WhatsApp assistant: knows your business, remembers every client, hears voice notes, sees images and video, and sends voice replies. Runs entirely on free tiers.",
   "main": "src/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "dry": "DRY_RUN=1 ENABLE_WEB=1 node src/index.js",
+    "doctor": "node scripts/doctor.js",
+    "chat": "node scripts/simulate.js",
+    "session": "node scripts/session-backup.js",
+    "test": "node --test test/*.test.js",
+    "demo": "node scripts/seed-demo.js && DRY_RUN=1 DATA_DIR=./data/demo ENABLE_WEB=1 node src/index.js",
+    "seed": "node scripts/seed-demo.js"
   },
+  "keywords": [
+    "whatsapp",
+    "ai",
+    "assistant",
+    "baileys",
+    "groq",
+    "gemini",
+    "voice",
+    "vision",
+    "crm"
+  ],
+  "license": "MIT",
   "dependencies": {
+    "@hapi/boom": "^9.1.4",
     "@whiskeysockets/baileys": "^6.7.9",
     "dotenv": "^16.4.5",
-    "franc": "*",
-    "groq-sdk": "^0.12.0",
-    "mammoth": "*",
-    "node-cache": "^5.1.2",
-    "pdf-parse": "*",
-    "pdfkit": "*",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
     "pino": "^9.5.0",
-    "pino-pretty": "^13.0.0",
     "qrcode": "^1.5.4",
-    "sql.js": "*"
+    "sql.js": "^1.12.0",
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "ffmpeg-static": "^5.2.0"
   }
 }
