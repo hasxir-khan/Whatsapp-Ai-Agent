@@ -585,6 +585,9 @@ async function handleInboxRoute(req, res, url) {
       summary: inboxSummary(),
       latestId: latestMessageId(),
       demo: process.env.DEMO_MODE === '1',
+      // 'real' when the demo found an API key, 'canned' when it did not.
+      demoAi: process.env.DEMO_MODE === '1' ? process.env.DEMO_AI || 'canned' : null,
+      demoAiProvider: process.env.DEMO_MODE === '1' ? process.env.DEMO_PROVIDER || null : null,
     });
     return true;
   }

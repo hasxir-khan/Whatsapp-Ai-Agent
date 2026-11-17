@@ -7,7 +7,7 @@ Configured for **Hashir** and **HasDevs** out of the box, but built so **anyone 
 
 ---
 
-## Try it in 60 seconds — no API key, no phone
+## Try it in 60 seconds — with your key, or without one
 
 If you only want to see it work:
 
@@ -18,7 +18,11 @@ npm install
 npm run demo
 ```
 
-Open **http://localhost:3111/inbox** and type in the *“Demo — type as a customer”* bar at the top. The real pipeline answers — language detection, the booking agent, opt-outs, the inbox itself — with the AI swapped for a deterministic mock, so nothing costs a token and nobody needs a WhatsApp account.
+Open **http://localhost:3111/inbox** and type in the *“Type as a customer”* bar at the top.
+
+**If you have a free key, the demo uses it.** Put `GROQ_API_KEY=gsk_...` (or `GEMINI_API_KEY=AQ...`) in `.env` before `npm run demo` and every reply is generated live by the model, on exactly the same code path as a real number. The terminal says `Demo is up — real AI (Groq)` and the inbox bar shows the same.
+
+**Without a key it still runs**, and says so plainly: the pipeline is real (language detection, catalogue, pricing, bookings, opt-outs, the inbox) and only the AI's wording is canned. Nothing costs a token and nobody needs a WhatsApp account either way.
 
 Here is a real exchange from that page, not a mock-up:
 
@@ -31,7 +35,7 @@ assistant:              Understood — no more reminders from me. If you ever wa
                         back, just say "start".
 ```
 
-Both of those are deterministic code, not the model: a real slot was checked, a real row was written, and the opt-out is honoured from the next message. Try a free-form question ("delivery charges kya hain?") and you will see the *shape* of a reply from the mock — that is where a Groq or Gemini key changes the experience, and the demo is honest about it.
+Both of those are deterministic code, not the model: a real slot was checked, a real row was written, and the opt-out is honoured from the next message. Free-form questions ("delivery charges kya hain?") are where the model matters — with a key you get a written answer, without one you get a canned line and a note in the bar telling you how to turn the real thing on.
 
 Or from a terminal, without a browser:
 
@@ -1719,7 +1723,7 @@ scripts/
   backup.js  restore.js   one-file backup of DB + config
 src/web/inbox.html      the inbox page (one file, no dependencies)
 assets/fonts/           Noto Sans + Noto Naskh Arabic (bundled, subsetted, OFL)
-test/                   551 tests (node:test, no dependencies)
+test/                   559 tests (node:test, no dependencies)
 ```
 
 ---
@@ -1727,7 +1731,7 @@ test/                   551 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test                 # 551 tests, ~37s, no network, no keys, no config/owner.json
+npm test                 # 559 tests, ~37s, no network, no keys, no config/owner.json
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys

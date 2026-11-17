@@ -1,23 +1,33 @@
 #!/usr/bin/env node
 // scripts/demo.js
-// The zero-key tour: no API key, no WhatsApp account, no phone.
+// The tour: no WhatsApp account, no phone.
 //
 //   npm run demo
 //
 // It builds a throwaway tenant in ./demo, fills it with a few realistic
-// conversations, swaps the AI for a deterministic mock, registers a stand-in
-// transport, and opens the live inbox. From that page you can type as a
-// customer and watch the real pipeline answer you: language detection, the
-// catalogue, pricing, booking, opt-outs — all of it, none of it costing a token.
+// conversations, registers a stand-in transport, and opens the live inbox.
+//
+// Two modes, decided by whether a real key is there:
+//   • GROQ_API_KEY / GEMINI_API_KEY in .env → the real model answers. Every
+//     reply is generated live, on the same code path as a real number.
+//   • no key                          → the pipeline still runs for real
+//     (language, catalogue, pricing, bookings, opt-outs); only the AI's wording
+//     is canned, and the terminal plus the inbox say so plainly.
 //
 // Everything it writes lives under ./demo and is gitignored. Delete the folder
 // and nothing is left behind.
 
 import fs from 'node:fs';
 import path from 'node:path';
+import dotenv from 'dotenv';
+import { aiMode, aiModeLabel } from '../src/dev/demoAi.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const DEMO = path.join(ROOT, 'demo');
+
+// Read .env first, so a key the user already has is honoured instead of mocked.
+dotenv.config({ path: process.env.ENV_FILE || path.join(ROOT, '.env'), quiet: true });
+const AI = aiMode(process.env);
 
 // ── the environment, decided before anything imports config ──
 process.env.DEMO_MODE = '1';
@@ -30,7 +40,12 @@ process.env.PORT = process.env.DEMO_PORT || process.env.PORT || '3111';
 process.env.HOST = process.env.DEMO_HOST || '0.0.0.0';
 process.env.MY_NUMBER = process.env.MY_NUMBER || '920000000000';
 process.env.MY_NAME = process.env.MY_NAME || 'Demo Owner';
-process.env.GROQ_API_KEY = process.env.GROQ_API_KEY || 'demo-key-never-used';
+process.env.DEMO_AI = AI.mode;
+process.env.DEMO_PROVIDER = AI.provider || '';
+// Only when there is no real key: lets the config loader finish without one.
+// Removed from the picture entirely (and never used for a request) once the
+// mock transport below installs itself.
+if (AI.mode === 'canned') process.env.GROQ_API_KEY = process.env.GROQ_API_KEY || 'demo-key-never-used';
 process.env.DAILY_REPORT = 'false';
 process.env.NOTIFY_NEW_CHATS = 'false';
 process.env.QUIET_HOURS = '';
@@ -155,8 +170,11 @@ if (!existing) {
   }
 }
 
-// The mock AI: the same code path, canned answers, zero tokens.
-await import('../src/dev/mockLlm.js').then((m) => m.mockTransport());
+// Real key → real model, no mock at all. No key → deterministic mock, so the
+// page still demonstrably works without costing anything.
+if (AI.mode === 'canned') {
+  await import('../src/dev/mockLlm.js').then((m) => m.mockTransport());
+}
 
 // A stand-in transport. The handler records what it sends, so nothing is
 // written twice; this only needs to behave like the real one.
@@ -183,12 +201,20 @@ startServer();
 
 const url = `http://localhost:${process.env.PORT}/inbox`;
 console.log('');
-console.log(bold(green('  Demo is up — no API key, no WhatsApp account, no phone.')));
+console.log(
+  bold(
+    green(
+      AI.mode === 'real'
+        ? `  Demo is up — real AI (${AI.provider}), no WhatsApp account, no phone.`
+        : '  Demo is up — no API key, no WhatsApp account, no phone.'
+    )
+  )
+);
 console.log(`  ${bold('Open:')} ${url}`);
 console.log('');
-console.log(dim('  Type in the "Demo — type as a customer" bar at the top of the inbox.'));
+console.log(dim('  Type in the "Type as a customer" bar at the top of the inbox.'));
 console.log(dim('  The real pipeline answers: language, catalogue, pricing, bookings, opt-outs.'));
-console.log(dim('  The AI is a deterministic mock, so replies are canned but the flow is not.'));
+console.log(dim(`  ${aiModeLabel(AI)}`));
 console.log('');
 console.log(dim('  Or from a terminal:'));
 console.log(dim(`    curl -s -X POST ${url.replace('/inbox', '/api/demo/message')} \\`));

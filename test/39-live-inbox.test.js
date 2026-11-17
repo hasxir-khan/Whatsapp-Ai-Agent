@@ -419,6 +419,32 @@ test('in demo mode it needs a body, a POST and — when set — the token', asyn
   }
 });
 
+test('the inbox tells the truth about which brain the demo is using', async () => {
+  process.env.DEMO_MODE = '1';
+  try {
+    process.env.DEMO_AI = 'canned';
+    delete process.env.DEMO_PROVIDER;
+    const canned = await call({ url: '/api/inbox' });
+    assert.equal(canned.body.demo, true);
+    assert.equal(canned.body.demoAi, 'canned');
+    assert.equal(canned.body.demoAiProvider, null);
+
+    process.env.DEMO_AI = 'real';
+    process.env.DEMO_PROVIDER = 'Groq';
+    const real = await call({ url: '/api/inbox' });
+    assert.equal(real.body.demoAi, 'real');
+    assert.equal(real.body.demoAiProvider, 'Groq');
+  } finally {
+    delete process.env.DEMO_MODE;
+    delete process.env.DEMO_AI;
+    delete process.env.DEMO_PROVIDER;
+  }
+
+  const off = await call({ url: '/api/inbox' });
+  assert.equal(off.body.demo, false);
+  assert.equal(off.body.demoAi, null);
+});
+
 test('the demo folder and the owner profile stay out of git', async () => {
   const { execFileSync } = await import('node:child_process');
   const ignored = execFileSync('git', ['check-ignore', 'config/owner.json', 'demo/data/assistant.db', 'tenants/x/.env'], {
