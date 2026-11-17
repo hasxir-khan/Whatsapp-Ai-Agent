@@ -26,6 +26,8 @@ import { startBookingLoop } from './services/bookingAgent.js';
 import { startFollowUpAgentLoop, followUpAgentEnabled } from './services/followUpAgent.js';
 import { startAnalystLoop } from './services/analystAgent.js';
 import { startReviewLoop } from './services/reviewAgent.js';
+import { startReactivationLoop } from './services/reactivationAgent.js';
+import { startContentLoop } from './services/contentAgent.js';
 import { createTransport } from './transport/index.js';
 import { describeCapabilities } from './transport/base.js';
 
@@ -37,7 +39,7 @@ function banner() {
   const line = '─'.repeat(58);
   console.log(`
 ┌${line}┐
-│  🤖  WhatsApp Self-Knowledge Assistant  v9.7              │
+│  🤖  WhatsApp Self-Knowledge Assistant  v9.8              │
 │  ${config.bot.name.padEnd(54).slice(0, 54)}  │
 └${line}┘
 ${describeConfig()}
@@ -64,6 +66,8 @@ function startServices(t) {
   // after a job is finished. Both are silent until their flag is on.
   if (featureOn('analystAgent')) startAnalystLoop({ transport: t });
   if (featureOn('reviewAgent')) startReviewLoop({ transport: t });
+  if (featureOn('reactivationAgent')) startReactivationLoop({ transport: t });
+  if (featureOn('contentAgent')) startContentLoop({ transport: t });
 
   startPendingFlusher(t);
   startOutboxLoop(t);

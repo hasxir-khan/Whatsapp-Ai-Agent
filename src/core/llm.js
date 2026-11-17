@@ -7,7 +7,7 @@
 // instead of going offline. No SDK lock-in, ~200 lines.
 
 import { config } from '../config/env.js';
-import { bumpUsage, getUsage, todayKey, logEvent } from '../utils/db.js';
+import { bumpUsage, getUsage, todayKey, logEvent, tenantUsage, bumpTenantUsage } from '../utils/db.js';
 import { GEMINI_BASE, geminiHeaders, isKeyError, explainGeminiError } from '../utils/gemini.js';
 
 let fetchImpl = globalThis.fetch;
@@ -58,11 +58,37 @@ function orderedProviders() {
   return wanted;
 }
 
+export function tenantSlug() {
+  return config.tenant?.slug || 'default';
+}
+
+/**
+ * Per-tenant budget. On a box running several businesses, one busy tenant must
+ * not be able to spend the whole free quota, so its calls are counted
+ * separately and capped on their own.
+ * @returns {{used:number, cap:number, exceeded:boolean}}
+ */
+export function tenantBudget(tenant = tenantSlug()) {
+  const cap = config.limits.tenantDailyLlmCalls;
+  const used = Number(tenantUsage(todayKey(), tenant)?.llm_calls || 0);
+  return { used, cap, exceeded: cap > 0 && used >= cap, tenant };
+}
+
+export function assertTenantBudget(tenant = tenantSlug()) {
+  const budget = tenantBudget(tenant);
+  if (budget.exceeded) {
+    logEvent('tenant_budget_hit', null, { tenant: budget.tenant, used: budget.used, cap: budget.cap });
+    throw new QuotaError(`Daily AI budget for "${budget.tenant}" reached (${budget.used}/${budget.cap})`);
+  }
+  return budget;
+}
+
 function checkQuota() {
   const usage = getUsage(todayKey());
   if (usage.llm_calls >= config.limits.dailyLlmCalls) {
     throw new QuotaError(`Daily AI call limit reached (${config.limits.dailyLlmCalls})`);
   }
+  assertTenantBudget();
 }
 
 function isModelProblem(status, bodyText = '') {
@@ -284,6 +310,7 @@ export async function chat({
 
         sticky[mode] = { provider, model };
         bumpUsage('llm_calls', 1);
+        bumpTenantUsage(tenantSlug(), 1);
         if (result.tokens) bumpUsage('llm_tokens', result.tokens);
         return { ...result, provider };
       } catch (err) {
@@ -364,4 +391,7 @@ export function llmStatus() {
   };
 }
 
-export default { chat, chatJson, extractJson, hasLLM, providersAvailable, llmStatus, QuotaError };
+export default {
+  chat, chatJson, extractJson, hasLLM, providersAvailable, llmStatus, QuotaError,
+  tenantBudget, assertTenantBudget, tenantSlug,
+};

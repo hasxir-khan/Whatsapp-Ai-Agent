@@ -37,8 +37,8 @@ export const FEATURE_KEYS = [
   'closerAgent',
   'reviewAgent',
   'analystAgent',
-  'reactivation',
-  'content',
+  'reactivationAgent',
+  'contentAgent',
   'closer',    // deprecated alias of closerAgent
   'reviews',   // deprecated alias of reviewAgent
   'analyst',   // deprecated alias of analystAgent
@@ -64,8 +64,10 @@ export const FEATURE_LABELS = {
   closerAgent: 'Objection handling, then quote and payment instructions',
   reviewAgent: 'Feedback asks after a job, review links, referral codes',
   analystAgent: 'Weekly numbers report for the owner, computed not guessed',
-  reactivation: 'Monthly win-back for old clients',
-  content: 'Weekly content ideas for the owner',
+  reactivationAgent: 'Monthly win-back campaign for past customers and cold leads',
+  contentAgent: 'Weekly pack of posts, statuses and a reel idea for the owner',
+  reactivation: 'Deprecated alias of reactivationAgent',
+  content: 'Deprecated alias of contentAgent',
   closer: 'Deprecated alias of closerAgent',
   reviews: 'Deprecated alias of reviewAgent',
   analyst: 'Deprecated alias of analystAgent',
@@ -96,6 +98,8 @@ export const FEATURE_ALIASES = {
   closer: 'closerAgent',
   reviews: 'reviewAgent',
   analyst: 'analystAgent',
+  reactivation: 'reactivationAgent',
+  content: 'contentAgent',
 };
 
 /** Flags that are ON unless explicitly turned off. */
@@ -152,6 +156,23 @@ export function payment() {
 export function reviewLink() {
   const b = business();
   return b.reviewLink || b.review?.link || null;
+}
+
+/** What the owner is willing to offer in a win-back message. Nothing else is allowed. */
+export function offers() {
+  const raw = business().offers;
+  if (Array.isArray(raw)) return raw.filter(Boolean);
+  if (raw && typeof raw === 'object') return Object.values(raw).filter(Boolean);
+  return [];
+}
+
+/** Weekly content pack schedule: {day: 'wed', time: '10:00'}. */
+export function contentSchedule() {
+  const raw = business().content || {};
+  return {
+    day: String(raw.day || config.content.day || 'wed').toLowerCase().slice(0, 3),
+    time: raw.time || config.content.time || '10:00',
+  };
 }
 
 /** Referral programme config: {reward, message}. Absent = tracking only. */

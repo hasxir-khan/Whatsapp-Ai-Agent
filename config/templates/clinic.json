@@ -111,6 +111,8 @@
     "growthApproval": true,
     "closerAgent": false,
     "reviewAgent": false,
-    "analystAgent": false
+    "analystAgent": false,
+    "reactivationAgent": false,
+    "contentAgent": false
   }
 }

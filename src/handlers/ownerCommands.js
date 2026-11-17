@@ -82,6 +82,9 @@ const HELP = `*Bot commands*
 .paid <id> – confirm an order's payment actually arrived
 .report week – last seven days vs the week before
 .referrals – who has a code, and who arrived with one
+.content now – this week's posts, statuses and a reel idea
+.campaign preview – who would get a win-back message, and a sample
+.campaign send / .campaign stop – start or halt it
 .ping`;
 
 /** What this process is talking to, and what that transport cannot do. */
@@ -145,7 +148,7 @@ const COMMAND_PERMISSION = {
 const OWNER_ONLY = new Set([
   'export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq',
   'features', 'knowledge', 'tools', 'intents', 'growth', 'optouts', 'bookings', 'cancel', 'approve', 'skip',
-  'done', 'paid', 'referrals',
+  'done', 'paid', 'referrals', 'content', 'campaign',
 ]);
 
 /**
@@ -669,6 +672,54 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       const { markOrderPaid } = await import('../services/jobFlow.js');
       const res = markOrderPaid(id);
       return { handled: true, reply: res.reply };
+    }
+
+    case 'content': {
+      const { contentPackText } = await import('../services/contentAgent.js');
+      if (args[0] && !['now', 'week', 'pack'].includes(String(args[0]).toLowerCase())) {
+        return { handled: true, reply: 'Usage: .content now  (a fresh pack; the weekly one arrives on its own)' };
+      }
+      return { handled: true, reply: await contentPackText({ now: new Date() }) };
+    }
+
+    case 'campaign': {
+      const R = await import('../services/reactivationAgent.js');
+      const action = String(args[0] || '').toLowerCase();
+
+      if (!action || action === 'preview' || action === 'status') {
+        const state = R.campaignStatus();
+        if (state && state.status === 'running' && action === 'status') {
+          return {
+            handled: true,
+            reply: `📣 Campaign running: ${state.sent} sent, ${state.skipped} skipped of ${state.total}.\n.campaign stop to halt.`,
+          };
+        }
+        return { handled: true, reply: R.previewText(new Date()) };
+      }
+
+      if (action === 'send' || action === 'start') {
+        const res = R.startCampaign({ now: new Date() });
+        if (!res.ok) {
+          return {
+            handled: true,
+            reply:
+              res.reason === 'disabled'
+                ? 'Reactivation is off. Turn it on first: .set features.reactivationAgent true'
+                : 'Nobody to message right now — run .campaign preview to see why.',
+          };
+        }
+        return {
+          handled: true,
+          reply: `📣 Campaign started for ${res.campaign.total} people.\nSlow and jittered on purpose — the first message goes out within a few minutes.\n.campaign stop halts it immediately.`,
+        };
+      }
+
+      if (action === 'stop') {
+        const res = R.stopCampaign();
+        return { handled: true, reply: res.ok ? '📣 Campaign stopped.' : 'No campaign is running.' };
+      }
+
+      return { handled: true, reply: 'Usage: .campaign preview | send | stop' };
     }
 
     case 'referrals': {

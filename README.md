@@ -18,17 +18,18 @@ Configured for **Hashir (+923169896229)** and **HasDevs** out of the box, but bu
 8. [Who answers: the manager agent](#who-answers-the-manager-agent)
 9. [Bookings and follow-ups (Phase 3)](#bookings-and-follow-ups-phase-3)
 10. [Closing, reviews and the weekly report](#closing-reviews-and-the-weekly-report)
-11. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
-12. [Lead intelligence](#lead-intelligence)
-13. [Languages](#languages)
-14. [Missed calls](#missed-calls)
-15. [Offline & bad internet](#offline--bad-internet)
-16. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
-17. [Commands](#commands)
-18. [Dashboard](#dashboard)
-19. [Deploy for free](#deploy-for-free)
-20. [Troubleshooting](#troubleshooting)
-21. [Honest limitations](#honest-limitations)
+11. [Win-backs, content and the growth dashboard](#win-backs-content-and-the-growth-dashboard)
+12. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
+13. [Lead intelligence](#lead-intelligence)
+14. [Languages](#languages)
+15. [Missed calls](#missed-calls)
+16. [Offline & bad internet](#offline--bad-internet)
+17. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
+18. [Commands](#commands)
+19. [Dashboard](#dashboard)
+20. [Deploy for $0 — the whole guide](#deploy-for-0--the-whole-guide)
+21. [Troubleshooting](#troubleshooting)
+22. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -477,6 +478,8 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `closerAgent` | 3 | Objection handling, discounts within your cap, quote + payment details (alias `closer`) |
 | `reviewAgent` | 3 | Feedback ask after a job, review link for 4–5 stars, referral codes (alias `reviews`) |
 | `analystAgent` | 3 | Weekly owner report, computed from your own data (alias `analyst`) |
+| `reactivationAgent` | 3 | Owner-approved win-back campaign, two cycles max (alias `reactivation`) |
+| `contentAgent` | 3 | Weekly pack: 5 posts, 3 statuses, 1 reel idea (alias `content`) |
 | `closer` | 3 | Objection handling, payment links |
 | `reactivation` | 3 | Monthly win-back for old clients |
 | `reviews` | 3 | Review and referral requests |
@@ -802,6 +805,78 @@ Every Monday at 09:00 (`ANALYST_DAY`, `ANALYST_TIME`, in your timezone) you get 
 Those figures are computed in SQL and JavaScript. The model is only ever asked to write **three** suggestions on top of them — and if the week had fewer than five conversations, it says *"quiet week, too small to call a trend"* instead of inventing insight. No API key at all? You still get three suggestions, derived from the numbers deterministically.
 
 `.report week` gives you the same report on demand; `.report` is still the daily brief.
+
+---
+
+## Win-backs, content and the growth dashboard
+
+The last two agents are the ones that touch people you haven't heard from in a while, so they are the most careful.
+
+```json
+"features": { "reactivationAgent": true, "contentAgent": true }
+```
+
+### The reactivation agent — three segments, two cycles, six months
+
+Once a month (or whenever you feel like it) the bot can go back to:
+
+| Segment | Who | Rule |
+|---|---|---|
+| Past customers | a booking marked `.done`, an order paid or delivered | the job must be older than `REACTIVATION_AFTER_DAYS` (45) |
+| Cold leads | never bought, quiet for the same period | anyone who replied since the last nudge is excluded |
+| Dates | birthday / anniversary **the customer told you** | only from facts they shared, never guessed |
+
+Nothing is sent until you approve it, and the approval is a real one:
+
+```
+you: .campaign preview
+bot: 📣 Reactivation preview
+      Audience: 23 people (21 sendable right now)
+      • past customers: 15
+      • cold leads: 8
+      Sample: "Hi Ayesha — it's been a while. 10% off your next order this month. Can I set anything up for you?" → +92300…
+      .campaign send to start · .campaign stop to halt
+
+you: .campaign send
+```
+
+Then it sends **slowly** — one message at a time, with a random gap of 2–7 minutes, inside quiet hours, inside the daily cap, and never to someone who opted out. On Baileys that cap is 12 a day, and it is not raised for campaigns.
+
+The message itself uses only what you wrote: `business.offers` first, then the catalogue, then a policy line. If there is no offer configured, the message mentions a real product at its real price — never a discount you did not authorise.
+
+**Two cycles without a reply and the customer rests for six months.** If they reply at any point, they are warm again and the campaign leaves them alone.
+
+On the Cloud API, anything outside the 24-hour window needs an approved template (`CLOUD_TEMPLATE_NAME`). If no template is configured the send is **skipped and recorded** — `.growth` tells you it was held and why, instead of the message vanishing.
+
+### The content agent — a week of posts you can actually use
+
+Every Wednesday at 10:00 (`CONTENT_DAY`, `CONTENT_TIME`), or immediately with `.content now`, you get:
+
+- **5 post captions** — real catalogue items with real prices, your own offers, and the questions customers actually asked this month
+- **3 WhatsApp Status lines** — short enough to read on a phone in two seconds
+- **1 reel idea** — something filmable with a phone, no editing skills
+- **Hashtags** from your business name, city and type, plus **posting times** that suit what you sell (a restaurant gets 12:30/19:30/21:00; a clinic gets 09:30/13:00/18:00)
+
+The honesty rule is enforced in code: prices, offers and questions all come from config or from your own data, and customer questions are neutralised before they reach the model. There are no invented testimonials, no fake reviews, no "500 happy customers". Without an AI key you still get a full pack — blunter, but every word of it true.
+
+### The growth dashboard
+
+Your dashboard (`http://localhost:3000`) now has a growth section, and `/api/growth` returns the same data as JSON:
+
+- **Funnel**: conversations → leads → quotes → orders → paid → reviewed, with conversion at each step
+- **Per agent**: sent, replied, converted, opt-outs, and why the rest were skipped or held
+- **Sources**: QR, link, referral, ad tag, direct — with revenue per source
+
+Tag a QR sticker or an ad link by putting `#qr`, `#link` or `#ads` in the first message a customer sends. Their first tag sticks forever; later ones are ignored.
+
+It is read-only, it shows no phone numbers, no keys and no message content. If the dashboard is reachable from the internet, **set a token**:
+
+```bash
+DASHBOARD_TOKEN=something-long
+# then open http://your-server:3000/?token=something-long
+```
+
+With no token set it behaves exactly as before (`/health` and `/api/status` stay open for uptime checks).
 
 ---
 
@@ -1142,6 +1217,9 @@ Type in your own WhatsApp chat (message yourself):
 | `.paid 12` | the money really arrived (only you can mark an order paid) |
 | `.report week` | last seven days vs the week before |
 | `.referrals` | who has a code, and who arrived with one |
+| `.content now` | this week's pack on demand |
+| `.campaign preview` | who would get a win-back message, with a sample |
+| `.campaign send` / `.campaign stop` | start the campaign (this is the approval) or halt it |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
@@ -1169,27 +1247,149 @@ npm run demo
 
 ---
 
-## Deploy for free
+## Deploy for $0 — the whole guide
 
-**Your own PC** — `npm start`, keep the terminal open. Simplest and most reliable.
+Everything below runs on free infrastructure. Two options, in order of how much I would trust them.
 
-**Railway / Render / Koyeb / Fly free tier**
+### Option A — Oracle Cloud "Always Free" VM (recommended)
 
-1. Push the repo to GitHub, create a **Web Service**
-2. Build `npm install`, start `node src/index.js` (the `Procfile` says so)
-3. Add env vars: `MY_NUMBER`, `GROQ_API_KEY`, `GEMINI_API_KEY`, optionally `PAIRING_NUMBER`, `PORT`
-4. No persistent disk? Add `WA_SESSION` (from `npm run session`) so restarts don't need a QR
-5. Multiple users on one host: either run `node scripts/run-all.js` (needs a persistent disk for `tenants/`), or deploy one service per user with their own env vars
+Oracle's always-free tier gives an ARM VM with 4 cores and 24 GB RAM (or an x86 micro instance) and 10 TB of egress a month. That is more than this bot will ever use.
 
-**Raspberry Pi / old laptop** — ideal for 1–5 users; needs only outbound HTTPS.
+1. **Create the VM.** Sign up at cloud.oracle.com → Compute → Instances → Create. Pick an *Always Free eligible* shape (VM.Standard.A1.Flex, 1–2 OCPUs, 6–12 GB), Ubuntu 24.04, and **download the SSH key**.
+2. **Open only what you need.** In the instance's VCN → Security Lists, allow ingress 22 (SSH). Leave 3000 closed — you will reach the dashboard through an SSH tunnel or the token.
+3. **Install.** Over SSH:
+   ```bash
+   sudo apt update && sudo apt install -y curl git ffmpeg
+   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+   sudo apt install -y nodejs
+   git clone https://github.com/hasxir-khan/Whatsapp-Ai-Agent.git
+   cd Whatsapp-Ai-Agent && npm install --omit=dev
+   cp .env.example .env && nano .env      # MY_NUMBER, GROQ_API_KEY, GEMINI_API_KEY
+   ```
+4. **Log in to WhatsApp once.** `npm start`, scan the QR with the business phone (Linked devices → Link a device). The session is saved in `sessions/` and survives restarts. Then `Ctrl-C`.
 
-Notes:
+### Keep it running — systemd (simple) or pm2
 
-- Free tiers **sleep**; `PAIRING_NUMBER` + `WA_SESSION` make restarts painless
-- `data/assistant.db` (or `tenants/<slug>/data/assistant.db`) is the memory — back it up with `.export`
-- ffmpeg is what makes voice replies arrive as *voice notes*; install it on the host
+**systemd** is the better choice on a box you rarely touch:
 
----
+```ini
+# /etc/systemd/system/wa-bot.service
+[Unit]
+Description=WhatsApp assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Whatsapp-Ai-Agent
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wa-bot
+sudo systemctl status wa-bot          # is it alive?
+journalctl -u wa-bot -f               # live logs
+```
+
+**pm2** is the friendlier one, and does log rotation itself:
+
+```bash
+sudo npm i -g pm2
+pm2 start src/index.js --name wa-bot
+pm2 startup && pm2 save               # survive a reboot
+pm2 logs wa-bot --lines 100
+pm2 install pm2-logrotate             # keeps logs from filling the disk
+```
+
+If you run several businesses, start them with `node scripts/run-all.js` under systemd/pm2 instead — it launches one process per tenant.
+
+### Logs that do not fill your disk
+
+journald (systemd) can be capped globally:
+
+```bash
+sudo mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nSystemMaxUse=200M\nSystemMaxFileSize=20M\n' | sudo tee /etc/systemd/journald.conf.d/size.conf
+sudo systemctl restart systemd-journald
+```
+
+With pm2, `pm2 install pm2-logrotate` and then `pm2 set pm2-logrotate:max_size 10M`.
+
+### Firewall
+
+```bash
+sudo ufw allow 22/tcp
+sudo ufw enable
+sudo ufw status
+```
+
+That is the whole list. The bot only makes *outbound* connections (WhatsApp, Groq, Gemini), so it needs no inbound port — except:
+
+- **Cloud API webhook**: needs HTTPS on 443, and Meta must be able to reach it. Do not open 443 to the world directly; use a tunnel (below).
+- **Dashboard**: either do not expose it, or set `DASHBOARD_TOKEN` and reach it through an SSH tunnel:
+  ```bash
+  ssh -L 3000:localhost:3000 ubuntu@your-vm   # then http://localhost:3000/?token=…
+  ```
+
+### Cloud API webhook behind cloudflared (free, no open ports)
+
+```bash
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+chmod +x cloudflared && sudo mv cloudflared /usr/local/bin/
+
+# quick tunnel for a test (url changes every restart — fine for one afternoon)
+cloudflared tunnel --url http://localhost:3000
+
+# a stable one (needs a free Cloudflare account + a domain in it)
+cloudflared tunnel login
+cloudflared tunnel create wa-bot
+cloudflared tunnel route dns wa-bot bot.yourdomain.com
+cloudflared tunnel run --url http://localhost:3000 wa-bot
+```
+
+Point Meta's webhook at `https://bot.yourdomain.com/webhook/<slug>` with the verify token from your `.env`. Run the tunnel as a service too (`sudo cloudflared service install`) so it comes back after a reboot.
+
+### Backups (the only step people skip)
+
+```bash
+node scripts/backup.js default            # this install → backups/default-<time>.json.gz
+node scripts/backup.js ayesha             # a tenant
+node scripts/backup.js ayesha --with-keys # only if you have nowhere else to keep the keys
+node scripts/restore.js backups/ayesha-….json.gz --slug ayesha --dry-run
+node scripts/restore.js backups/ayesha-….json.gz --slug ayesha
+```
+
+The archive holds the SQLite database plus `config/` and `tenant.json`. It **excludes `.env` and `sessions/` unless you ask** — a backup with API keys in it is a liability, and you already have your keys somewhere. Restoring keeps a `.before-restore-<time>` copy of every file it overwrites.
+
+A cron line that costs nothing:
+
+```cron
+15 3 * * * cd /home/ubuntu/Whatsapp-Ai-Agent && node scripts/backup.js default >/dev/null 2>&1
+```
+
+### First-week checklist
+
+Run through this once, in order. It takes about twenty minutes and prevents most of the surprises.
+
+- [ ] `npm run doctor` — no ❌, and the suggestions make sense
+- [ ] `npm run doctor:all` if you have tenants — one bad tenant should not hide behind a good one
+- [ ] Send the bot a message from a second phone: does it answer, in the right language?
+- [ ] Send a voice note, a photo, and (if Cloud) a template-less message after 24 h
+- [ ] Ask a price question you *know* the answer to — is the number the catalogue's number?
+- [ ] `.set features.catalog true` then ask again
+- [ ] Set `DASHBOARD_TOKEN` if the box has a public IP
+- [ ] Turn on one agent only. Watch it for two days before turning on the next
+- [ ] `.growth` every morning of week one: any `held`, `skipped` or `failed` line is telling you something
+- [ ] `node scripts/backup.js default` — and copy the file off the box
+- [ ] Reboot the VM and confirm the bot comes back by itself
 
 ## Troubleshooting
 
@@ -1222,6 +1422,10 @@ Notes:
 - **Booking reminders and follow-ups only go out if the process is running** at the right moment; a reminder that falls due while the bot is down is sent on the next start, still inside quiet hours and caps.
 - **The weekly report's suggestions need a model**; without a key you get the deterministic three, which are blunter but still true. The numbers themselves never need a model.
 - **A payment receipt is never auto-verified.** Reading a screenshot proves nothing about a bank balance — `.paid` stays a human decision.
+- **A win-back campaign is the riskiest thing here.** On Baileys, a burst of messages to people who have not written in a month is exactly what gets a number limited. The campaign is slow and capped for that reason — do not raise those caps to "get it done faster".
+- **Content is only as good as your catalogue.** If the price list is thin, the captions are thin. No amount of AI fixes a missing menu.
+- **The dashboard shows numbers, not answers.** It will tell you referral traffic converts better; it will not tell you why.
+- **Prompt injection is contained, not eliminated.** Instructions inside customer text or documents are neutralised and quoted as data, but a sufficiently creative message can still influence wording. Prices and discounts are safe because they never come from the model.
 - **Google Calendar sync is optional and unverified in this repo's tests** (no credentials in CI). Bookings themselves are fully tested; the calendar call is best-effort and never blocks a booking.
 
 ---
@@ -1274,6 +1478,10 @@ src/
     reviewAgent.js      feedback asks, review links, referral codes
     analystAgent.js     weekly owner report: SQL numbers, model suggestions
     jobFlow.js          .done / .paid → the review clock
+    reactivationAgent.js  segments, campaign preview/send/stop, slow sending
+    contentAgent.js     weekly pack: posts, statuses, reel, hashtags, times
+    growthDashboard.js  funnel, per-agent and per-source numbers
+    injection.js        (core) untrusted text: detect, neutralise, fence
   transport/            how the bot talks to WhatsApp, behind one interface
     base.js             the interface + the internal message shape
     baileys.js          Baileys (default), wrapped unchanged
@@ -1299,7 +1507,8 @@ scripts/
   learn.js              ingest one document into a tenant's knowledge base
   run-all.js            run every user at once
   doctor.js  simulate.js  seed-demo.js  session-backup.js
-test/                   431 tests (node:test, no dependencies)
+  backup.js  restore.js   one-file backup of DB + config
+test/                   493 tests (node:test, no dependencies)
 ```
 
 ---
@@ -1307,10 +1516,13 @@ test/                   431 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test          # 323 tests: transport, manager, hours, tools, rag, profile, leads, outbox…
-npm run doctor    # environment + live API checks
+npm test                 # 493 tests, ~35s, no network, no keys
+npm run doctor           # environment + live API checks
+npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys
 ```
+
+The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening.
 
 ---
 

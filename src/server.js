@@ -22,6 +22,7 @@ import { sttEnabled } from './services/transcription.js';
 import { hasFfmpeg } from './services/ffmpeg.js';
 import { handleWebhookRequest } from './transport/webhooks.js';
 import { getTransport } from './transport/index.js';
+import { growthSnapshot, SOURCE_LABELS } from './services/growthDashboard.js';
 
 const esc = (v) =>
   String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -52,6 +53,7 @@ function buildStatus() {
       capabilities: getTransport()?.capabilities || null,
     },
     botEnabled: getSetting('bot_enabled', true) !== false,
+    growth: growthSnapshot(),
     stats,
     features: {
       llm: llm.providers,
@@ -232,6 +234,11 @@ function page(data) {
   .tag { font-size:11px; padding:3px 9px; border-radius:999px; background:rgba(56,189,248,.12); color:#7dd3fc; }
   .tag.off { background:rgba(148,163,184,.12); color:#94a3b8; }
   footer { margin-top:26px; color:#64748b; font-size:11px; }
+  .funnel { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .step { flex:1 1 110px; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.06);
+          border-radius:12px; padding:10px; text-align:center; }
+  .step .k { font-size:20px; }
+  .arrow { color:#38bdf8; }
 </style></head>
 <body><div class="wrap">
   <div class="row" style="justify-content:space-between; align-items:flex-start;">
@@ -283,6 +290,8 @@ function page(data) {
       </div>
     </div>
   </div>
+
+  ${growthSection(data.growth)}
 
   <div class="card" style="margin-bottom:14px;">
     <h2>Client pipeline <span class="small" style="font-weight:400;">— score · next action</span></h2>
@@ -338,6 +347,91 @@ function page(data) {
 </div></body></html>`;
 }
 
+const AUTH_COOKIE = 'wa_dash';
+
+/**
+ * The dashboard is business data. If DASHBOARD_TOKEN is set, every page and
+ * API route needs it (bearer header, ?token=, or the cookie set by a first
+ * successful visit). No token configured = old behaviour, for localhost use.
+ */
+export function authorised(req, url) {
+  const token = config.server.token;
+  if (!token) return true;
+
+  const header = req.headers.authorization || '';
+  if (header.startsWith('Bearer ') && header.slice(7) === token) return true;
+  if (url.searchParams.get('token') === token) return true;
+
+  const cookies = String(req.headers.cookie || '');
+  const m = new RegExp(`${AUTH_COOKIE}=([^;]+)`).exec(cookies);
+  return !!m && decodeURIComponent(m[1]) === token;
+}
+
+export function growthSection(growth) {
+  if (!growth) return '';
+  const f = growth.funnel;
+  const steps = f
+    .map(
+      (step, i) =>
+        `<div class="step"><div class="small">${esc(step.label)}</div>
+           <div class="k">${step.value}</div>
+           <div class="small">${i === 0 ? 'top' : step.fromPrevious == null ? '—' : `${step.fromPrevious}% of previous`}</div>
+         </div>`
+    )
+    .join('<span class="arrow">→</span>');
+
+  const agents = growth.agents
+    .filter((a) => a.sent || a.skipped || a.idle === false)
+    .map(
+      (a) =>
+        `<tr><td>${esc(a.agent)}</td>
+          <td class="small">${a.sent}</td>
+          <td class="small">${a.replied}</td>
+          <td class="small">${a.converted}</td>
+          <td class="small">${a.optOuts}</td>
+          <td class="small">${a.skipped || 0} skipped${a.held ? ` · ${a.held} held` : ''}</td></tr>`
+    )
+    .join('');
+
+  const sources = growth.sources
+    .map(
+      (s) =>
+        `<tr><td>${esc(s.label || SOURCE_LABELS[s.source] || s.source)}</td>
+          <td class="small">${s.conversations}</td>
+          <td class="small">${s.leads}</td>
+          <td class="small">${s.paidOrders}</td>
+          <td class="small">${esc(formatMoney(s.revenue))}</td></tr>`
+    )
+    .join('');
+
+  return `
+  <div class="card" style="margin-bottom:14px;">
+    <h2>Growth funnel</h2>
+    <div class="funnel">${steps}</div>
+  </div>
+
+  <div class="row" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px,1fr)); gap:14px; margin-bottom:14px;">
+    <div class="card" style="margin:0;">
+      <h2>Agents</h2>
+      <table>
+        <tr><td class="small">agent</td><td class="small">sent</td><td class="small">replied</td>
+            <td class="small">converted</td><td class="small">opt-outs</td><td class="small">other</td></tr>
+        ${agents || '<tr><td class="small">No proactive messages yet.</td></tr>'}
+      </table>
+    </div>
+    <div class="card" style="margin:0;">
+      <h2>Where they came from</h2>
+      <table>
+        <tr><td class="small">source</td><td class="small">chats</td><td class="small">leads</td>
+            <td class="small">paid</td><td class="small">revenue</td></tr>
+        ${sources || '<tr><td class="small">No conversations yet.</td></tr>'}
+      </table>
+      <div class="small" style="margin-top:8px;">Tag a QR or an ad link with #qr, #ads, #link — the first message carries it.</div>
+    </div>
+  </div>
+  `;
+}
+
 export function startServer() {
   if (!config.server.enabled) {
     console.log('🌐 Dashboard disabled (ENABLE_WEB=false)');
@@ -370,6 +464,17 @@ export function startServer() {
         return;
       }
 
+      if (url.pathname === '/api/growth') {
+        if (!authorised(req, url)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'unauthorised' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(growthSnapshot(), null, 2));
+        return;
+      }
+
       if (url.pathname === '/api/status') {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(buildStatus(), null, 2));
@@ -383,6 +488,11 @@ export function startServer() {
       }
 
       if (url.pathname === '/' || url.pathname === '/index.html') {
+        if (!authorised(req, url)) {
+          res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<!doctype html><title>Locked</title><p>This dashboard needs ?token=… (set DASHBOARD_TOKEN).</p>');
+          return;
+        }
         const html = page(buildStatus());
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(html);

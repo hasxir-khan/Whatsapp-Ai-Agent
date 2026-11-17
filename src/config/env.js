@@ -215,6 +215,22 @@ export const config = {
     maxAttempts: toInt(process.env.CLOSER_MAX_ATTEMPTS, 2),
   },
 
+  // Reactivation agent: who is "past it", and how long we leave them alone.
+  reactivation: {
+    afterDays: toInt(process.env.REACTIVATION_AFTER_DAYS, 45),
+    maxCycles: toInt(process.env.REACTIVATION_MAX_CYCLES, 2),
+    cooldownDays: toInt(process.env.REACTIVATION_COOLDOWN_DAYS, 180),
+    // Slow sending: one message per tick, with a random gap in this range.
+    minGapMs: toInt(process.env.REACTIVATION_MIN_GAP_MS, 120_000),
+    maxGapMs: toInt(process.env.REACTIVATION_MAX_GAP_MS, 420_000),
+  },
+
+  // Content agent: when the weekly pack lands.
+  content: {
+    day: process.env.CONTENT_DAY || 'wed',
+    time: process.env.CONTENT_TIME || '10:00',
+  },
+
   // Optional: push bookings into a Google Calendar. Both are best-effort —
   // with no credentials, bookings simply live in SQLite.
   calendar: {
@@ -276,6 +292,9 @@ export const config = {
     enabled: toBool(process.env.ENABLE_WEB, true),
     port: toInt(process.env.PORT, 3000),
     host: process.env.HOST || '0.0.0.0',
+    // Optional shared secret for the dashboard. Set it on any box with a public
+    // IP: the growth figures are business data, not a landing page.
+    token: process.env.DASHBOARD_TOKEN || '',
   },
 
   // How the Gemini key is presented: "key" → x-goog-api-key header,
@@ -394,6 +413,8 @@ export const config = {
   limits: {
     // Keeps a $0 Groq/Gemini free tier comfortably inside its daily quota
     dailyLlmCalls: toInt(process.env.DAILY_LLM_CALLS, 700),
+    // One tenant must never be able to spend the whole free quota alone.
+    tenantDailyLlmCalls: toInt(process.env.TENANT_DAILY_LLM_CALLS, 250),
     dailyVisionCalls: toInt(process.env.DAILY_VISION_CALLS, 150),
     dailyTtsChars: toInt(process.env.DAILY_TTS_CHARS, 20000),
     maxDocChars: toInt(process.env.MAX_DOC_CHARS, 12000),

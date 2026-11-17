@@ -22,6 +22,7 @@ import { bookingAgentEnabled, handleBookingTurn } from '../services/bookingAgent
 import { cancelFor as cancelFollowUpDrafts } from '../services/followUpAgent.js';
 import { closerAgentEnabled, handleCloserTurn, readyToBuy, startOrder, handleReceipt } from '../services/closerAgent.js';
 import { reviewAgentEnabled, handleRating, attributeReferral } from '../services/reviewAgent.js';
+import { recordSourceTag } from '../services/growthDashboard.js';
 import {
   toolCallingEnabled, hasPendingConfirmation, confirmPending, cancelPending,
   isAffirmative, isNegative,
@@ -172,6 +173,15 @@ export async function handleIncoming(transport, rawIncoming) {
     // ── did a stranger arrive quoting someone's code? ───────
     // First message only, so a later mention of a code in conversation cannot
     // retroactively "refer" an existing customer.
+    // A QR sticker or an ad link can carry a tag in the first message.
+    if (said && (existing?.message_count || 0) === 0) {
+      try {
+        recordSourceTag(number, said);
+      } catch (err) {
+        db.logEvent('source_tag_error', number, err.message);
+      }
+    }
+
     if (reviewAgentEnabled() && said && (existing?.message_count || 0) === 0) {
       try {
         const ref = attributeReferral({ number, text: said, transport, context: said.slice(0, 160) });

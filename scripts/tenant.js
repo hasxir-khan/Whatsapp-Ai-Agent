@@ -221,6 +221,15 @@ TRANSPORT=baileys
 # REVIEW_AFTER_HOURS=24          # wait after .done before asking for feedback
 # CLOSER_MAX_ATTEMPTS=2
 
+# ── Reactivation / content agents (Phase 3 part 3) ──────────
+# In config/owner.json: features.reactivationAgent, features.contentAgent.
+# REACTIVATION_AFTER_DAYS=45
+# REACTIVATION_MAX_CYCLES=2
+# REACTIVATION_COOLDOWN_DAYS=180
+# CONTENT_DAY=wed
+# CONTENT_TIME=10:00
+# TENANT_DAILY_LLM_CALLS=250      # this tenant's own daily AI budget
+
 # ── Google Calendar (optional) ──────────────────────────────
 # Bookings live in SQLite either way; this only mirrors them.
 # GOOGLE_CALENDAR_ID=

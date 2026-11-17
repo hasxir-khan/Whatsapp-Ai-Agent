@@ -17,6 +17,7 @@ import { ownerClock } from './humanizer.js';
 import { localTime } from '../services/geo.js';
 import { featureOn, business, effectiveCatalog, tone as toneConfig, goals as goalConfig, escalation as escalationConfig } from '../services/profile.js';
 import { knowledgeContext, looksFactual } from '../services/rag.js';
+import { guardInstruction } from './injection.js';
 import { logEvent } from '../utils/db.js';
 import { featureOn as featureFlag } from '../services/profile.js';
 import { generateWithTools } from './toolCalling.js';
@@ -397,6 +398,9 @@ export async function generateReply({
   }
 
   let system = systemPrompt({ dossier, intakeState, langInfo, chatType, features, tone, knowledgeBlock });
+
+  // features.injectionGuard: say the quiet part out loud.
+  if (featureFlag('injectionGuard')) system = `${system}\n\n${guardInstruction()}`;
 
   // A specialist keeps the same persona, language rules and knowledge — only
   // its job changes, plus the tools it is trusted with.

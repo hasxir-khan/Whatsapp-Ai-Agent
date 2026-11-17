@@ -109,6 +109,20 @@ async function checkBusiness() {
     info('All new features are off (defaults keep the original behaviour).');
   }
 
+  // ── growth agents ─────────────────────────────────────────
+  const growthFlags = ['bookingAgent', 'followUpAgent', 'closerAgent', 'reviewAgent', 'analystAgent', 'reactivationAgent', 'contentAgent'];
+  const growthOn = growthFlags.filter((f) => featureOn(f));
+  if (growthOn.length) {
+    ok(`Growth agents on: ${growthOn.join(', ')}`);
+    if (!featureOn('growthApproval')) warn('growthApproval is off — proactive messages will send without approval');
+  } else {
+    info('Growth agents are all off (defaults keep the original behaviour).');
+  }
+  for (const risk of growthSettingsWarnings(profile, process.env, { transport: config.transport })) {
+    warn(risk);
+    notes.push(risk);
+  }
+
   const { errors, warnings } = validateProfile(profile);
   for (const w of warnings.slice(0, 6)) info(`note: ${w}`);
   for (const e of errors.slice(0, 8)) {
@@ -518,6 +532,58 @@ async function liveGemini(key) {
   }
 }
 
+// ── growth settings audit ───────────────────────────────────
+/**
+ * Risky settings for the proactive agents. These are not errors — they are the
+ * choices that cost money or goodwill when they are wrong.
+ * @returns {string[]} plain-language warnings
+ */
+export function growthSettingsWarnings(profile = {}, env = {}, { transport = null } = {}) {
+  const flags = profile.features || {};
+  const business = profile.business || {};
+  const warnings = [];
+  const on = (k) => flags[k] === true;
+
+  const anyAgent =
+    on('bookingAgent') || on('followUpAgent') || on('closerAgent') || on('reviewAgent') ||
+    on('reactivationAgent') || on('analystAgent') || on('contentAgent');
+
+  if (anyAgent && flags.growthApproval === false) {
+    warnings.push('growthApproval is off — every follow-up, win-back and review ask goes out without you seeing it first');
+  }
+
+  if (on('closerAgent') && (business.policies?.maxDiscountPercent == null)) {
+    warnings.push('closerAgent is on but policies.maxDiscountPercent is not set — every discount request will come to you (which is safe, but slow)');
+  }
+
+  if (on('closerAgent')) {
+    const pay = business.payment || {};
+    const configured = pay.bank?.number || pay.jazzcash?.number || pay.easypaisa?.number || pay.stripeLink || pay.cod;
+    if (!configured) warnings.push('closerAgent is on but business.payment is empty — a customer who says "order kar do" gets no way to pay');
+  }
+
+  if ((on('reviewAgent') || on('reactivationAgent')) && !business.reviewLink && on('reviewAgent')) {
+    warnings.push('reviewAgent is on but business.reviewLink is empty — happy customers will be thanked, not sent anywhere');
+  }
+
+  const kind = String(transport || env.TRANSPORT || 'baileys').toLowerCase();
+  const dailyCap = Number(env.GROWTH_DAILY_CAP || 30);
+  const baileysCap = Number(env.GROWTH_BAILEYS_CAP || 12);
+  if (kind === 'baileys' && baileysCap > 25) {
+    warnings.push(`GROWTH_BAILEYS_CAP is ${baileysCap} on an unofficial client — bursts are how numbers get limited; 12 is the safe default`);
+  }
+  if (kind === 'baileys' && dailyCap > 50) {
+    warnings.push(`GROWTH_DAILY_CAP is ${dailyCap} on Baileys — consider 30 or lower`);
+  }
+  if (kind === 'cloud' && !env.CLOUD_TEMPLATE_NAME) {
+    warnings.push('No CLOUD_TEMPLATE_NAME — anything outside the 24-hour window will be held, including campaigns');
+  }
+  if (on('reactivationAgent') && !(business.offers?.length)) {
+    warnings.push('reactivationAgent is on but business.offers is empty — win-back messages will only mention the catalogue');
+  }
+  return warnings;
+}
+
 async function checkFleet({ live = false, json = false } = {}) {
   const tenantsDir = path.join(process.cwd(), 'tenants');
   const rows = [];
@@ -587,6 +653,9 @@ async function checkFleet({ live = false, json = false } = {}) {
     if (!gemini) local.push('no GEMINI_API_KEY — it cannot see images or video');
     if (!session) local.push('not logged in — QR needed on first start');
     if (!row.number) local.push('no WhatsApp number configured');
+    for (const risk of growthSettingsWarnings(row.profile || {}, row.env || {}, { transport: row.env?.TRANSPORT || 'baileys' })) {
+      local.push(risk);
+    }
 
     if (row.number) {
       const key = String(row.number).replace(/\D/g, '');

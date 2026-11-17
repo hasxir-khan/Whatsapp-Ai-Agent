@@ -665,6 +665,12 @@
       "maxDiscountPercent": null,
       "refund": "",
       "guarantee": ""
+    },
+    "offers": [],
+    "content": {
+      "//": "Weekly content pack schedule.",
+      "day": "wed",
+      "time": "10:00"
     }
   },
   "catalog": {
@@ -711,6 +717,8 @@
     "closerAgent": false,
     "reviewAgent": false,
     "analystAgent": false,
-    "//aliases": "closer / reviews / analyst still work — they map to closerAgent / reviewAgent / analystAgent."
+    "//aliases": "closer / reviews / analyst still work — they map to closerAgent / reviewAgent / analystAgent.",
+    "reactivationAgent": false,
+    "contentAgent": false
   }
 }

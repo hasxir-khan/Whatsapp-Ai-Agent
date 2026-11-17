@@ -18,6 +18,7 @@
 import { config } from '../config/env.js';
 import { business, featureOn, policies as policyBlock, faqList, effectiveCatalog, payment as paymentConfig } from './profile.js';
 import { formatMoney } from './geo.js';
+import { neutralise } from '../core/injection.js';
 import { buildQuote, formatQuote } from '../core/pricing.js';
 import {
   getLead, getIntake, getContact, logObjection, objectionAttempts, createOrder, orderFor,
@@ -427,7 +428,8 @@ export async function handleReceipt({ number, buffer = null, mimetype = 'image/j
   const read = reader || (await import('./vision.js')).analyzeImage;
   try {
     const out = await read({ buffer, mimetype, caption: 'payment receipt', context: 'A customer says this is proof of payment for an order.' });
-    described = out?.description || null;
+    // An image is untrusted text too: it goes into memory and into prompts.
+    described = out?.description ? neutralise(String(out.description)) : null;
   } catch (err) {
     logEvent('receipt_read_failed', number, err.message);
   }

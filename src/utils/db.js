@@ -371,6 +371,25 @@ CREATE TABLE IF NOT EXISTS referrals (
   created_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_referrals_number ON referrals(number);
+
+-- Every win-back message we have ever sent, so a cycle is never repeated.
+CREATE TABLE IF NOT EXISTS reactivation_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      TEXT,
+  segment     TEXT,          -- past | cold | date
+  cycle       INTEGER,
+  sent_at     TEXT,
+  campaign    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reactivation_number ON reactivation_log(number, sent_at);
+
+-- Per-tenant AI budget. One tenant's busy week must not spend another's quota.
+CREATE TABLE IF NOT EXISTS tenant_usage (
+  day         TEXT,
+  tenant      TEXT,
+  llm_calls   INTEGER DEFAULT 0,
+  PRIMARY KEY (day, tenant)
+);
 `;
 
 export async function initDB({ file = DB_FILE } = {}) {
@@ -1777,4 +1796,56 @@ export function bumpReferral(code) {
 
 export function recentReferrals(limit = 10) {
   return all('SELECT * FROM referrals ORDER BY created_at DESC LIMIT ?', [limit]);
+}
+
+// ════════════════════════════════════════════════════════════
+// Phase 3 part 3 — reactivation log, tenant budget, sources
+// ════════════════════════════════════════════════════════════
+
+export function logReactivation({ number, segment, cycle, campaign = null, at = null }) {
+  run('INSERT INTO reactivation_log (number, segment, cycle, sent_at, campaign) VALUES (?,?,?,?,?)', [
+    number,
+    segment,
+    cycle,
+    at || new Date().toISOString(),
+    campaign,
+  ]);
+  saveDB(true);
+}
+
+export function reactivationHistory(number) {
+  return all('SELECT * FROM reactivation_log WHERE number = ? ORDER BY id DESC', [number]);
+}
+
+export function reactivationCountSince(sinceIso) {
+  return get('SELECT COUNT(*) AS c FROM reactivation_log WHERE sent_at >= ?', [sinceIso])?.c || 0;
+}
+
+export function lastReactivation() {
+  return get('SELECT * FROM reactivation_log ORDER BY id DESC LIMIT 1');
+}
+
+export function tenantUsage(day = todayKey(), tenant = 'default') {
+  return get('SELECT * FROM tenant_usage WHERE day = ? AND tenant = ?', [day, tenant]) || { day, tenant, llm_calls: 0 };
+}
+
+export function bumpTenantUsage(tenant = 'default', amount = 1, day = todayKey()) {
+  run(
+    `INSERT INTO tenant_usage (day, tenant, llm_calls) VALUES (?,?,?)
+     ON CONFLICT(day, tenant) DO UPDATE SET llm_calls = llm_calls + excluded.llm_calls`,
+    [day, tenant, amount]
+  );
+  saveDB();
+}
+
+/** The first source tag we ever saw for this number, if any. */
+export function sourceTags(number) {
+  return all("SELECT detail, created_at FROM events WHERE type = 'source_tag' AND number = ? ORDER BY id", [number]);
+}
+
+/** Revenue attributed to a source, by the orders of the people who carried it. */
+export function revenueBySource(rows = []) {
+  let total = 0;
+  for (const r of rows) total += Number(r.total) || 0;
+  return total;
 }

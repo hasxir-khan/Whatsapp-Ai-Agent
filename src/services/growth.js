@@ -208,10 +208,33 @@ export async function sendProactively({
   }
 
   if (transportKind === 'cloud' && transport?.windowOpen && !transport.windowOpen(number)) {
-    // The transport itself would hold this; skip early so the log says why.
-    logGrowthSend({ agent, number, reason, result: 'held', detail: 'outside 24h window, no template', at: now.toISOString() });
-    logEvent('growth_held', number, { agent });
-    return { sent: false, reason: 'window_closed' };
+    // Outside the window only an approved template may go out. If one is
+    // configured the transport builds it; if not, we skip — and say so loudly
+    // enough that `.growth` can explain it later.
+    if (transport.template?.name) {
+      try {
+        await transport.sendMessage(`${number}@s.whatsapp.net`, { text });
+        logGrowthSend({
+          agent, number, reason, result: 'sent',
+          detail: `template ${transport.template.name}`, at: now.toISOString(),
+        });
+        logEvent('growth_template_sent', number, { agent, template: transport.template.name });
+        return { sent: true, template: transport.template.name };
+      } catch (err) {
+        logGrowthSend({
+          agent, number, reason, result: 'failed',
+          detail: String(err.message).slice(0, 160), at: now.toISOString(),
+        });
+        return { sent: false, reason: 'send_failed', error: err.message };
+      }
+    }
+
+    logGrowthSend({
+      agent, number, reason, result: 'held',
+      detail: 'outside 24h window · no approved template configured', at: now.toISOString(),
+    });
+    logEvent('growth_held', number, { agent, why: 'no_template' });
+    return { sent: false, reason: 'window_closed', detail: 'no_template' };
   }
 
   const jid = `${number}@s.whatsapp.net`;
