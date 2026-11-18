@@ -103,7 +103,7 @@ test('system prompt contains self-knowledge, capabilities and memory', () => {
   });
 
   assert.match(prompt, /YOUR EMPLOYER/);
-  assert.match(prompt, /HasDevs|Hashir/);
+  assert.match(prompt, /Your Brand|Test Owner/);
   assert.match(prompt, /WHAT YOU CAN DO/);
   assert.match(prompt, /voice note/i);
   assert.match(prompt, /groups/i);

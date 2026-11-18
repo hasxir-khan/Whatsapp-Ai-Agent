@@ -249,7 +249,7 @@ test('doctor warns about PDF invoices that cannot be paid or filled in', async (
   assert.ok(risky.some((w) => /business\.name is empty/i.test(w)));
 
   const clean = growthSettingsWarnings(
-    { features: { pdfInvoices: true }, business: { name: 'HasDevs', payment: { cod: true } } },
+    { features: { pdfInvoices: true }, business: { name: 'Demo Cafe', payment: { cod: true } } },
     {}
   );
   assert.deepEqual(clean, []);
@@ -259,20 +259,20 @@ test('doctor refuses to be quiet about an inbox with no token', async () => {
   const { growthSettingsWarnings } = await import('../scripts/doctor.js');
 
   const exposed = growthSettingsWarnings(
-    { features: { liveInbox: true }, business: { name: 'HasDevs' } },
+    { features: { liveInbox: true }, business: { name: 'Demo Cafe' } },
     { HOST: '0.0.0.0', DASHBOARD_TOKEN: '' }
   );
   assert.ok(exposed.some((w) => /DASHBOARD_TOKEN is empty/i.test(w)), exposed.join('\n'));
   assert.ok(exposed.some((w) => /0\.0\.0\.0/.test(w)));
 
   const noWeb = growthSettingsWarnings(
-    { features: { liveInbox: true }, business: { name: 'HasDevs' } },
+    { features: { liveInbox: true }, business: { name: 'Demo Cafe' } },
     { ENABLE_WEB: 'false', DASHBOARD_TOKEN: 'x' }
   );
   assert.ok(noWeb.some((w) => /ENABLE_WEB is false/i.test(w)));
 
   const safe = growthSettingsWarnings(
-    { features: { liveInbox: true }, business: { name: 'HasDevs' } },
+    { features: { liveInbox: true }, business: { name: 'Demo Cafe' } },
     { HOST: '127.0.0.1', DASHBOARD_TOKEN: 'something-long', ENABLE_WEB: 'true' }
   );
   assert.deepEqual(safe, []);

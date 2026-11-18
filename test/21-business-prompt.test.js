@@ -208,7 +208,7 @@ test('config commands are owner-only', async () => {
   reloadProfile();
 
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
-  const res = await handleOwnerCommand({}, OWNER_JID, '.set business.city Lahore', '923001112233');
+  const res = await handleOwnerCommand({}, OWNER_JID, '.set business.city Lahore', '923001234569');
   assert.match(res.reply, /owner-only/);
 
   const disk = JSON.parse(fs.readFileSync(path.join(configDir, 'owner.json'), 'utf8'));

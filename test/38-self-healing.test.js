@@ -26,7 +26,7 @@ function writeProfile(features = {}, businessPatch = {}) {
     path.join(configDir, 'owner.json'),
     JSON.stringify(
       {
-        owner: { name: 'Hashir', timezone: 'Asia/Karachi' },
+        owner: { name: 'Test Owner', timezone: 'Asia/Karachi' },
         business: {
           name: 'Burger Point',
           type: 'Restaurant',

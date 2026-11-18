@@ -173,11 +173,11 @@ test('two attempts are counted per objection, not per customer', () => {
 
 // ── money ──────────────────────────────────────────────────
 test('payment instructions come from the profile, and only from it', () => {
-  writeProfile({ payment: { bank: { name: 'Meezan', title: 'Burger Point', number: '0123456789' }, jazzcash: { number: '03001234567' }, cod: true } });
+  writeProfile({ payment: { bank: { name: 'Example Bank', title: 'Burger Point', number: '0123456789' }, jazzcash: { number: '03001234567' }, cod: true } });
   P.reloadProfile();
 
   const text = C.paymentInstructions({ amount: 1300, lang: 'en' });
-  assert.match(text, /Meezan/);
+  assert.match(text, /Example Bank/);
   assert.match(text, /0123456789/);
   assert.match(text, /JazzCash/);
   assert.match(text, /Cash on delivery/);
@@ -190,7 +190,7 @@ test('payment instructions come from the profile, and only from it', () => {
 
 test('"I will take it" produces a quote, payment details and an awaiting-payment order', () => {
   clean();
-  writeProfile({ payment: { bank: { name: 'Meezan', title: 'Burger Point', number: '0123456789' } } });
+  writeProfile({ payment: { bank: { name: 'Example Bank', title: 'Burger Point', number: '0123456789' } } });
   P.reloadProfile();
   db.upsertContact(NUMBER, { name: 'Ali' });
   db.saveLead({ number: NUMBER, status: 'negotiating', project_type: 'Zinger Burger', quote_min: 650, quote_max: 650, quote_currency: 'PKR' });
@@ -200,7 +200,7 @@ test('"I will take it" produces a quote, payment details and an awaiting-payment
 
   assert.equal(result.ok, true);
   assert.match(result.reply, /650/);
-  assert.match(result.reply, /Meezan/);
+  assert.match(result.reply, /Example Bank/);
   assert.doesNotMatch(result.reply, /paid/i, 'it is awaiting payment, not paid');
 
   const order = db.orderFor(`${NUMBER}@s.whatsapp.net`);
@@ -223,7 +223,7 @@ test('a receipt is read, forwarded to the owner, and never marked paid', async (
     number: NUMBER,
     transport: t,
     buffer: Buffer.from('fake-image'),
-    reader: async () => ({ description: 'Transfer of PKR 650 to Meezan 0123456789 on 7 Jun, ref 88213.' }),
+    reader: async () => ({ description: 'Transfer of PKR 650 to Example Bank 0123456789 on 7 Jun, ref 88213.' }),
   });
 
   assert.equal(result.handled, true);
@@ -286,7 +286,7 @@ test('"order kar do" in the chat creates an awaiting-payment order', async () =>
   const { mockTransport } = await import('../src/dev/mockLlm.js');
   mockTransport();
   const { handleIncoming } = await import('../src/handlers/messageHandler.js');
-  writeProfile({ payment: { bank: { name: 'Meezan', title: 'Burger Point', number: '0123456789' } } });
+  writeProfile({ payment: { bank: { name: 'Example Bank', title: 'Burger Point', number: '0123456789' } } });
   P.reloadProfile();
   db.upsertContact(CLIENT.number, { name: 'John', language: 'roman-ur' });
 
@@ -298,7 +298,7 @@ test('"order kar do" in the chat creates an awaiting-payment order', async () =>
   const order = db.orderFor(CLIENT.jid);
   assert.ok(order, 'an order exists');
   assert.equal(order.status, 'awaiting_payment');
-  assert.match(textMessages(sock.sent, CLIENT.number).join(' '), /Meezan/);
+  assert.match(textMessages(sock.sent, CLIENT.number).join(' '), /Example Bank/);
 
   writeProfile();
   P.reloadProfile();

@@ -84,19 +84,19 @@ test('won and lost leads get closing actions, not sales actions', () => {
 
 test('ranking puts the hottest lead first, across statuses', () => {
   db.saveLead({
-    number: '447700900111', name: 'Cold Guy', project_type: 'website', status: 'new',
+    number: '447700900111', name: 'Cold Lead', project_type: 'website', status: 'new',
   });
-  db.upsertContact('447700900111', { name: 'Cold Guy', message_count: 1 });
+  db.upsertContact('447700900111', { name: 'Cold Lead', message_count: 1 });
 
   db.saveLead({
-    number: '447700900222', name: 'Hot Girl', project_type: 'E-commerce Store', status: 'quoted',
+    number: '447700900222', name: 'Warm Lead', project_type: 'E-commerce Store', status: 'quoted',
     goal: 'sell online', features: 'stripe', timeline: '4 weeks', budget: '2500 GBP',
     quote_min: 220, quote_max: 430, quote_currency: 'GBP',
   });
-  db.upsertContact('447700900222', { name: 'Hot Girl', message_count: 12, country: 'United Kingdom' });
+  db.upsertContact('447700900222', { name: 'Warm Lead', message_count: 12, country: 'United Kingdom' });
 
   const ranked = rankLeads();
-  assert.equal(ranked[0].name, 'Hot Girl');
+  assert.equal(ranked[0].name, 'Warm Lead');
   assert.ok(ranked[0].score > ranked[ranked.length - 1].score);
 });
 

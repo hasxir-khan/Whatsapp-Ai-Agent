@@ -3,7 +3,7 @@
     "id": "agency",
     "label": "Agency / Freelancer",
     "emoji": "💼",
-    "description": "Project ranges, process, portfolio, retainers — the current HasDevs shape.",
+    "description": "Project ranges, process, portfolio, retainers — a small agency's shape.",
     "goodFor": "developers, designers, marketers, consultants, studios"
   },
   "business": {

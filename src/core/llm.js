@@ -123,7 +123,6 @@ async function openAiCompatible({ provider, model, system, messages, temperature
     Authorization: `Bearer ${key}`,
   };
   if (!isGroq) {
-    headers['HTTP-Referer'] = 'https://github.com/hasxir-khan/Whatsapp-Ai-Agent';
     headers['X-Title'] = config.bot.name;
   }
 

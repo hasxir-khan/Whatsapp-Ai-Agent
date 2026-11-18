@@ -23,13 +23,16 @@ const env = await import('../src/config/env.js');
 const SECRET = 'test-groq-key-should-not-appear';
 
 function writeProfile(features = {}, businessPatch = {}) {
+  // The payment titles follow the business name, so a rewrite cannot leave the
+  // previous tenant's name on a customer's receipt.
+  const brand = businessPatch.name || 'Demo Cafe';
   fs.writeFileSync(
     path.join(configDir, 'owner.json'),
     JSON.stringify(
       {
-        owner: { name: 'Hashir', timezone: 'Asia/Karachi' },
+        owner: { name: 'Test Owner', timezone: 'Asia/Karachi' },
         business: {
-          name: 'HasDevs Cafe',
+          name: 'Demo Cafe',
           type: 'Cafe',
           city: 'Islamabad',
           phone: '+92 300 1234567',
@@ -38,9 +41,9 @@ function writeProfile(features = {}, businessPatch = {}) {
           hours: 'Daily 12:00–23:00',
           payment: {
             '//': 'Only what is filled in is ever mentioned to a customer.',
-            bank: { name: 'Meezan Bank', title: 'HasDevs', number: '01234567890123' },
+            bank: { name: 'Example Bank', title: brand, number: '01234567890123' },
             jazzcash: { title: '', number: '' },
-            easypaisa: { title: 'HasDevs', number: '03001234567' },
+            easypaisa: { title: brand, number: '03001234567' },
             stripeLink: '',
             cod: false,
           },
@@ -187,7 +190,7 @@ test('a quote with no order is a Quote, with ranges instead of a total', async (
 test('payment details are the filled fields only — no comments, no blank rows', async () => {
   const rows = invoice.paymentLines();
   const labels = rows.map((r) => `${r.label}=${r.value}`);
-  assert.ok(labels.some((l) => l.includes('Meezan Bank')), labels.join(' | '));
+  assert.ok(labels.some((l) => l.includes('Example Bank')), labels.join(' | '));
   assert.ok(labels.some((l) => l.includes('03001234567')), labels.join(' | '));
   assert.ok(!labels.some((l) => l.includes('//')), 'a comment is not a payment detail');
   assert.ok(!labels.some((l) => l.endsWith('=')), 'an empty field is not a payment detail');
@@ -198,11 +201,11 @@ test('the PDF carries business facts, the price and the payment details', async 
   const order = makeOrder();
   const buffer = await invoice.renderInvoicePDF(invoice.invoiceModel({ order }));
   const text = await pdfText(buffer);
-  assert.match(text, /HasDevs Cafe/);
+  assert.match(text, /Demo Cafe/);
   assert.match(text, /Ayesha Khan/);
   assert.match(text, /Chicken Karahi/);
   assert.match(text, /PKR 2,800/);
-  assert.match(text, /Meezan Bank/);
+  assert.match(text, /Example Bank/);
   assert.match(text, /50% advance/);
 });
 
@@ -375,13 +378,13 @@ test('old PDFs are swept, recent ones are kept', async () => {
 
 test('one tenant never renders another tenant\'s business details', async () => {
   const before = invoice.invoiceModel({ order: makeOrder() });
-  assert.equal(before.business.name, 'HasDevs Cafe');
+  assert.equal(before.business.name, 'Demo Cafe');
 
   writeProfile({ pdfInvoices: true }, { name: 'Other Shop', city: 'Lahore' });
   const after = invoice.invoiceModel({ order: makeOrder() });
   assert.equal(after.business.name, 'Other Shop');
   assert.equal(after.business.city, 'Lahore');
-  assert.ok(!JSON.stringify(after).includes('HasDevs Cafe'), 'stale tenant data leaked');
+  assert.ok(!JSON.stringify(after).includes('Demo Cafe'), 'stale tenant data leaked');
 
   writeProfile({ pdfInvoices: true });
 });
@@ -391,7 +394,7 @@ test('the footer is configurable, and the default says what the document is not'
   const plain = await pdfText(await invoice.renderInvoicePDF(invoice.invoiceModel({ order })));
   assert.match(plain, /Not a tax invoice/);
 
-  writeProfile({ pdfInvoices: true }, { invoiceFooter: 'Shukriya — HasDevs Cafe' });
+  writeProfile({ pdfInvoices: true }, { invoiceFooter: 'Shukriya — DEMO CAFE' });
   const custom = await pdfText(await invoice.renderInvoicePDF(invoice.invoiceModel({ order })));
   assert.match(custom, /Shukriya/);
   writeProfile({ pdfInvoices: true });

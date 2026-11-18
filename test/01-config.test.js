@@ -16,7 +16,7 @@ test('normalises Pakistani and international numbers', () => {
 test('owner number and jid are correct', () => {
   assert.equal(config.owner.number, '923001234567');
   assert.equal(config.owner.jid, '923001234567@s.whatsapp.net');
-  assert.equal(config.owner.name, 'Hashir');
+  assert.equal(config.owner.name, 'Test Owner', 'MY_NAME wins over the default');
 });
 
 test('business knowledge loads with a price book', () => {

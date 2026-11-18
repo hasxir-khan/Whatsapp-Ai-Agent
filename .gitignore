@@ -30,3 +30,22 @@ backups/
 
 # the golden-chat eval report is regenerated on every run
 eval-report.json
+
+# ── Everything below is data or a secret, never code ──────────
+# Generated documents and printed entry points.
+invoices/
+posters/
+
+# Compressed database dumps and per-machine overrides.
+*.json.gz
+*.local.json
+
+# The owner's own phone-number prefixes for scripts/scan-secrets.js.
+# Local by design: a list of your friends' numbers must not be committed
+# either.
+.private-prefixes
+
+# The "old = new" table of real numbers and friend nicknames used to rewrite
+# placeholders. Local by design: it is the one file that still lists the real
+# values, so it must never be committed.
+.replacements

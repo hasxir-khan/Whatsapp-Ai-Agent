@@ -307,7 +307,7 @@ test('the specialist prompt and tool subset arrive at the provider', async () =>
 
   const { generateReply } = await import('../src/core/brain.js');
   await generateReply({
-    number: '923001119999',
+    number: '923001234598',
     text: 'my order was cold and late',
     langInfo: { code: 'en', name: 'English', script: 'latin', reply: 'English' },
     dossier: {},
@@ -336,7 +336,7 @@ test('the specialist prompt and tool subset arrive at the provider', async () =>
     };
   });
   await generateReply({
-    number: '923001119999',
+    number: '923001234598',
     text: 'how much is the burger',
     langInfo: { code: 'en', name: 'English', script: 'latin', reply: 'English' },
     dossier: {},

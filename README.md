@@ -2,7 +2,7 @@
 
 **A WhatsApp assistant that knows your business, remembers every client, hears voice notes, watches videos, scores leads, answers missed calls in chat, and survives bad internet. For $0/month — and one install can serve many different people, each with their own keys.**
 
-Configured for **Hashir** and **HasDevs** out of the box, but built so **anyone can be a user**: their own API keys, their own business profile, their own WhatsApp number, their own clients — fully isolated from everyone else's.
+Configured from **your** `.env` and `config/owner.json`, and built so **anyone can be a user**: their own API keys, their own business profile, their own WhatsApp number, their own clients — fully isolated from everyone else's.
 
 
 ---
@@ -12,8 +12,8 @@ Configured for **Hashir** and **HasDevs** out of the box, but built so **anyone 
 If you only want to see it work:
 
 ```bash
-git clone https://github.com/hasxir-khan/Whatsapp-Ai-Agent.git
-cd Whatsapp-Ai-Agent
+git clone https://github.com/your-user/whatsapp-ai-assistant.git
+cd whatsapp-ai-assistant
 npm install
 npm run demo
 ```
@@ -56,26 +56,28 @@ Everything the demo writes lives in `./demo` and is gitignored; delete the folde
 3. [Add your own API keys](#add-your-own-api-keys)
 4. [Run it for several users (multi-user)](#run-it-for-several-users-multi-user)
 5. [Make it *your* business](#make-it-your-business)
-6. [Business setup — three ways](#business-setup--three-ways)
-7. [Actions the bot can take](#actions-the-bot-can-take)
-8. [Who answers: the manager agent](#who-answers-the-manager-agent)
-9. [Bookings and follow-ups (Phase 3)](#bookings-and-follow-ups-phase-3)
-10. [Closing, reviews and the weekly report](#closing-reviews-and-the-weekly-report)
-11. [Win-backs, content and the growth dashboard](#win-backs-content-and-the-growth-dashboard)
-12. [PDF quotes, invoices and receipts](#pdf-quotes-invoices-and-receipts)
-13. [Learning from your own replies](#learning-from-your-own-replies)
-14. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
-15. [Lead intelligence](#lead-intelligence)
-16. [Languages](#languages)
-17. [Missed calls](#missed-calls)
-18. [Offline & bad internet](#offline--bad-internet)
-19. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
-20. [Links, QRs and posters — where customers came from](#links-qrs-and-posters--where-customers-came-from)
-21. [Commands](#commands)
-22. [Dashboard](#dashboard)
-23. [Deploy for $0 — the whole guide](#deploy-for-0--the-whole-guide)
-24. [Troubleshooting](#troubleshooting)
-25. [Honest limitations](#honest-limitations)
+6. [Fill in your own details](#fill-in-your-own-details)
+7. [Business setup — three ways](#business-setup--three-ways)
+8. [Actions the bot can take](#actions-the-bot-can-take)
+9. [Who answers: the manager agent](#who-answers-the-manager-agent)
+10. [Bookings and follow-ups (Phase 3)](#bookings-and-follow-ups-phase-3)
+11. [Closing, reviews and the weekly report](#closing-reviews-and-the-weekly-report)
+12. [Win-backs, content and the growth dashboard](#win-backs-content-and-the-growth-dashboard)
+13. [PDF quotes, invoices and receipts](#pdf-quotes-invoices-and-receipts)
+14. [Learning from your own replies](#learning-from-your-own-replies)
+15. [Switching to the official Cloud API](#switching-to-the-official-cloud-api)
+16. [Lead intelligence](#lead-intelligence)
+17. [Languages](#languages)
+18. [Missed calls](#missed-calls)
+19. [Offline & bad internet](#offline--bad-internet)
+20. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
+21. [Links, QRs and posters — where customers came from](#links-qrs-and-posters--where-customers-came-from)
+22. [Commands](#commands)
+23. [Dashboard](#dashboard)
+24. [Deploy for $0 — the whole guide](#deploy-for-0--the-whole-guide)
+25. [Security and privacy](#security-and-privacy)
+26. [Troubleshooting](#troubleshooting)
+27. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -113,8 +115,8 @@ This is the "just me" path: one business, one WhatsApp number, about 10 minutes.
 ### 1. Install
 
 ```bash
-git clone https://github.com/hasxir-khan/Whatsapp-Ai-Agent.git
-cd Whatsapp-Ai-Agent
+git clone https://github.com/your-user/whatsapp-ai-assistant.git
+cd whatsapp-ai-assistant
 git checkout arena/7e3e34a9-whatsapp-ai-agent   # or main, once merged
 npm install
 ```
@@ -131,8 +133,8 @@ Open `.env` and set **at minimum**:
 
 ```env
 MY_NUMBER=923001234567          # your WhatsApp number, international, no +
-MY_NAME=Hashir
-MY_BRAND=HasDevs
+MY_NAME=YourName
+MY_BRAND=YourBrand
 GROQ_API_KEY=gsk_...            # free — chat + voice transcription
 GEMINI_API_KEY=AQ...            # free — images + video
 ```
@@ -358,6 +360,57 @@ Rules that keep it safe:
 - **`escalateTopics`** hands the conversation to you instead of negotiating.
 - **`friends`** get a casual, no-sales persona.
 - **`team`** gets role-based access (see [Team](#team-several-people-one-inbox)).
+
+---
+
+## Fill in your own details
+
+`config/owner.example.json` is both the schema and a worked example — **every value in it is a placeholder**. The bot reads `config/owner.json`; when that file is missing it falls back to the example, which is why a fresh clone still answers, just in generic terms. Five minutes here is the difference between a demo and a bot that describes *your* business.
+
+### Step 1 — copy the example
+
+```bash
+cp config/owner.example.json config/owner.json
+```
+
+`config/owner.json` is gitignored: it holds your prices, your number and your team, and it never leaves your machine. In multi-user mode the same file lives at `tenants/<slug>/config/owner.json`.
+
+### Step 2 — replace the example values
+
+Open the file and walk down it. Every section starts with a `_help` line saying what belongs there. The values you will almost certainly change:
+
+| field | example value | what to enter |
+|---|---|---|
+| `owner.name` | `Your Name` | your real name |
+| `owner.brand` | `Your Brand` | the name customers know you by |
+| `owner.location` | `Pakistan` | city or country you work from |
+| `owner.email` | `owner@example.com` | an address you are happy to publish |
+| `business.name` | *(empty)* | your business name, as customers see it |
+| `business.hours` | *(empty)* | e.g. `Daily 12:00-23:00` |
+| `business.payment.bank` | *(empty)* | bank name, account title, account number |
+| `owner.team[].number` | `923001234569` | a teammate's WhatsApp number |
+| `owner.faqs[]` | `How do we start?` | the questions you answer every week |
+| `features.*` | `false` | `true` to switch an optional agent on |
+
+Numbers are always **country code + number, with no plus sign and no spaces** — write `923001234567`, not `+92 300 1234567`. Empty fields are never mentioned to a customer: the bot does not invent prices, opening hours or account numbers.
+
+### Step 3 — check it
+
+```bash
+npm run doctor
+```
+
+Green means the profile parses and the required fields are set. The "setup notes" you may see — an empty brand, no team yet, a feature still switched off — are advice, not errors; the bot runs either way.
+
+### Three ways to fill it in
+
+You do not have to type all of it by hand.
+
+1. **The wizard** — `node scripts/tenant.js setup <slug>` asks ten questions and writes the profile for you. Add `--non-interactive --type salon --city Islamabad` to script it.
+2. **A template** — `node scripts/tenant.js new "Demo Cafe" --number 923001234567 --template restaurant` starts from an industry template: restaurant, clinic, salon, school, shop, real-estate, agency or generic.
+3. **Your own documents** — `node scripts/tenant.js learn <slug> ./price-list.pdf` reads a menu, price list or services document and puts the details into the profile and the catalogue.
+
+All three write the same JSON, which you can still edit by hand afterwards. The detail is in [Business setup — three ways](#business-setup--three-ways).
 
 ---
 
@@ -811,7 +864,7 @@ When they say yes ("order kar do", "I'll take it", "how do I pay") the closer se
 
 ```json
 "payment": {
-  "bank": { "name": "Meezan", "title": "Burger Point", "number": "0123456789" },
+  "bank": { "name": "Example Bank", "title": "Burger Point", "number": "0123456789" },
   "jazzcash": { "number": "03001234567" },
   "easypaisa": { "number": "03451234567" },
   "stripeLink": "https://buy.stripe.com/…",
@@ -946,7 +999,7 @@ Turn it on and every quote and order leaves a document behind:
 ```
 you (customer): theek hai, order confirm
 bot: [the quote text]
-bot: [INV-2026-0007.pdf]  Invoice (unpaid) · HasDevs Cafe · Total: PKR 2,800
+bot: [INV-2026-0007.pdf]  Invoice (unpaid) · Demo Cafe · Total: PKR 2,800
 ```
 
 **The label is the honest part.** No order yet is a **Quote**. An order that is `awaiting_payment` or `placed` is an **Invoice (unpaid)**. Only after you type `.paid 12` does it become a **Receipt**. The footer says "Not a tax invoice" unless you replace it.
@@ -957,8 +1010,8 @@ bot: [INV-2026-0007.pdf]  Invoice (unpaid) · HasDevs Cafe · Total: PKR 2,800
 
 ```json
 "payment": {
-  "bank": { "name": "Meezan Bank", "title": "HasDevs", "number": "01234567890123" },
-  "easypaisa": { "title": "HasDevs", "number": "03001234567" },
+  "bank": { "name": "Example Bank", "title": "Demo Cafe", "number": "01234567890123" },
+  "easypaisa": { "title": "Demo Cafe", "number": "03001234567" },
   "cod": false
 }
 ```
@@ -969,7 +1022,7 @@ bot: [INV-2026-0007.pdf]  Invoice (unpaid) · HasDevs Cafe · Total: PKR 2,800
 "invoice": {
   "logo": "config/logo.png",
   "prefix": "HD",
-  "footer": "Shukriya! HasDevs Cafe — 0300 1234567"
+  "footer": "Shukriya! Demo Cafe — 0300 1234567"
 }
 ```
 
@@ -1595,7 +1648,7 @@ The *next action* is deliberately concrete — not "follow up":
 🌤️ 52 Omar Al-Farsi — Mobile app · AED 8,000–15,000
     → Ask for a budget range
 
-❄️ 21 Cold Guy — website
+❄️ 21 Cold Lead — website
     → Nudge with one useful idea (no pitch)
 ```
 
@@ -1955,7 +2008,7 @@ What this bot does instead:
 
 1. A client calls → you get *"📞 Incoming call from Emma."* instantly
 2. Nobody answers within **60s** → the assistant messages them in **their** language and register:
-   > "Hey — saw your call just now, sorry I couldn't pick up. This is HasDevs' assistant. Tell me here what you need and Hashir can call you back."
+   > "Hey — saw your call just now, sorry I couldn't pick up. This is the shop's assistant. Tell me here what you need and the owner can call you back."
 3. Sent as a **voice note** by default (feels like someone picked up) or text
 4. They reply → the full intake/quote/memory flow continues
 5. You get *"☎️ Missed call from Emma — assistant replied by voice note."*
@@ -2126,7 +2179,7 @@ Oracle's always-free tier gives an ARM VM with 4 cores and 24 GB RAM (or an x86 
    sudo apt update && sudo apt install -y curl git ffmpeg
    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
    sudo apt install -y nodejs
-   git clone https://github.com/hasxir-khan/Whatsapp-Ai-Agent.git
+   git clone https://github.com/your-user/whatsapp-ai-assistant.git
    cd Whatsapp-Ai-Agent && npm install --omit=dev
    cp .env.example .env && nano .env      # MY_NUMBER, GROQ_API_KEY, GEMINI_API_KEY
    ```
@@ -2255,6 +2308,106 @@ Run through this once, in order. It takes about twenty minutes and prevents most
 - [ ] `node scripts/backup.js default` — and copy the file off the box
 - [ ] Reboot the VM and confirm the bot comes back by itself
 
+## Security and privacy
+
+What is in this repository, what is deliberately not, and the guard that keeps
+it that way.
+
+### What is never committed
+
+| Never in git | Where it lives instead |
+|---|---|
+| `.env` (API keys, tokens, your number) | your machine, or the host's environment |
+| `config/owner.json` — your name, number, friends, payment details | this machine only; the schema is `config/owner.example.json` |
+| `sessions/` — the linked WhatsApp device | this machine only; back it up with `npm run session` if you must |
+| `data/`, `tenants/`, `backups/`, `invoices/`, `posters/`, `eval-report.json` | generated at runtime, always gitignored |
+| `config/mcp.servers.json` — operator host paths and tenant names | this machine only |
+| `.private-prefixes` — your friends' phone prefixes | this machine only, by design |
+
+Everything in the left column is in `.gitignore`. If you have ever seen one of
+them in `git status`, treat the key as leaked and rotate it.
+
+### The pre-commit guard
+
+```bash
+npm run hooks          # installs .git/hooks/pre-commit
+```
+
+`npm install` runs it for you, once per clone (a hook is not copied by a clone).
+After that, a commit is refused when the staged content contains:
+
+- anything that looks like a live key — `gsk_…`, `AIza…`, `AQ.…`, `sk-…`,
+  `ghp_…`, `xox…`, `hf_…`, `EAA…` (Meta), `AKIA…` (AWS), a JWT, a private-key
+  block, a Google service-account file or a `WA_SESSION` blob;
+- a file that is private by nature — `.env`, `sessions/`, `data/`, `tenants/`,
+  `config/owner.json`, `config/mcp.servers.json`, `invoices/`, `posters/`,
+  `backups/`, `*.json.gz`, `*.local.json`, `eval-report.json`;
+- any phone number starting with a prefix listed in `.private-prefixes`.
+
+The refusal names the file, the line and the *category* — never the value:
+
+```
+✖ scan-secrets: this commit would publish something private.
+
+  src/keys.js:1  Groq API key  (gsk_…48 chars)
+```
+
+The same check runs without a hook:
+
+```bash
+npm run scan                                   # whole tree + all of history
+node scripts/scan-secrets.js                   # just what is staged
+node scripts/scan-secrets.js --all             # every tracked file
+node scripts/scan-secrets.js --history         # every blob in every commit
+```
+
+`--history` matters more than it looks: deleting a file does not delete it from
+git. A key removed in a later commit is still in every clone, and still in the
+pull-request diff. If `--history` reports something, rotate the key — rewriting
+history is the only other option, and it is not a fix once someone has cloned.
+
+### Your own number prefixes
+
+```bash
+cp .private-prefixes.example .private-prefixes   # gitignored
+# then, one per line, the prefixes that must never appear in a commit:
+# 9230
+# 447700
+```
+
+Four digits or more. Nothing is sent anywhere; the file is read locally by the
+scanner. Without it the scanner still blocks keys, `.env`, sessions and
+databases — the prefix list is what protects *people* rather than *machines*.
+
+### Keeping a test fixture honest
+
+A handful of tests must contain strings that look like keys, because they test
+key *format* detection. Those lines carry an explicit marker:
+
+```js
+assert.equal(keyFormat('AQ.Ab8RN6EXAMPLE-not-a-real-key-0000000000'), 'current'); // scan-secrets:allow
+```
+
+The marker is per line, so it cannot hide a key somewhere else in the same file.
+
+### If a secret does get out
+
+1. **Rotate first.** Revoke the key at the provider and issue a new one. Deleting
+   the commit does not un-share what was copied.
+2. Log out the WhatsApp device (WhatsApp → Linked devices) if `sessions/` ever
+   left your machine.
+3. Rewrite history only if the repository is private and was never cloned
+   elsewhere — otherwise treat the data as public forever and plan accordingly.
+4. Tell the people whose numbers were exposed. They cannot rotate a phone number.
+
+### Contact
+
+Security reports: open a private advisory on the repository, or write to
+`security@example.com` (replace this with your own address before publishing —
+it is a placeholder, not a working mailbox).
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -2295,6 +2448,9 @@ Run through this once, in order. It takes about twenty minutes and prevents most
 - **Content is only as good as your catalogue.** If the price list is thin, the captions are thin. No amount of AI fixes a missing menu.
 - **The dashboard shows numbers, not answers.** It will tell you referral traffic converts better; it will not tell you why.
 - **Prompt injection is contained, not eliminated.** Instructions inside customer text or documents are neutralised and quoted as data, but a sufficiently creative message can still influence wording. Prices and discounts are safe because they never come from the model.
+- **The scanner is a net, not a proof.** It catches the shapes of keys it knows and the prefixes you give it. A key pasted in an unusual format, a number written with words, or a name in a commit message can still get through — read your `git diff` before you push.
+- **A hook is per clone and can be skipped.** `git commit --no-verify` walks straight past it, and so does a teammate who never ran `npm install`. Treat it as a reminder, not a wall.
+- **This repository's own history was rebuilt once**, because an early commit contained a private profile. If you fork an old copy, the old objects are still in it.
 - **Google Calendar sync is optional and unverified in this repo's tests** (no credentials in CI). Bookings themselves are fully tested; the calendar call is best-effort and never blocks a booking.
 
 ---
@@ -2541,4 +2697,4 @@ tweak is cheap to make and cheap to check, so there is no reason to guess.
 
 MIT. Use it for your own business or for other people's — but the people talking to it should know a bot may be answering.
 
-Built for Hashir / HasDevs, and now for anyone who needs it.
+Built for real businesses, and for anyone who needs it.

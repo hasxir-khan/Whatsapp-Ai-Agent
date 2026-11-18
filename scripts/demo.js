@@ -60,9 +60,9 @@ if (!fs.existsSync(profileFile)) {
     JSON.stringify(
       {
         '//': 'Demo profile — safe to edit or delete. Created by npm run demo.',
-        owner: { name: 'Demo Owner', brand: 'HasDevs Cafe', timezone: 'Asia/Karachi', location: 'Islamabad, Pakistan' },
+        owner: { name: 'Demo Owner', brand: 'Demo Cafe', timezone: 'Asia/Karachi', location: 'Islamabad, Pakistan' },
         business: {
-          name: 'HasDevs Cafe',
+          name: 'Demo Cafe',
           type: 'Cafe & restaurant',
           city: 'Islamabad',
           timezone: 'Asia/Karachi',
@@ -73,13 +73,13 @@ if (!fs.existsSync(profileFile)) {
           delivery: 'We deliver within 5 km, 30–40 minutes, Rs 150 charge.',
           bookingService: 'Table for 4',
           payment: {
-            bank: { name: 'Meezan Bank', title: 'HasDevs Cafe', number: '01234567890123' },
-            easypaisa: { title: 'HasDevs Cafe', number: '03000000000' },
+            bank: { name: 'Example Bank', title: 'Demo Cafe', number: '01234567890123' },
+            easypaisa: { title: 'Demo Cafe', number: '03000000000' },
             jazzcash: { title: '', number: '' },
             cod: true,
           },
           offers: ['10% off your next order this month'],
-          invoice: { prefix: 'HD', footer: 'Shukriya! HasDevs Cafe — F-11 Markaz' },
+          invoice: { prefix: 'DC', footer: 'Shukriya! Demo Cafe — F-11 Markaz' },
         },
         catalog: {
           items: [

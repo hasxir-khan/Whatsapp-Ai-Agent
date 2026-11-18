@@ -53,8 +53,9 @@ const geminiAnswer = (text) => ({
 });
 
 test('key formats: AQ. is current, AIza is legacy, anything else is suspicious', () => {
-  assert.equal(keyFormat('AQ.Ab8RN6EXAMPLE-not-a-real-key-0000000000'), 'current');
-  assert.equal(keyFormat('AIzaSyD-1234567890abcdefghijklmnop'), 'legacy');
+  // scan-secrets:allow — fake strings that exist to test key *format* detection
+  assert.equal(keyFormat('AQ.Ab8RN6EXAMPLE-not-a-real-key-0000000000'), 'current'); // scan-secrets:allow
+  assert.equal(keyFormat('AIzaSyD-1234567890abcdefghijklmnop'), 'legacy'); // scan-secrets:allow
   assert.equal(keyFormat('gsk_1234567890'), 'unknown');
   assert.equal(keyFormat(''), 'unknown');
 });

@@ -1,8 +1,9 @@
 {
   "owner": {
-    "name": "Hashir",
-    "preferredName": "Hashir",
-    "brand": "HasDevs",
+    "_help": "EXAMPLE SECTION — every value here is a placeholder, not a real person. Replace them with your own. name and brand are what the bot says when a customer asks who they are talking to; location and timezone decide when it may promise a reply. services, addons, process and payment are the only prices and payment facts it may quote. team = people the bot can hand a chat to; friends = people who skip the sales script. Write numbers as country code + number, no plus sign and no spaces: 923001234567.",
+    "name": "Your Name",
+    "preferredName": "Your Name",
+    "brand": "Your Brand",
     "role": "Full-stack developer & AI automation engineer",
     "location": "Pakistan",
     "timezone": "Asia/Karachi",
@@ -12,7 +13,7 @@
       "Roman Urdu",
       "Hinglish"
     ],
-    "email": "",
+    "email": "owner@example.com",
     "website": "",
     "github": "",
     "linkedin": "",
@@ -450,26 +451,27 @@
     "maxDiscountPercent": 10,
     "friends": [
       {
-        "number": "923000000000",
-        "name": "Example friend"
+        "number": "923001234568",
+        "name": "Friend 1"
       }
     ],
     "team": [
       {
-        "number": "923001112233",
-        "name": "Ayesha",
+        "number": "923001234569",
+        "name": "Friend 2",
         "role": "sales",
         "permissions": []
       }
     ]
   },
   "bot": {
-    "name": "Hashir's Assistant",
+    "_help": "EXAMPLE SECTION — the assistant, not you. name is what it calls itself; persona is the style instruction sent to the model with every reply. Keep persona to two or three sentences.",
+    "name": "Your Assistant",
     "persona": "Warm, sharp, slightly informal. You talk like a busy but friendly human on WhatsApp — short messages, natural rhythm, no corporate script. You never sound like a chatbot or a call-centre.",
     "formality": "auto",
     "maxBubbles": 3,
     "pretendHuman": false,
-    "disclosure": "You are Hashir's AI assistant. Never invent being a human, but keep it light: if someone asks if you're a bot, say yes — you're Hashir's assistant and can pass anything on to him.",
+    "disclosure": "You are the owner's AI assistant. Never claim to be a human, but keep it light: if someone asks whether you are a bot, say yes — you are the owner's assistant and can pass anything on to them.",
     "voice": {
       "enabled": true,
       "voiceByLanguage": {
@@ -614,6 +616,7 @@
     ]
   },
   "business": {
+    "_help": "EXAMPLE SECTION — your business profile. name, type, city and hours are quoted to customers, so keep them short and true; hours is free text, e.g. Daily 12:00-23:00. Anything you leave empty is never mentioned, and the bot will not invent it.",
     "//": "Universal profile (Phase 1). Used only when features.businessProfile is true. Fill it from scripts/tenant.js setup, a template, or .set from WhatsApp.",
     "name": "",
     "type": "",
@@ -643,6 +646,7 @@
       "time": "09:00"
     },
     "payment": {
+      "_help": "EXAMPLE SECTION — payment details. Only the fields you fill in are ever sent to a customer; empty ones are never invented. Write account numbers as plain digits, e.g. 03001234567.",
       "//": "Only what is filled in is ever mentioned to a customer.",
       "bank": {
         "name": "",
@@ -696,6 +700,7 @@
     }
   },
   "catalog": {
+    "_help": "EXAMPLE SECTION — what you sell. Each item needs a name and a price (or min/max), plus the keywords a customer would actually type. Leave items empty if you do not sell from a list.",
     "//": "The price list the bot may quote. Each item: { name, kind: service|product, price OR min/max, duration (minutes), stock, keywords }.",
     "items": []
   },
@@ -721,6 +726,7 @@
     "topics": []
   },
   "features": {
+    "_help": "EXAMPLE SECTION — optional capabilities. true switches one on, false leaves it off, and anything omitted keeps its default. Nothing here needs a value beyond true or false.",
     "//": "Every new capability is opt-in and false by default. See README > Feature flags.",
     "businessProfile": false,
     "catalog": false,

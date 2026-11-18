@@ -87,7 +87,7 @@ test('owner replying manually pauses the bot in that chat', async () => {
   await handleIncoming(sock, {
     key: { remoteJid: CLIENT.jid, fromMe: true, id: 'OWNER-1' },
     message: { conversation: 'Thanks John, I will send the proposal myself.' },
-    pushName: 'Hashir',
+    pushName: 'Test Owner',
   });
 
   const contact = db.getContact(CLIENT.number);
@@ -133,7 +133,7 @@ test('dangerous commands are refused inside a client chat', async () => {
 });
 
 test('messages during a handoff are remembered but not answered', async () => {
-  const number = '923551110000';
+  const number = '923001234597';
   const jid = `${number}@s.whatsapp.net`;
   const until = new Date(Date.now() + 30 * 60000).toISOString();
   db.setContactPaused(number, until);

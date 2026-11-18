@@ -99,8 +99,8 @@ export function loadOwnerProfile() {
 
   // Env overrides for the handful of things people change most often
   profile.owner = profile.owner || {};
-  profile.owner.name = process.env.MY_NAME || profile.owner.name || 'Hashir';
-  profile.owner.brand = process.env.MY_BRAND || profile.owner.brand || 'HasDevs';
+  profile.owner.name = process.env.MY_NAME || profile.owner.name || 'Your Name';
+  profile.owner.brand = process.env.MY_BRAND || profile.owner.brand || 'Your Brand';
   profile.owner.timezone = process.env.MY_TIMEZONE || profile.owner.timezone || 'Asia/Karachi';
   profile.owner.location = process.env.MY_LOCATION || profile.owner.location || 'Pakistan';
   if (process.env.MY_PERSONALITY) profile.bot.persona = process.env.MY_PERSONALITY;
@@ -138,7 +138,7 @@ export function reloadProfile() {
   if (!target) return fresh;
   mergeInPlace(target, fresh);
 
-  config.owner.name = fresh.owner?.name || config.owner.name || 'Hashir';
+  config.owner.name = fresh.owner?.name || config.owner.name || 'Your Name';
   config.owner.pushName = process.env.MY_PUSHNAME || config.owner.name;
   if (config.bot) {
     config.bot.name = fresh.bot?.name || `${config.owner.name}'s Assistant`;
@@ -153,7 +153,7 @@ export function reloadProfile() {
 // ── main config object ──────────────────────────────────────
 const ownerNumber = normalizePhone(process.env.MY_NUMBER || process.env.OWNER_NUMBER || DEFAULT_OWNER_NUMBER);
 const ownerProfile = loadOwnerProfile();
-const ownerName = ownerProfile.owner?.name || 'Hashir';
+const ownerName = ownerProfile.owner?.name || 'Your Name';
 
 export const config = {
   root: ROOT,

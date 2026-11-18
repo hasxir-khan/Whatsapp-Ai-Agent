@@ -199,7 +199,6 @@ async function openAiVision({ provider, model, images, prompt, maxTokens = 900 }
 
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` };
   if (provider === 'openrouter') {
-    headers['HTTP-Referer'] = 'https://github.com/hasxir-khan/Whatsapp-Ai-Agent';
     headers['X-Title'] = config.bot.name;
   }
 

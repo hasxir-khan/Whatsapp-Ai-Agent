@@ -1104,7 +1104,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       try {
         await sock.sendMessage(chatJid, {
           document: fs.readFileSync(file),
-          fileName: `hasdevs-export-${new Date().toISOString().slice(0, 10)}.json`,
+          fileName: `owner-export-${new Date().toISOString().slice(0, 10)}.json`,
           mimetype: 'application/json',
           caption: `📦 Export: ${data.contacts.length} contacts · ${data.leads.length} leads`,
         });

@@ -31,8 +31,8 @@ function writeProfile(features = {}) {
     path.join(configDir, 'owner.json'),
     JSON.stringify(
       {
-        owner: { name: 'Hashir', timezone: 'Asia/Karachi' },
-        business: { name: 'HasDevs Cafe', type: 'Cafe', city: 'Islamabad', timezone: 'Asia/Karachi' },
+        owner: { name: 'Test Owner', timezone: 'Asia/Karachi' },
+        business: { name: 'Demo Cafe', type: 'Cafe', city: 'Islamabad', timezone: 'Asia/Karachi' },
         catalog: { items: [{ name: 'Chicken Karahi', price: 1350 }] },
         features: { businessProfile: true, ...features },
       },

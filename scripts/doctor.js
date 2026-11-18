@@ -42,12 +42,19 @@ async function checkFiles() {
     notes.push('Copy .env.example to .env and add your keys.');
   }
 
-  for (const file of ['config/owner.example.json', 'config/owner.json', 'config/countries.json']) {
+  // A fresh clone has no owner.json: that is "not configured yet", not "broken".
+  // The bot runs on the example profile until you write your own.
+  for (const file of ['config/owner.example.json', 'config/countries.json']) {
     if (fs.existsSync(path.join(config.root, file))) ok(file);
     else {
       bad(`${file} missing`);
-      problems.push(`Restore ${file} from the repo.`);
+      problems.push(`Restore ${file} from the repo (it is tracked, so this means a damaged checkout).`);
     }
+  }
+  if (fs.existsSync(path.join(config.root, 'config/owner.json'))) ok('config/owner.json');
+  else {
+    warn('config/owner.json missing — you are running on the example profile');
+    notes.push('Copy config/owner.example.json to config/owner.json (or run npm run setup) and put your business in it.');
   }
 
   const services = config.owner.profile?.owner?.services?.length || 0;
@@ -60,8 +67,16 @@ async function checkFiles() {
 
 async function checkOwner() {
   section('Identity');
-  if (/^\d{10,15}$/.test(config.owner.number)) ok(`MY_NUMBER = +${config.owner.number}`);
-  else {
+  if (/^\d{10,15}$/.test(config.owner.number)) {
+    // 920000000000 is the built-in default: a real looking number that is not
+    // anybody's line. Good enough to boot, wrong to print on a poster.
+    if (/^(\d)\1+$/.test(config.owner.number) || /^(0?0+|9+|2+)$/.test(config.owner.number) || /123456|0000000/.test(config.owner.number)) {
+      warn(`MY_NUMBER looks like a placeholder (+${config.owner.number}) — fine for a demo, not a real line`);
+      notes.push('Set MY_NUMBER in .env to your own number (international format, e.g. 923001234567).');
+    } else {
+      ok(`MY_NUMBER = +${config.owner.number}`);
+    }
+  } else {
     bad(`MY_NUMBER looks wrong: "${config.owner.number}"`);
     problems.push('Set MY_NUMBER in international format, e.g. 923001234567.');
   }
@@ -697,6 +712,11 @@ async function checkFleet({ live = false, json = false } = {}) {
   }
 
   const issues = [];
+  // A brand-new install has no profile, no keys, no session and no number. That
+  // is "not set up yet", not "broken": it is a note with a next step, not a
+  // failed check. Only things that are actually wrong — two users on one
+  // number, a clashing port, a rejected key — make the command exit non-zero.
+  const blockers = [];
   const report = [];
   const seenNumbers = new Map();
   const seenPorts = new Map();
@@ -716,27 +736,34 @@ async function checkFleet({ live = false, json = false } = {}) {
     const gemini = row.env.GEMINI_API_KEY || (row.builtin ? config.keys.gemini : '');
 
     const local = [];
-    if (!row.profile) local.push('no config/owner.json — it has no business knowledge');
-    else if (services === 0) local.push('no services in the price list — it cannot quote');
-    if (!groq) local.push('no GROQ_API_KEY — voice notes cannot be transcribed');
-    if (!gemini) local.push('no GEMINI_API_KEY — it cannot see images or video');
-    if (!session) local.push('not logged in — QR needed on first start');
-    if (!row.number) local.push('no WhatsApp number configured');
+    const setup = [];
+    if (!row.profile) setup.push('no config/owner.json — it has no business knowledge');
+    else if (services === 0) setup.push('no services in the price list — it cannot quote');
+    if (!groq) setup.push('no GROQ_API_KEY — voice notes cannot be transcribed');
+    if (!gemini) setup.push('no GEMINI_API_KEY — it cannot see images or video');
+    if (!session) setup.push('not logged in — QR needed on first start');
+    if (!row.number) setup.push('no WhatsApp number configured');
+    local.push(...setup);
     for (const risk of growthSettingsWarnings(row.profile || {}, row.env || {}, { transport: row.env?.TRANSPORT || 'baileys' })) {
       local.push(risk);
+      blockers.push(`${row.slug}: ${risk}`);
     }
 
     if (row.number) {
       const key = String(row.number).replace(/\D/g, '');
       if (seenNumbers.has(key)) {
-        local.push(`same number as ${seenNumbers.get(key)} — two bots on one number disconnect each other`);
+        const clash = `same number as ${seenNumbers.get(key)} — two bots on one number disconnect each other`;
+        local.push(clash);
+        blockers.push(`${row.slug}: ${clash}`);
       } else {
         seenNumbers.set(key, row.slug);
       }
     }
     if (row.port) {
       if (seenPorts.has(row.port)) {
-        local.push(`port ${row.port} already used by ${seenPorts.get(row.port)}`);
+        const clash = `port ${row.port} already used by ${seenPorts.get(row.port)}`;
+        local.push(clash);
+        blockers.push(`${row.slug}: ${clash}`);
       } else {
         seenPorts.set(row.port, row.slug);
       }
@@ -746,8 +773,14 @@ async function checkFleet({ live = false, json = false } = {}) {
     if (live) {
       rowLive.groq = await liveGroq(groq);
       rowLive.gemini = await liveGemini(gemini);
-      if (rowLive.groq.state === 'rejected') local.push('Groq rejected the key');
-      if (rowLive.gemini.state === 'rejected') local.push('Gemini rejected the key');
+      if (rowLive.groq.state === 'rejected') {
+        local.push('Groq rejected the key');
+        blockers.push(`${row.slug}: Groq rejected the key`);
+      }
+      if (rowLive.gemini.state === 'rejected') {
+        local.push('Gemini rejected the key');
+        blockers.push(`${row.slug}: Gemini rejected the key`);
+      }
     }
 
     for (const problem of local) issues.push(`${row.slug}: ${problem}`);
@@ -765,6 +798,7 @@ async function checkFleet({ live = false, json = false } = {}) {
       dbBytes,
       live: live ? { groq: rowLive.groq.state, gemini: rowLive.gemini.state } : null,
       issues: local,
+      blockers: blockers.filter((b) => b.startsWith(`${row.slug}: `)).length,
     });
 
     const keysLabel = `${groq ? 'G' : '·'}${gemini ? 'M' : '·'}`;
@@ -785,12 +819,20 @@ async function checkFleet({ live = false, json = false } = {}) {
 
   if (!json) console.log('');
   if (json) {
-    console.log(JSON.stringify({ users: report, healthy: issues.length === 0, issues }, null, 2));
-    process.exit(issues.length ? 1 : 0);
+    console.log(JSON.stringify({ users: report, healthy: blockers.length === 0, issues, blockers }, null, 2));
+    process.exit(blockers.length ? 1 : 0);
   }
 
-  if (issues.length) {
-    console.log(`  \x1b[33m${issues.length} issue${issues.length === 1 ? '' : 's'} across the fleet\x1b[0m`);
+  if (issues.length && !blockers.length) {
+    console.log(
+      `  \x1b[33m${issues.length} setup note${issues.length === 1 ? '' : 's'}\x1b[0m — nothing is broken, this fleet is not configured yet.`
+    );
+  }
+  if (blockers.length) {
+    console.log(
+      `  \x1b[31m${blockers.length} problem${blockers.length === 1 ? '' : 's'}\x1b[0m across the fleet` +
+        (issues.length > blockers.length ? `, plus ${issues.length - blockers.length} setup note${issues.length - blockers.length === 1 ? '' : 's'}` : '')
+    );
     console.log('  Fix per user: node scripts/tenant.js keys <slug> GROQ_API_KEY=...');
     console.log('  Full detail : node scripts/tenant.js show <slug>\n');
     process.exit(1);

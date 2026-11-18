@@ -61,7 +61,7 @@ test('calls from groups are ignored, and the daily cap is respected', async () =
   assert.equal(groupSock.sent.length, 0);
   assert.equal(db.getCall('CALL-G'), null);
 
-  const number = '923551112223';
+  const number = '923001234596';
   const sock = fakeSock();
   // cap is 2 per number per day
   for (let i = 0; i < 3; i++) {
@@ -89,9 +89,9 @@ test('team commands: takeover, release, permissions', async () => {
   assert.match(team.reply, /Bilal/);
 
   // sales can take over a chat
-  const takeover = await handleOwnerCommand(sock, jidFor('923001112233'), '.takeover 923551119999', '923001112233');
-  assert.match(takeover.reply, /got \+923551119999/);
-  const contact = db.getContact('923551119999');
+  const takeover = await handleOwnerCommand(sock, jidFor('923001112233'), '.takeover 923001234599', '923001112233');
+  assert.match(takeover.reply, /got \+923001234599/);
+  const contact = db.getContact('923001234599');
   assert.equal(contact.assigned_to, 'Ayesha');
   assert.ok(contact.bot_paused_until, 'bot pauses while a human handles it');
   assert.ok(
@@ -104,7 +104,7 @@ test('team commands: takeover, release, permissions', async () => {
   assert.match(mine.reply, /Your chats/);
 
   // sales cannot assign to others, cannot export, cannot flip global switches
-  const assign = await handleOwnerCommand(sock, jidFor('923001112233'), '.assign 923551119999 Bilal', '923001112233');
+  const assign = await handleOwnerCommand(sock, jidFor('923001112233'), '.assign 923001234599 Bilal', '923001112233');
   assert.match(assign.reply, /can't use \.assign/);
   const exp = await handleOwnerCommand(sock, jidFor('923001112233'), '.export', '923001112233');
   assert.match(exp.reply, /owner-only/);
@@ -112,14 +112,14 @@ test('team commands: takeover, release, permissions', async () => {
   assert.match(ai.reply, /owner-only/);
 
   // owner can assign
-  const okAssign = await handleOwnerCommand(sock, ownerJid, '.assign 923551119999 Bilal');
+  const okAssign = await handleOwnerCommand(sock, ownerJid, '.assign 923001234599 Bilal');
   assert.match(okAssign.reply, /Assigned .* to Bilal/);
-  assert.equal(db.getContact('923551119999').assigned_to, 'Bilal');
+  assert.equal(db.getContact('923001234599').assigned_to, 'Bilal');
 
   // release gives it back to the bot
-  const release = await handleOwnerCommand(sock, jidFor('923001112233'), '.release 923551119999', '923001112233');
+  const release = await handleOwnerCommand(sock, jidFor('923001112233'), '.release 923001234599', '923001112233');
   assert.match(release.reply, /back with the bot/);
-  assert.equal(db.getContact('923551119999').assigned_to, null);
+  assert.equal(db.getContact('923001234599').assigned_to, null);
 });
 
 test('strangers cannot run commands', async () => {
