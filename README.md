@@ -1530,4 +1530,4 @@ The suite never touches the internet: `test/helpers.js` isolates each file in a 
 
 MIT. Use it for your own business or for other people's — but the people talking to it should know a bot may be answering.
 
-Built for Hashir / HasDevs, and now for anyone who needs it.
+Built by Hashir Khan / HasDevs, and now for anyone who needs it.
