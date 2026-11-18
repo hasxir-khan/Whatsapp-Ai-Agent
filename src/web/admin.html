@@ -121,6 +121,15 @@
       </section>
 
       <section>
+        <h2>Visual search</h2>
+        <div class="kv">Embeds this tenant's catalogue photos locally (~90 MB model on first use, then free). Unchanged images are skipped.</div>
+        <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+          <button id="index-images">Re-index catalogue photos</button>
+          <span class="msg" id="index-msg"></span>
+        </div>
+      </section>
+
+      <section>
         <h2>Delete</h2>
         <div class="kv">This removes the tenant's folder: clients, database, session and keys.</div>
         <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
@@ -335,6 +344,17 @@
       say('upload-msg', 'Stored ' + d.saved.name + ' · ' + (d.ingested.chunks != null ? d.ingested.chunks + ' chunks' : 'queued for ' + d.ingested.mode), 'ok');
       await loadAudit();
     } catch (e) { say('upload-msg', e.message, 'err'); }
+  });
+
+  $('index-images').onclick = () => withBusy('index-images', async () => {
+    say('index-msg', 'Embedding… first run downloads the model.');
+    try {
+      const d = await api('/api/admin/tenants/' + state.slug + '/index-images', { method: 'POST', body: '{}' });
+      say('index-msg', d.ok
+        ? 'indexed ' + (d.indexed ?? 0) + ' · skipped ' + (d.skipped ?? 0) + ' · missing ' + (d.missing ?? 0) + (d.model ? ' · ' + d.model : '')
+        : 'failed: ' + (d.reason || d.output || 'see the server log'), d.ok ? 'ok' : 'err');
+      await loadAudit();
+    } catch (e) { say('index-msg', e.message, 'err'); }
   });
 
   $('delete').onclick = () => withBusy('delete', async () => {

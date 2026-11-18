@@ -242,6 +242,17 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 CREATE INDEX IF NOT EXISTS idx_calls_created ON calls(created_at);
 
+CREATE TABLE IF NOT EXISTS image_embeddings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id TEXT,
+  image_path TEXT UNIQUE,
+  hash TEXT,
+  model TEXT,
+  dim INTEGER,
+  vector TEXT,
+  updated_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS admin_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT,

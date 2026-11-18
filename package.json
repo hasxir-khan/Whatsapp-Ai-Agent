@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-self-knowledge-assistant",
-  "version": "9.13.0",
+  "version": "9.14.0",
   "description": "Multi-user WhatsApp AI assistant: every user gets their own keys, business profile and session. Speaks 86 languages, scores leads, answers missed calls in chat, and never loses a reply to a bad connection.",
   "main": "src/index.js",
   "type": "module",
@@ -26,7 +26,8 @@
     "backup": "node scripts/backup.js",
     "restore": "node scripts/restore.js",
     "templates": "node scripts/tenant.js templates",
-    "setup": "node scripts/tenant.js setup"
+    "setup": "node scripts/tenant.js setup",
+    "index-images": "node scripts/index-images.js"
   },
   "keywords": [
     "whatsapp",
@@ -55,6 +56,7 @@
     "ws": "^8.18.0"
   },
   "optionalDependencies": {
-    "ffmpeg-static": "^5.2.0"
+    "ffmpeg-static": "^5.2.0",
+    "@xenova/transformers": "^2.17.2"
   }
 }

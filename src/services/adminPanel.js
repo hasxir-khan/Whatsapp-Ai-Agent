@@ -564,6 +564,39 @@ export async function ingestUpload(slug, file) {
   return { ok: child.status === 0, mode: 'cli', chunks, output: output.slice(-400) };
 }
 
+/**
+ * Embed this tenant's catalogue images. Same tenant → in this process; another
+ * tenant → the CLI, because its database is its own.
+ */
+export async function indexImagesFor(slug) {
+  if (config.tenant.slug === slug) {
+    const { indexCatalogImages, visualSearchEnabled } = await import('./visualSearch.js');
+    if (!visualSearchEnabled()) return { ok: false, reason: 'visual_search_off', hint: '.set features.visualSearch true' };
+    return { ok: true, mode: 'inline', ...(await indexCatalogImages()) };
+  }
+  const { spawnSync } = await import('node:child_process');
+  const dir = tenantDir(slug);
+  const repo = config.root;
+  const child = spawnSync(process.execPath, [path.join(repo, 'scripts', 'tenant.js'), 'index-images', slug], {
+    cwd: repo,
+    encoding: 'utf8',
+    timeout: 300000,
+    env: {
+      ...process.env,
+      TENANT: slug,
+      TENANTS_DIR: tenantsRoot(),
+      ENV_FILE: path.join(dir, '.env'),
+      CONFIG_DIR: path.join(dir, 'config'),
+      DATA_DIR: path.join(dir, 'data'),
+      SESSION_FOLDER: path.join(dir, 'sessions'),
+      TMP_DIR: path.join(dir, 'tmp'),
+      ENABLE_WEB: 'false',
+    },
+  });
+  const output = `${child.stdout || ''}${child.stderr || ''}`.trim();
+  return { ok: child.status === 0, mode: 'cli', status: child.status, output: output.slice(-400) };
+}
+
 // ── process control ──────────────────────────────────────────
 export function tenantEnv(slug) {
   const meta = readTenantJson(slug) || {};
@@ -745,6 +778,7 @@ export default {
   stopTenant,
   restartTenant,
   qrForTenant,
+  indexImagesFor,
   audit,
   recentAudit,
 };

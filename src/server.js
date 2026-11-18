@@ -34,7 +34,7 @@ import {
   clientIp, audit, recentAudit, issueSession, parseCookies, COOKIE, CSRF_COOKIE,
   safeEqual, validSlug, listTenants, describeTenant, createTenantFromPanel, deleteTenantFromPanel,
   readTenantProfile, writeTenantProfile, setTenantKeys, probeKey, saveUpload, ingestUpload,
-  startTenant, stopTenant, restartTenant, qrForTenant, tenantKeyFor, UPLOAD_MAX_BYTES, adminHooks,
+  startTenant, stopTenant, restartTenant, qrForTenant, tenantKeyFor, indexImagesFor, UPLOAD_MAX_BYTES, adminHooks,
 } from './services/adminPanel.js';
 
 const esc = (v) =>
@@ -767,6 +767,17 @@ export async function handleAdminRoute(req, res, url) {
     try {
       return respond(200, await qrForTenant(slug));
     } catch (err) {
+      return respond(400, { error: err.message });
+    }
+  }
+
+  if (action === 'index-images' && method === 'POST') {
+    try {
+      const result = await indexImagesFor(slug);
+      audit('visual_index', { slug, ip, detail: { indexed: result.indexed ?? null, skipped: result.skipped ?? null, mode: result.mode } });
+      return respond(200, { ok: true, ...result });
+    } catch (err) {
+      audit('visual_index_failed', { slug, ip, detail: err.message, ok: false });
       return respond(400, { error: err.message });
     }
   }

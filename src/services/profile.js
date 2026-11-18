@@ -47,6 +47,7 @@ export const FEATURE_KEYS = [
   'pdfInvoices',
   'selfHealing',
   'adminPanel',
+  'visualSearch',
   'liveInbox',
 ];
 
@@ -79,6 +80,7 @@ export const FEATURE_LABELS = {
   pdfInvoices: 'PDF quotes, invoices and receipts on WhatsApp',
   selfHealing: 'Learn FAQ rules from your own manual replies (owner-approved)',
   adminPanel: 'Browser control panel for every tenant (needs ADMIN_TOKEN)',
+  visualSearch: 'Match customer photos to catalogue images locally (free, no API)',
   liveInbox: 'Live inbox on the dashboard: read, reply and take over chats',
 };
 
@@ -114,6 +116,8 @@ export const FEATURE_ALIASES = {
   inbox: 'liveInbox',
   admin: 'adminPanel',
   panel: 'adminPanel',
+  visual: 'visualSearch',
+  images: 'visualSearch',
 };
 
 /** Flags that are ON unless explicitly turned off. */

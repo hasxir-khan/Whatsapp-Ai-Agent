@@ -729,6 +729,7 @@
     "pdfInvoices": false,
     "selfHealing": false,
     "adminPanel": false,
+    "visualSearch": false,
     "liveInbox": false
   }
 }

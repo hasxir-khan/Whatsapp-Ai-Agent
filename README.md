@@ -529,6 +529,7 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `selfHealing` | 4 | Learns FAQ rules from your own manual replies (alias `healing`) |
 | `liveInbox` | 4 | Read and answer every chat from a browser page (alias `inbox`) |
 | `adminPanel` | 4 | Admin-only control panel for every tenant: create, profile, keys, QR, start/stop (alias `admin`) |
+| `visualSearch` | 4 | Recognise a customer's photo against your own catalogue, locally and free (alias `visual`) |
 | `closer` | 3 | Objection handling, payment links |
 | `reactivation` | 3 | Monthly win-back for old clients |
 | `reviews` | 3 | Review and referral requests |
@@ -1032,6 +1033,70 @@ Limits: **3 proposals a day** (`SELF_HEALING_MAX_PER_DAY`), at most 10 waiting a
 `.rules` shows what is waiting. Rules approved today are ordinary FAQs tomorrow — review them with `.features` like anything else.
 
 The notice goes to `MY_NUMBER`, so that number has to be real: if it is still the placeholder (`920000000000`), proposals are stored and you are never told — `npm run doctor` warns about exactly that, and the PDF rules are checked the same way (empty `business.payment`, a logo path that does not exist).
+
+---
+
+## Visual search — "is this something you sell?"
+
+A customer sends a photo of a dish, a shoe, a hair colour. With this on, the bot
+recognises it against **your** catalogue images and answers with your name,
+your price and your stock — locally, on your machine, at $0 per lookup.
+
+```bash
+npm install @xenova/transformers          # optional dependency, ~90 MB model on first use
+```
+
+```json
+// config/owner.json
+"features": { "visualSearch": true },
+"catalog": { "items": [
+  { "name": "Chicken Karahi", "price": 1350, "stock": 5, "image": "menu/karahi.jpg" },
+  { "name": "Zinger Burger",  "price": 650,  "stock": 0, "image": "menu/zinger.jpg" }
+] }
+```
+
+```bash
+node scripts/tenant.js index-images <slug>    # or npm run index-images, or the admin panel button
+```
+
+How it behaves, by score (cosine similarity between two CLIP vectors):
+
+| Score | What the customer gets |
+|---|---|
+| ≥ `VISUAL_HIGH_THRESHOLD` (0.88) | "*Chicken Karahi* — PKR 1,350 · 5 in stock." Name, price and stock straight from the catalogue |
+| ≥ `VISUAL_LOW_THRESHOLD` (0.78) | the top 3 with prices, and a question: which one did you mean? |
+| below | "I'm not sure which of our items this is, so I won't guess" — plus a way to say the name or reach a human |
+
+The thresholds are a starting point, not a law: run `index-images` on your own
+photos, look at how close your own products sit to each other, and move them.
+
+**Out of stock is out of stock.** If `stock` is `0` the reply says so; if you
+never set `stock`, the bot does not invent a number.
+
+### What it will not do
+
+- **Nothing leaves the machine.** The model runs here; the photo is embedded in
+  memory and dropped. It is never written into the catalogue, never uploaded to
+  a vision API, and any stray temp file is swept hourly.
+- **It does not guess.** Similar-looking products (two black t-shirts, two
+  chicken dishes) will land in the "which one?" band, which is the honest answer.
+- **Lighting and packaging cost accuracy.** A photo taken in a dark room, or of
+  a competitor's packaging, may fall below the low threshold. That is a good
+  outcome: an "I'm not sure" beats a wrong price.
+- **The paid path is still there.** If `@xenova/transformers` is missing, the
+  model cannot download, or the box has no RAM, every photo falls through to
+  your existing Gemini vision provider — the feature degrades, it never blocks a
+  reply.
+
+### Cost on the box
+
+- ~90 MB downloaded once (quantised CLIP ViT-B/32), then cached.
+- ~800 MB RAM while loaded, in the process that uses it.
+- One embedding job at a time, 20 s timeout, 8 MB image limit, and
+  `VISUAL_SEARCH_DAILY_CAP` (300) lookups per tenant per day.
+- `npm run doctor` prints the estimate, warns if the package is missing, if a
+  catalogue image cannot be read, if an image path escapes the tenant folder, or
+  if your thresholds are the wrong way round.
 
 ---
 
@@ -1793,7 +1858,7 @@ scripts/
   backup.js  restore.js   one-file backup of DB + config
 src/web/inbox.html      the inbox page (one file, no dependencies)
 assets/fonts/           Noto Sans + Noto Naskh Arabic (bundled, subsetted, OFL)
-test/                   596 tests (node:test, no dependencies)
+test/                   622 tests (node:test, no dependencies)
 ```
 
 ---
@@ -1801,7 +1866,7 @@ test/                   596 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test                 # 596 tests, ~38s, no network, no keys, no config/owner.json
+npm test                 # 622 tests, ~39s, no network, no keys, no config/owner.json
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys

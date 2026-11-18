@@ -532,6 +532,32 @@ function cmdLearn(slug, target, flags) {
   process.exit(child.status || 0);
 }
 
+function cmdIndexImages(slug, flags) {
+  const t = readTenant(slug);
+  if (!t) die(`No tenant "${slug}". Try: node scripts/tenant.js list`);
+
+  const dir = tenantDir(slug);
+  const args = [path.join(REPO, 'scripts', 'index-images.js')];
+  if (flags.force) args.push('--force');
+
+  const child = spawnSync(process.execPath, args, {
+    cwd: REPO,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      TENANT: slug,
+      TENANTS_DIR: TENANTS,
+      ENV_FILE: path.join(dir, '.env'),
+      CONFIG_DIR: path.join(dir, 'config'),
+      DATA_DIR: path.join(dir, 'data'),
+      SESSION_FOLDER: path.join(dir, 'sessions'),
+      TMP_DIR: path.join(dir, 'tmp'),
+      ENABLE_WEB: 'false',
+    },
+  });
+  process.exit(child.status || 0);
+}
+
 function cmdTemplates() {
   const templates = listTemplates();
   console.log(`\n${c.bold('Industry templates')}\n`);
@@ -596,6 +622,14 @@ switch (command) {
     break;
   }
 
+  case 'index-images':
+  case 'images': {
+    const slug = positional[0];
+    if (!slug) die('Usage: node scripts/tenant.js index-images <slug> [--force]');
+    cmdIndexImages(slug, flags);
+    break;
+  }
+
   case 'learn':
   case 'ingest': {
     const slug = positional[0];
@@ -619,6 +653,7 @@ ${c.bold('Multi-user manager')}
   ${c.dim('node scripts/tenant.js new "Business Name" --number 923001112233 [--template restaurant] [--port 3001]')}
   ${c.dim('node scripts/tenant.js setup <slug>')}          ${c.dim('# business wizard')}
   ${c.dim('node scripts/tenant.js learn <slug> <file|url>')} ${c.dim('# knowledge base')}
+  ${c.dim('node scripts/tenant.js index-images <slug>')} ${c.dim('# embed catalogue photos (visual search)')}
   ${c.dim('node scripts/tenant.js templates')}
   ${c.dim('node scripts/tenant.js list')}
   ${c.dim('node scripts/tenant.js show <slug> [--start]')}

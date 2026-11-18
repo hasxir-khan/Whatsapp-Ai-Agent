@@ -800,6 +800,55 @@ async function checkFleet({ live = false, json = false } = {}) {
   console.log('  Start everybody: node scripts/run-all.js\n');
 }
 
+async function checkVisual() {
+  const { visualSearchEnabled, catalogImageItems, catalogImagePath, thresholds, dailyCap } = await import('../src/services/visualSearch.js');
+  if (!visualSearchEnabled()) return;
+
+  section('Visual search');
+  // What it will cost this machine, said before it costs it.
+  ok('model: Xenova/clip-vit-base-patch32 · ~90 MB download on first use · ~800 MB RAM while loaded');
+
+  let installed = false;
+  try {
+    // resolve, do not load: importing downloads nothing, but this catches the
+    // common case of "flag on, package never installed".
+    await import('@xenova/transformers');
+    installed = true;
+  } catch {
+    installed = false;
+  }
+  if (installed) ok('@xenova/transformers is installed');
+  else {
+    warn('visualSearch is on but @xenova/transformers is not installed — every photo falls back to Gemini');
+    notes.push('npm install @xenova/transformers   # local CLIP search, ~90 MB model on first use, $0 per call');
+  }
+
+  const images = catalogImageItems();
+  if (!images.length) {
+    warn('visualSearch is on but no catalogue item has an "image" — nothing to match against');
+    notes.push('Add "image": "config/menu/karahi.jpg" to catalogue items, then: node scripts/tenant.js index-images <slug>');
+  } else {
+    const missing = images.filter((i) => i.missing);
+    if (missing.length) {
+      warn(`${missing.length} catalogue image(s) cannot be read — they will never match`);
+      for (const item of missing.slice(0, 3)) notes.push(`  ${item.name}: ${item.image} (${item.missing})`);
+    }
+    // Containment is a security property, not a preference.
+    for (const item of images.slice(0, 50)) {
+      const resolved = catalogImagePath(item.image);
+      if (resolved.ok && !resolved.file.startsWith(process.cwd())) {
+        warn(`catalogue image outside this tenant folder: ${item.image}`);
+      }
+    }
+  }
+
+  const { high, low } = thresholds();
+  if (low >= high) warn(`VISUAL_LOW_THRESHOLD (${low}) is not below VISUAL_HIGH_THRESHOLD (${high}) — nothing can ever be "ambiguous"`);
+  if (low < 0.5) warn(`VISUAL_LOW_THRESHOLD is ${low} — that low will match unrelated products`);
+  ok(`thresholds: high ${high} · low ${low} · daily cap ${dailyCap()} (calibrate on your own photos)`);
+  if (dailyCap() === 0) warn('VISUAL_SEARCH_DAILY_CAP is 0 — the feature is on but every lookup is refused');
+}
+
 async function main() {
   // `npm run doctor -- gemini` runs only the checks whose name matches.
   const args = process.argv.slice(2);
@@ -827,6 +876,7 @@ async function main() {
   if (want('team', 'calls')) await checkTeamAndCalls();
   if (want('media', 'ffmpeg', 'vision')) await checkMedia();
   if (want('memory', 'db', 'database')) await checkMemory();
+  if (want('visual', 'images')) await checkVisual();
   if (want('whatsapp', 'session')) await checkWhatsApp();
 
   section('Summary');

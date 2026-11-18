@@ -549,6 +549,29 @@ async function processBatch(sock, jid, number, items) {
   // Long-term context BEFORE this turn is stored, so it isn't duplicated
   const dossier = { ...memory.getDossier(number), mood };
 
+  // ── visual catalogue match ─────────────────────────────
+  // The model found a matching product photo, so the answer is written from the
+  // catalogue (name, price, stock). No tokens, no invention, and no second
+  // opinion from an LLM that has never seen the shop.
+  const visualPart = parts.find((p) => p.visual?.handled);
+  if (visualPart) {
+    const { composeReply } = await import('../services/visualSearch.js');
+    const visual = visualPart.visual;
+    const reply = composeReply({ decision: visual.decision, score: visual.score }, visual.matches, {
+      lang: langInfo.code,
+    });
+    try {
+      memory.saveUserTurn(number, humanText || '[photo]', 'image', { lang: langInfo.code, visual: visual.decision });
+      const sentV = await sendTyping(sock, jid, reply, { delay: 600 });
+      memory.saveAssistantTurn(number, reply, 'text');
+      noteSent([sentV?.key?.id]);
+      db.logEvent('visual_reply', number, { decision: visual.decision, score: Number(visual.score.toFixed(3)) });
+    } catch (err) {
+      db.logEvent('visual_reply_error', number, err.message);
+    }
+    return;
+  }
+
   // ── payment proof ──────────────────────────────────────
   // A screenshot from a customer who has an order awaiting payment goes to the
   // owner with whatever we could read from it. It never marks anything paid:
@@ -821,6 +844,25 @@ async function interpretItem({ transport, incoming, number }) {
 
     case 'image':
     case 'sticker': {
+      // Local visual search first: it is free, it needs no key, and when it is
+      // sure it answers from the catalogue instead of guessing. Everything
+      // below (Gemini) stays exactly as it was for when the model is missing.
+      let media = null;
+      const readMedia = async () => {
+        if (!media) media = await download();
+        return media;
+      };
+      {
+        const { visualSearchEnabled } = await import('../services/visualSearch.js');
+        if (visualSearchEnabled()) {
+          const { buffer, mimetype } = await readMedia();
+          const { visualLookup } = await import('../services/visualSearch.js');
+          const visual = await visualLookup({ buffer, mimetype, number });
+          if (visual.handled) {
+            return { kind: 'image', text: caption || '', caption, visual };
+          }
+        }
+      }
       if (!visionEnabled()) {
         return {
           kind: 'image',
@@ -828,7 +870,7 @@ async function interpretItem({ transport, incoming, number }) {
           unreadable: !caption,
         };
       }
-      const { buffer, mimetype } = await download();
+      const { buffer, mimetype } = await readMedia();
       const dossier = memory.getDossier(number);
       const context = describeContext(dossier);
       const vision = await analyzeImage({ buffer, mimetype, caption, context });
