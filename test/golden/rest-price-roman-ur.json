@@ -1,0 +1,23 @@
+{
+  "id": "rest-price-roman-ur",
+  "title": "A Roman Urdu price question is answered from the catalogue in Roman Urdu",
+  "template": "restaurant",
+  "category": "price",
+  "language": "roman-ur",
+  "profile": { "features": { "toolCalling": true } },
+  "turns": [
+    {
+      "user": "chicken biryani kitne ki hai?",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "chicken biryani" } },
+        { "text": "Chicken Biryani 550 PKR hai, 15 minute mein tayyar ho jayegi." }
+      ],
+      "expect": "the model looks the price up instead of remembering it"
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "550", "why": "the catalogue price" }],
+    "sideEffects": "none"
+  }
+}

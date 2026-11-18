@@ -1,0 +1,18 @@
+{
+  "id": "generic-rag-miss-ur",
+  "title": "An unknown question is handed to the owner, in Urdu",
+  "template": "generic",
+  "category": "rag",
+  "language": "ur",
+  "profile": { "features": { "rag": true, "knowledge": true } },
+  "turns": [
+    {
+      "user": "کیا آپ انٹرنیشنل شپنگ کرتے ہیں؟",
+      "model": [{ "text": "یہ میں ابھی نہیں بتا سکتا — مالک سے تصدیق کر کے بتاتا ہوں۔" }]
+    }
+  ],
+  "assert": {
+    "events": ["rag_miss"],
+    "require": [{ "match": "مالک|تصدیق" }]
+  }
+}

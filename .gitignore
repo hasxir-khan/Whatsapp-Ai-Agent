@@ -27,3 +27,6 @@ qr-*.png
 
 # Backups are data, not code — keep them off the repo.
 backups/
+
+# the golden-chat eval report is regenerated on every run
+eval-report.json

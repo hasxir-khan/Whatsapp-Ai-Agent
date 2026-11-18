@@ -496,13 +496,34 @@ function enqueue(sock, jid, number, item) {
   entry.timer = setTimeout(() => {
     buffers.delete(key);
     const items = entry.items;
-    processBatch(sock, entry.jid, number, items).catch((err) => {
-      console.error('Batch error:', err.message);
-      db.logEvent('batch_error', number, err.message);
-    });
+    const task = processBatch(sock, entry.jid, number, items)
+      .catch((err) => {
+        console.error('Batch error:', err.message);
+        db.logEvent('batch_error', number, err.message);
+      })
+      .finally(() => inFlight.delete(task));
+    inFlight.add(task);
   }, config.behavior.debounceMs);
 
   buffers.set(key, entry);
+}
+
+// Batches that are running right now. `enqueue` is deliberately fire-and-forget
+// for the live bot, so anything that wants to see the reply (tests, the eval
+// harness) needs a way to wait for the queue to empty.
+const inFlight = new Set();
+
+/**
+ * Wait until every debounced batch has finished and produced its reply.
+ * @returns {Promise<boolean>} false when it gave up waiting
+ */
+export async function drainBatches({ timeoutMs = 5000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (buffers.size === 0 && inFlight.size === 0) return true;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return false;
 }
 
 /** Send any quiet-hour messages that are now due. */

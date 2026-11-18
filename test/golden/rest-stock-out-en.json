@@ -1,0 +1,32 @@
+{
+  "id": "rest-stock-out-en",
+  "title": "An out-of-stock item is refused honestly, with no invented restock date",
+  "template": "restaurant",
+  "category": "stock",
+  "language": "en",
+  "profile": {
+    "features": { "toolCalling": true },
+    "catalog": {
+      "items": [
+        { "name": "Zinger Burger", "kind": "product", "price": 650, "duration": 12, "stock": 0 },
+        { "name": "Chicken Karahi", "kind": "product", "price": 1450, "duration": 25, "stock": 20 }
+      ]
+    }
+  },
+  "turns": [
+    {
+      "user": "Can I get a zinger burger?",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "zinger burger" } },
+        { "text": "Zinger Burger is out of stock today — I will not promise a time I cannot see. Chicken Karahi is available." }
+      ],
+      "expect": "stock comes from the lookup, and nothing is promised"
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "out ?of ?stock" }],
+    "forbid": ["tomorrow", "restock(ed|ing)? (by|on) "],
+    "sideEffects": "none"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "generic-price-en",
+  "title": "The generic template still refuses to invent a price",
+  "template": "generic",
+  "category": "price",
+  "language": "en",
+  "profile": { "features": { "toolCalling": true } },
+  "turns": [
+    {
+      "user": "what does the main service cost?",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "main service" } },
+        { "text": "The main service is 10000 PKR. The second service is 25000 PKR." }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "10000" }]
+  }
+}

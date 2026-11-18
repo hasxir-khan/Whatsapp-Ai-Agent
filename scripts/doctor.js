@@ -994,6 +994,42 @@ async function checkOrdersAndCrm() {
   }
 }
 
+async function checkEval() {
+  // The golden eval is a local report, not a server: the only thing worth
+  // saying is whether it has ever run, how it went, and how long ago.
+  const file = path.join(config.root, 'eval-report.json');
+  section('Golden eval');
+
+  if (!fs.existsSync(file)) {
+    warn('the golden-chat eval has never run here');
+    notes.push('Run `npm run eval` — offline, no keys, about ten seconds. It replays 44 recorded conversations and fails on a wrong price, a wrong language, a leaked tag or an unconfirmed order.');
+    return;
+  }
+
+  let report = null;
+  try {
+    report = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    warn('eval-report.json is not readable — run `npm run eval` again');
+    return;
+  }
+  const s = report.summary || {};
+  const when = new Date(report.generatedAt || fs.statSync(file).mtime);
+  const days = Math.floor((Date.now() - when.getTime()) / 86_400_000);
+  const ago = days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+
+  const line = `${s.pass ?? 0} pass · ${s.warn ?? 0} warn · ${s.fail ?? 0} fail, ${ago} (${report.mode || 'deterministic'}, score ${s.score ?? 0}%)`;
+  if (s.fail) {
+    warn(line);
+    notes.push('The golden eval has failures — `npm run eval` lists them per scenario and per category.');
+  } else {
+    ok(line);
+  }
+  if (days >= 14) {
+    notes.push(`The golden eval last ran ${ago}; it takes seconds and is the cheapest way to notice prompt drift.`);
+  }
+}
+
 async function main() {
   // `npm run doctor -- gemini` runs only the checks whose name matches.
   const args = process.argv.slice(2);
@@ -1025,6 +1061,7 @@ async function main() {
   if (want('mcp', 'tools', 'external')) await checkMcp();
   if (want('health', 'alerts', 'privacy')) await checkHealthAndPrivacy();
   if (want('orders', 'crm', 'tags')) await checkOrdersAndCrm();
+  if (want('eval', 'golden')) await checkEval();
   if (want('whatsapp', 'session')) await checkWhatsApp();
 
   section('Summary');

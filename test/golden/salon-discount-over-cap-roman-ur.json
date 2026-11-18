@@ -1,0 +1,44 @@
+{
+  "id": "salon-discount-over-cap-roman-ur",
+  "title": "Asking for 25% off gets the cap and a handoff, not agreement",
+  "template": "salon",
+  "category": "discount",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "closerAgent": true
+    },
+    "policies": {
+      "maxDiscountPercent": 10
+    }
+  },
+  "turns": [
+    {
+      "user": "bohat mehnga hai, 25% discount do",
+      "expect": "beyond the cap the owner decides; the bot never agrees"
+    },
+    {
+      "user": "theek hai 10% de do",
+      "model": [
+        {
+          "text": "Main owner se pooch kar batata hoon \u2014 thodi der mein reply karta hoon."
+        }
+      ],
+      "expect": "the follow-up is answered without inventing approval"
+    }
+  ],
+  "assert": {
+    "events": [
+      "closer_discount_handoff"
+    ],
+    "require": [
+      {
+        "match": "10%|owner",
+        "why": "the cap is stated and the owner is mentioned"
+      }
+    ],
+    "forbid": [
+      "25% off ho gaya"
+    ]
+  }
+}

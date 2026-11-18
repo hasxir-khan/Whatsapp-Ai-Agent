@@ -2204,7 +2204,8 @@ scripts/
   backup.js  restore.js   one-file backup of DB + config
 src/web/inbox.html      the inbox page (one file, no dependencies)
 assets/fonts/           Noto Sans + Noto Naskh Arabic (bundled, subsetted, OFL)
-test/                   695 tests (node:test, no dependencies)
+test/                   762 tests (node:test, no dependencies)
+test/golden/            44 recorded conversations (the golden eval)
 ```
 
 ---
@@ -2212,13 +2213,146 @@ test/                   695 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test                 # 695 tests, ~39s, no network, no keys, no config/owner.json
+npm test                 # 762 tests, ~65s, no network, no keys, no config/owner.json
+npm run eval             # 44 recorded conversations, ~10s, no keys either
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys
 ```
 
 The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening, `37`–`38` for PDF documents and the learning loop, `39` for the live inbox.
+
+---
+
+## The golden eval — 44 conversations that must keep working
+
+`npm test` proves the code runs. The golden eval proves the *bot still behaves*:
+each scenario is a whole conversation — a tenant template, a catalogue, a few
+turns, and a recording of what the model said — replayed through the real
+pipeline. The assertions are code, not a second model grading the first one.
+
+```bash
+npm run eval                    # offline: recorded model, no keys, no network, ~10s
+npm run eval -- --live          # the real provider, capped (EVAL_LIVE_MAX_CALLS, default 60)
+npm run eval -- --only price    # one scenario
+npm run eval -- --category booking
+npm run eval -- --compare old-report.json   # what got worse since that report
+npm run eval -- --list          # ids, categories, languages
+npm run eval -- --help
+```
+
+Every run prints a table per category, writes `eval-report.json` (gitignored) and
+exits `1` on any hard failure. `npm test` runs the offline suite as one
+aggregate test (`test/48-golden.test.js`), so a prompt change that starts
+inventing prices turns CI red. Live mode is never part of `npm test` — it spends
+real money, so it is always something you asked for.
+
+What each conversation is checked for, in code:
+
+| check | what it means |
+|---|---|
+| `numbers` | every digit the customer sees exists in the profile, catalogue, policies, seeded orders or the scenario's own fixture. An invented price, total, fee, ETA or discount fails. |
+| `language` | the reply is in the customer's language — English, Roman Urdu or Urdu script. |
+| `forbidden` | no system-prompt text, no API-key shapes, no tag or note text, no other customer's number, no internal flags. |
+| `side_effects` | a row in `orders`, `bookings`, `contact_tags`… may only appear in a turn where a confirmation was pending. |
+| `maxChanges` | at most N rows of a table, ever — a double "yes" must not place two orders. |
+| `events` / `optout` / `growthHold` / `ownerNotified` | the behaviour actually happened: the handoff, the opt-out, the quiet-hours hold, the owner alert. |
+| `require` / `forbid` | this phrase must appear, that one must not. |
+| `minReplies` / `maxLength` / `raw_output` | something was said, it was not a wall of text, and it was not JSON or a tool error. |
+
+Coverage today: 8 templates (restaurant, clinic, salon, real estate, shop,
+agency, school, generic) × 3 languages, across price and stock questions, price
+objections and the discount cap, valid and impossible bookings, double booking,
+orders and duplicate confirmations, order status, complaints, RAG hits and
+misses, prompt injection in customer text, in an uploaded document and in an
+image caption, opt-out and deletion requests, voice notes, quiet hours, and
+tags/notes that must stay private.
+
+### How to add a golden scenario
+
+One file in `test/golden/`, named after its id. Paste a conversation you have
+actually had (with fake numbers), record what the model said, then say what
+"correct" means. The smallest useful one — a price asked in Roman Urdu:
+
+```json
+{
+  "id": "rest-price-roman-ur",
+  "title": "A Roman Urdu price question is answered from the catalogue in Roman Urdu",
+  "template": "restaurant",
+  "category": "price",
+  "language": "roman-ur",
+  "profile": { "features": { "toolCalling": true } },
+  "turns": [
+    {
+      "user": "chicken biryani kitne ki hai?",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "chicken biryani" } },
+        { "text": "Chicken Biryani 550 PKR hai, 15 minute mein tayyar ho jayegi." }
+      ]
+    }
+  ],
+  "assert": { "numbers": "hard", "require": [{ "match": "550" }], "sideEffects": "none" }
+}
+```
+
+`550` is in the template's own price list, so the number check passes. Change it
+to `450` and the scenario fails — which is the whole idea.
+
+A harder one: the same order, confirmed twice. The second `yes` must not write a
+second row.
+
+```json
+{
+  "id": "rest-order-duplicate-confirm-en",
+  "title": "Saying yes twice does not place the order twice",
+  "template": "restaurant",
+  "category": "order",
+  "language": "en",
+  "profile": { "features": { "toolCalling": true, "orderTracking": true } },
+  "turns": [
+    {
+      "user": "one chicken karahi please",
+      "model": [{ "tool": "create_order", "args": { "items": [{ "name": "Chicken Karahi", "qty": 1 }] } }]
+    },
+    { "user": "yes" },
+    { "user": "yes please, confirm it again",
+      "model": [{ "text": "All set — there is nothing left to confirm." }] }
+  ],
+  "assert": {
+    "maxChanges": { "orders": 1 },
+    "confirmations": 1,
+    "minReplies": 3,
+    "sideEffects": "confirmed-only"
+  }
+}
+```
+
+Notes that save time:
+
+- **A turn is `user`, `owner` or `action`.** `model` is the recording: one step
+  per model call, `{ "tool": …, "args": … }` or `{ "text": … }`. A turn with no
+  `model` means "whatever the code does on its own" — that is how you assert an
+  agent's own reply (booking, closer, order status) instead of the model's.
+- **Voice:** `{ "user": "", "voice": true, "voiceTranscript": "…" }`. **Images:**
+  `{ "user": "", "image": true, "caption": "…" }`. The transcription and vision
+  calls are stubbed, so nothing leaves the machine.
+- **Actions:** `{ "action": "payment_reminder", "now": "night" }` for the
+  proactive side (reminders, order updates, campaigns). `now` also accepts an ISO
+  timestamp.
+- **Leftover steps fail on purpose.** If you record three model steps and the
+  pipeline only uses two, the scenario fails: a stale recording would otherwise
+  quietly stop testing anything.
+- **`fixture.numbers`** is for values you expect the *code* to compute (a
+  discounted total, a row id). Adding one is a promise: if the arithmetic
+  changes, this scenario should fail.
+- **Fake data only.** The schema rejects phone numbers outside the fake ranges
+  (`92300…`, `4477009…`, `1555…`) and anything that looks like an API key.
+- Run `npm run eval -- --only <your-id>` until it is green, then `npm run eval`
+  for the whole set.
+
+`npm run doctor` prints the last eval result and how long ago it ran — a prompt
+tweak is cheap to make and cheap to check, so there is no reason to guess.
+
 
 ---
 

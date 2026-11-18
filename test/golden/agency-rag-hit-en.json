@@ -1,0 +1,21 @@
+{
+  "id": "agency-rag-hit-en",
+  "title": "A timeline from the owner's own notes is quoted back",
+  "template": "agency",
+  "category": "rag",
+  "language": "en",
+  "profile": { "features": { "rag": true, "knowledge": true } },
+  "seed": {
+    "knowledge": [{ "title": "Process", "text": "A five page business website takes 4 weeks from approved copy." }]
+  },
+  "turns": [
+    {
+      "user": "how long does a small business website take?",
+      "model": [{ "text": "A five page business website takes 4 weeks from approved copy." }]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "4 weeks" }]
+  }
+}

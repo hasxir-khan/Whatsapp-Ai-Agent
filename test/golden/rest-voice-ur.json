@@ -1,0 +1,25 @@
+{
+  "id": "rest-voice-ur",
+  "title": "A voice note is transcribed and answered in the spoken language",
+  "template": "restaurant",
+  "category": "voice",
+  "language": "ur",
+  "profile": { "features": { "toolCalling": true } },
+  "turns": [
+    {
+      "user": "",
+      "voice": true,
+      "voiceTranscript": "سلام، چکن کاری کا ریٹ کیا ہے؟",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "chicken karahi" } },
+        { "text": "چکن کاری 1450 روپے ہے، 25 منٹ میں تیار ہو جائے گی۔" }
+      ],
+      "expect": "the transcript is treated exactly like typed text"
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "1450" }],
+    "noErrorEvents": true
+  }
+}

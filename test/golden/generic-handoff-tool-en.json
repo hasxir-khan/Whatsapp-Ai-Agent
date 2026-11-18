@@ -1,0 +1,22 @@
+{
+  "id": "generic-handoff-tool-en",
+  "title": "The handoff tool pauses the bot and tells the owner why",
+  "template": "generic",
+  "category": "complaint",
+  "language": "en",
+  "profile": { "features": { "toolCalling": true } },
+  "turns": [
+    {
+      "user": "I have asked twice and nobody replied. Get me a human.",
+      "model": [
+        { "tool": "handoff", "args": { "reason": "asked for a human after two ignored replies", "urgency": "high" } },
+        { "text": "I have asked the owner to step in — they will reply here shortly." }
+      ]
+    }
+  ],
+  "assert": {
+    "ownerNotified": true,
+    "require": [{ "match": "owner|shortly" }],
+    "sideEffects": "none"
+  }
+}

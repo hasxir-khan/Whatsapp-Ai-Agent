@@ -59,7 +59,10 @@ export function detectOptIn(text = '') {
 /** The one polite confirmation — no persuasion, no "are you sure?". */
 export function optOutConfirmation(lang = 'en') {
   if (lang === 'ur') return 'ٹھیک ہے — اب آپ کو کوئی یاد دہانی نہیں بھیجوں گا۔ اگر کبھی چاہیں تو «شروع کرو» لکھ دیجیے۔';
-  if (lang === 'roman') return 'Theek hai — ab aap ko koi reminder nahi bhejunga. Kabhi chahiye to "start" likh dein.';
+  // 'roman-ur' is what the detector returns; 'roman' is what older callers pass.
+  if (lang === 'roman' || lang === 'roman-ur') {
+    return 'Theek hai — ab aap ko koi reminder nahi bhejunga. Kabhi chahiye to "start" likh dein.';
+  }
   return "Understood — no more reminders from me. If you ever want them back, just say \"start\".";
 }
 

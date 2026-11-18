@@ -1,0 +1,18 @@
+{
+  "id": "school-booking-valid-roman-ur",
+  "title": "A visit booked in Roman Urdu is confirmed in Roman Urdu",
+  "template": "school",
+  "category": "booking",
+  "language": "roman-ur",
+  "profile": { "features": { "bookingAgent": true }, "business": { "bookingService": "Admission form" } },
+  "fixture": { "dates": true, "numbers": [1] },
+  "turns": [
+    { "user": "kal 11 baje admission ke liye visit book kar dein", "expect": "the booking agent books a real slot" }
+  ],
+  "assert": {
+    "events": ["booking_created"],
+    "maxChanges": { "bookings": 1 },
+    "sideEffects": "allowed",
+    "noErrorEvents": true
+  }
+}

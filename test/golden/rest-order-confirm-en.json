@@ -1,0 +1,27 @@
+{
+  "id": "rest-order-confirm-en",
+  "title": "An order is not written until the customer says yes",
+  "template": "restaurant",
+  "category": "order",
+  "language": "en",
+  "profile": { "features": { "toolCalling": true, "orderTracking": true } },
+  "turns": [
+    {
+      "user": "I want one chicken karahi please",
+      "model": [{ "tool": "create_order", "args": { "items": [{ "name": "Chicken Karahi", "qty": 1 }] } }],
+      "expect": "the model may ask to order; the row is not written yet"
+    },
+    {
+      "user": "yes",
+      "expect": "the confirmation turn is what actually creates the order"
+    }
+  ],
+  "assert": {
+    "confirmations": 1,
+    "events": ["tool_confirmed"],
+    "sideEffects": "confirmed-only",
+    "maxChanges": { "orders": 1 },
+    "require": [{ "match": "Chicken Karahi|order", "why": "the customer is told what was confirmed" }],
+    "minReplies": 2
+  }
+}

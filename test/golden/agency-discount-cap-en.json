@@ -1,0 +1,33 @@
+{
+  "id": "agency-discount-cap-en",
+  "title": "With no discount ceiling configured, discounts belong to the owner",
+  "template": "agency",
+  "category": "discount",
+  "language": "en",
+  "profile": {
+    "features": {
+      "closerAgent": true
+    }
+  },
+  "turns": [
+    {
+      "user": "your retainer is too expensive, can you do 20% off?",
+      "expect": "no invented approval and no invented percentage"
+    }
+  ],
+  "assert": {
+    "events": [
+      "closer_discount_handoff"
+    ],
+    "forbid": [
+      "20% off is fine|approved"
+    ],
+    "minReplies": 1,
+    "require": [
+      {
+        "match": "owner",
+        "why": "the customer is told who decides"
+      }
+    ]
+  }
+}

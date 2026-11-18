@@ -1,0 +1,22 @@
+{
+  "id": "school-fee-price-ur",
+  "title": "A monthly fee asked in Urdu is quoted from the fee list",
+  "template": "school",
+  "category": "price",
+  "language": "ur",
+  "profile": { "features": { "toolCalling": true } },
+  "turns": [
+    {
+      "user": "پرائمری کے مہینے کی فیس کتنی ہے؟",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "monthly fee primary" } },
+        { "text": "پرائمری کی ماہانہ فیس 8000 روپے ہے۔ داخلہ فارم 1000 روپے کا ہے۔" }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "8000" }],
+    "sideEffects": "none"
+  }
+}

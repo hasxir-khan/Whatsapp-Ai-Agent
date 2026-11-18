@@ -1,0 +1,20 @@
+{
+  "id": "clinic-booking-valid-en",
+  "title": "A valid appointment request is booked with the real date and time",
+  "template": "clinic",
+  "category": "booking",
+  "language": "en",
+  "profile": { "features": { "bookingAgent": true }, "business": { "bookingService": "General consultation" } },
+  "fixture": { "dates": true, "numbers": [1] },
+  "turns": [
+    { "user": "I want an appointment tomorrow at 10am", "expect": "the booking agent books a real free slot" },
+    { "user": "yes", "expect": "the confirmation is recorded" }
+  ],
+  "assert": {
+    "events": ["booking_created"],
+    "require": [{ "match": "10:00", "why": "the time the customer asked for" }],
+    "sideEffects": "allowed",
+    "maxChanges": { "bookings": 1 },
+    "noErrorEvents": true
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "agency-optout-en",
+  "title": "Stop means stop, and the opt-out is on file",
+  "template": "agency",
+  "category": "privacy",
+  "language": "en",
+  "turns": [
+    { "user": "please stop messaging me", "expect": "no model, no persuasion, an immediate opt-out" }
+  ],
+  "assert": {
+    "optout": true,
+    "events": ["growth_optout"],
+    "forbid": ["are you sure", "why not"],
+    "minReplies": 1
+  }
+}

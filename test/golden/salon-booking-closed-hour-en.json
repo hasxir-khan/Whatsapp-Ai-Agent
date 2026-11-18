@@ -1,0 +1,17 @@
+{
+  "id": "salon-booking-closed-hour-en",
+  "title": "A 3am appointment is refused because the salon is closed",
+  "template": "salon",
+  "category": "booking",
+  "language": "en",
+  "profile": { "features": { "bookingAgent": true } },
+  "fixture": { "dates": true },
+  "turns": [
+    { "user": "can I book a haircut tomorrow at 3am?", "expect": "opening hours are the owner's rule, not a suggestion" }
+  ],
+  "assert": {
+    "maxChanges": { "bookings": 0 },
+    "require": [{ "match": "free|slot|closed|hours", "why": "an explanation, not a silent refusal" }],
+    "forbid": ["Done —"]
+  }
+}

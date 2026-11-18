@@ -1,0 +1,23 @@
+{
+  "id": "clinic-rag-miss-roman-ur",
+  "title": "A service nobody wrote down is not invented — the owner is asked",
+  "template": "clinic",
+  "category": "rag",
+  "language": "roman-ur",
+  "profile": { "features": { "rag": true, "knowledge": true } },
+  "seed": { "knowledge": [{ "title": "Services", "text": "We do consultations, dental scaling and physiotherapy." }] },
+  "turns": [
+    {
+      "user": "kya aap laser hair removal karte hain?",
+      "model": [
+        { "text": "Yeh service list mein nahi hai — main owner se confirm kar ke aap ko batata hoon. Filhaal koi andaza nahi lagaunga." }
+      ],
+      "expect": "no price, no promise, and the RAG miss is logged"
+    }
+  ],
+  "assert": {
+    "events": ["rag_miss"],
+    "require": [{ "match": "owner|confirm", "why": "the customer is told it will be checked" }],
+    "forbid": ["laser (costs|is) \\d", "PKR \\d+ for laser"]
+  }
+}

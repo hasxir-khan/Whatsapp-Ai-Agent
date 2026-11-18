@@ -1,0 +1,16 @@
+{
+  "id": "re-status-no-order-en",
+  "title": "Where is my order with no order on file asks for details",
+  "template": "real-estate",
+  "category": "status",
+  "language": "en",
+  "profile": { "features": { "orderTracking": true } },
+  "turns": [
+    { "user": "where is my order?", "expect": "no order means no invented status" }
+  ],
+  "assert": {
+    "events": ["order_question_no_match"],
+    "require": [{ "match": "can't see an order|order id", "why": "the customer is asked, not guessed at" }],
+    "forbid": ["is currently", "out for delivery", "delivered"]
+  }
+}
