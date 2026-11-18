@@ -1607,6 +1607,143 @@ Where it shows up:
 
 ---
 
+## Orders & the mini CRM
+
+Two opt-in features that answer the two questions a small shop actually asks:
+*where is my order?* and *who is this person?*
+
+```bash
+# both start off
+.set features.orderTracking true
+.set features.crm true
+```
+
+### The order lifecycle
+
+```
+placed → awaiting_payment → paid → preparing → ready → out_for_delivery → delivered
+                                                     ↘ cancelled / refunded
+```
+
+- **Every move is a fact in one table** and is written to `order_events` with who
+  did it (`owner`, `bot`, `customer`) and when. `.order 12` prints that timeline.
+- **Forwards freely, backwards only on purpose.** A pick-up order can go
+  `preparing → delivered` in one step, but `delivered → preparing` needs
+  `.status 12 preparing --force`, because that is almost always a typo.
+- **`paid` is the owner's word alone.** The bot can ask for money and can ask you
+  to confirm it, but no status path, no customer message and no receipt photo can
+  produce `paid`. Only `.paid 12` (or `.status 12 paid` typed by you) can.
+- **"Where is my order?"** — in English, Roman Urdu or Urdu — is answered from the
+  row: the status, the order id, and an ETA *only if you set one*
+  (`.set` on the order, or `.order` after `setOrderEta`). With no order on that
+  number the bot asks for the id or hands the chat to you. It never guesses:
+  a wrong delivery status costs more than "let me check".
+
+Customer notifications (`ready`, `out_for_delivery`, `delivered`) are short and in
+the customer's own language. Wording is yours:
+
+```json
+"business": {
+  "orderMessages": {
+    "ready": "Salam {first_name}, order #{id} taiyar hai — {business}",
+    "out_for_delivery": null,
+    "delivered": null
+  }
+}
+```
+
+Placeholders: `{first_name} {name} {id} {status} {total} {eta} {eta_hint} {business}`.
+Any status left as `null` uses the built-in line for that language.
+
+Every one of those messages goes through `growth.js`, which means the usual
+safety layer applies without the order code knowing about it:
+
+| Gate | Effect |
+|---|---|
+| opt-out (`stop`) | nothing is sent; the reason is logged and `.growth` shows it |
+| quiet hours | held until the window opens |
+| Cloud API, outside 24 h | only an approved template goes out — otherwise it is held and marked `window_closed` |
+
+Order updates are **transactional**, so the once-a-day marketing cap does not
+apply to them. Opt-out, quiet hours and the daily ceiling still do.
+
+### Payment reminders
+
+An unpaid order gets **one** polite reminder, then **one more**, then silence —
+and the second one tells you, once, that it is your call. The cadence:
+
+```bash
+ORDER_REMINDER_HOURS=12          # first reminder
+ORDER_REMINDER_SECOND_HOURS=36   # last reminder
+```
+
+or `business.orderReminders.firstHours / secondHours` in `owner.json`.
+
+With `features.growthApproval` on, a reminder waits as a draft (`.approve 12` /
+`.skip 12`) instead of going out on its own.
+
+### Tags, notes and auto-tags
+
+```bash
+.tag 923001234567 vip
+.tag 923001234567 evening-only
+.note 923001234567 wants the corner table
+.tags            # vip: 4 · evening-only: 2
+.find vip        # who, with names
+```
+
+Rules: lowercase, letters/digits/dashes, max 24 characters, max **20 tags per
+contact**, and tags never cross tenants.
+
+Six tags maintain themselves, from facts only — never from the model:
+
+| Tag | Derived from |
+|---|---|
+| `new` | no orders and at most two messages |
+| `repeat` | two or more orders |
+| `vip` | spend ≥ `business.crm.vipSpend` (unset = never automatic) |
+| `cold` | nothing heard for `CRM_COLD_DAYS` (default 45) |
+| `complaint` | a `complaint` intent on file |
+| `referrer` | has a referral code, or arrived with one |
+
+Automatic tags never touch a tag you typed, and a tag you typed is never removed
+by a rule disagreeing with you.
+
+### Campaigns, narrowed by tag
+
+```bash
+.campaign preview tag:vip
+.campaign send tag:vip
+```
+
+The tag only **narrows** the list that the campaign rules already produced. An
+opt-out, a block, a takeover, a person who replied since the last nudge, or a
+forgotten contact is excluded *before* the tag is applied — a tag is never a way
+around any of them.
+
+### Where tags and notes show up
+
+- `.lead 92300…` — tags and the last three notes, under the score.
+- The inbox (`/inbox`) — a read-only strip above the conversation: tags, auto
+  tags and recent notes. Editing stays in WhatsApp, one place, one audit line.
+
+### Privacy still covers them
+
+`.export 92300…` now includes `tags`, `notes` and `orderHistory` (the timeline),
+and `.forget 92300… 92300…` deletes all three. Both are tested.
+
+### Doctor
+
+```bash
+npm run doctor -- orders
+```
+
+Warns when the second reminder is not later than the first, when orders have
+been sitting unpaid past both reminders, and when `crm` is on but nothing is
+tagged yet.
+
+---
+
 ## Languages
 
 Detection is three-layered: Unicode script first (a Thai or Hebrew message is certain), then common-word voting (short WhatsApp messages are too short for statistics), then `franc` for long ambiguous text.
@@ -1752,7 +1889,16 @@ Type in your own WhatsApp chat (message yourself):
 | `.referrals` | who has a code, and who arrived with one |
 | `.content now` | this week's pack on demand |
 | `.campaign preview` | who would get a win-back message, with a sample |
+| `.campaign preview tag:vip` | the same, narrowed to one tag |
 | `.campaign send` / `.campaign stop` | start the campaign (this is the approval) or halt it |
+| `.orders` | orders that are not finished yet, newest first, with ids |
+| `.order 12` | one order: total, items, ETA and the full status timeline |
+| `.status 12 ready` | move an order along (`.status 12 preparing --force` undoes a wrong step) |
+| `.tag 92300… vip` | put a tag on a contact (lowercase, dashes) |
+| `.untag 92300… vip` | take one off |
+| `.tags` | every tag in use, with counts |
+| `.find vip` | who has a tag |
+| `.note 92300… text` | a note only you can see, shown in `.lead` and the inbox |
 | `.invoice <id>` | the PDF for an order — `.invoice <id> send` delivers it to the client |
 | `.rules` | FAQ rules learned from your replies, waiting for a yes or no |
 | `.approve-rule <id>` / `.reject-rule <id>` | decide one |

@@ -16,7 +16,23 @@
     ],
     "hours": "Mon–Fri 08:00–14:00, office until 16:00",
     "closed": "Saturday and Sunday",
-    "about": "Registered institution. Admissions open for the new session."
+    "about": "Registered institution. Admissions open for the new session.",
+    "crm": {
+      "//": "vipSpend: a customer who has spent this much (in business.currency) becomes vip automatically.",
+      "vipSpend": null
+    },
+    "orderMessages": {
+      "//": "Edit freely. Placeholders: {first_name} {name} {id} {status} {total} {eta} {business}. Any status you leave out falls back to the built-in line in the customer's language.",
+      "ready": null,
+      "out_for_delivery": null,
+      "delivered": null,
+      "awaiting_payment": null
+    },
+    "orderReminders": {
+      "//": "Hours an unpaid order waits before each polite reminder. Env ORDER_REMINDER_HOURS / ORDER_REMINDER_SECOND_HOURS win over these.",
+      "firstHours": 12,
+      "secondHours": 36
+    }
   },
   "catalog": {
     "items": [
@@ -115,6 +131,8 @@
     "mcpWriteTools": false,
     "healthAlerts": false,
     "privacyTools": false,
-    "liveInbox": false
+    "liveInbox": false,
+    "orderTracking": false,
+    "crm": false
   }
 }

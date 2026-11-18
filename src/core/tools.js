@@ -476,6 +476,17 @@ async function runCreateOrder(args, ctx) {
     key: ctx.confirmationToken || null,
   });
 
+  if (order && created) {
+    // Log the creation and let the CRM learn from it. Both are optional layers:
+    // neither is allowed to cost the order if it fails.
+    try {
+      const { onOrderPlaced } = await import('../services/orders.js');
+      await onOrderPlaced(order);
+    } catch {
+      /* an order is not lost to a tag */
+    }
+  }
+
   return { ok: true, orderId: order?.id, items, total, currency, alreadyPlaced: !created || Boolean(duplicate) };
 }
 

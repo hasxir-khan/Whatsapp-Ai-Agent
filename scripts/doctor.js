@@ -960,6 +960,40 @@ async function checkHealthAndPrivacy() {
   }
 }
 
+async function checkOrdersAndCrm() {
+  const { orderTrackingEnabled, reminderSettings, reminderStats } = await import('../src/services/orders.js');
+  const { crmEnabled, tagOverview } = await import('../src/services/crm.js');
+
+  if (orderTrackingEnabled()) {
+    section('Orders');
+    const { firstHours, secondHours } = reminderSettings();
+    if (secondHours <= firstHours) {
+      warn(`the second reminder (${secondHours} h) is not later than the first (${firstHours} h) — only one will ever fire`);
+    } else {
+      ok(`payment reminders at ${firstHours} h and ${secondHours} h, then the order is left alone`);
+    }
+    const stats = reminderStats();
+    if (stats.awaitingPayment) {
+      ok(`${stats.awaitingPayment} order(s) awaiting payment, ${stats.remindedOnce} already reminded once`);
+      if (stats.stopped) warn(`${stats.stopped} order(s) had both reminders — they need you, not another nudge`);
+    }
+  }
+
+  if (crmEnabled()) {
+    section('Mini CRM');
+    const tags = tagOverview();
+    if (!tags.length) {
+      notes.push('crm is on but nobody is tagged yet: .tag 923001234567 vip, or let auto-tags build themselves.');
+    } else {
+      const manual = tags.filter((t) => !t.auto).length;
+      ok(`${tags.length} tag(s) in use (${manual} owner-made, ${tags.length - manual} auto only)`);
+    }
+    if (!orderTrackingEnabled()) {
+      notes.push('crm tags can filter campaigns, but orderTracking is off — vip and repeat are learned from orders.');
+    }
+  }
+}
+
 async function main() {
   // `npm run doctor -- gemini` runs only the checks whose name matches.
   const args = process.argv.slice(2);
@@ -990,6 +1024,7 @@ async function main() {
   if (want('visual', 'images')) await checkVisual();
   if (want('mcp', 'tools', 'external')) await checkMcp();
   if (want('health', 'alerts', 'privacy')) await checkHealthAndPrivacy();
+  if (want('orders', 'crm', 'tags')) await checkOrdersAndCrm();
   if (want('whatsapp', 'session')) await checkWhatsApp();
 
   section('Summary');

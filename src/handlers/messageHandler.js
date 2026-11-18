@@ -24,6 +24,7 @@ import {
   requestDeletion,
   deletionAcknowledgement,
 } from '../services/privacy.js';
+import { isOrderQuestion, orderStatusAnswer, orderTrackingEnabled } from '../services/orders.js';
 import { bookingAgentEnabled, handleBookingTurn } from '../services/bookingAgent.js';
 import { cancelFor as cancelFollowUpDrafts } from '../services/followUpAgent.js';
 import { closerAgentEnabled, handleCloserTurn, readyToBuy, startOrder, handleReceipt } from '../services/closerAgent.js';
@@ -181,6 +182,23 @@ export async function handleIncoming(transport, rawIncoming) {
         transport,
         `🔐 +${number} asked to have their data deleted.\nWhen you are sure, type: .forget ${number} ${number}`
       );
+      return;
+    }
+
+    // ── "where is my order?" ───────────────────────────────
+    // Answered from the orders table, never by the model: a status is a fact,
+    // and a plausible-sounding guess about a delivery is worse than no answer.
+    if (said && orderTrackingEnabled() && isOrderQuestion(said)) {
+      const lang = detectLanguage(said).code;
+      const found = orderStatusAnswer(number, { lang });
+      const reply = found
+        ? found
+        : "I can't see an order on this number. If you ordered with a different number, send me the order id (for example #12) and I'll check — or I can pass you to the owner.";
+      memory.saveUserTurn(number, said, info.kind, { lang, orderQuestion: true });
+      memory.saveAssistantTurn(number, reply, 'text');
+      await sendTyping(transport, jid, reply, { delay: 400 });
+      noteSent([]);
+      db.logEvent(found ? 'order_question_answered' : 'order_question_no_match', number, { lang });
       return;
     }
 

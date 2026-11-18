@@ -18,6 +18,7 @@ import { featureOn, business } from './profile.js';
 import {
   all, get, getContact, setContactPaused, logEvent, saveMessage,
 } from '../utils/db.js';
+import { crmEnabled, crmProfile, tagsFor, notesFor } from './crm.js';
 
 export function liveInboxEnabled() {
   return featureOn('liveInbox');
@@ -156,7 +157,35 @@ export function inboxThread(number, { limit = 60, before = null, after = null } 
     },
     messages,
     hasMore: messages.length === cap,
+    // Read-only CRM strip for the side panel. The owner edits tags and notes
+    // from WhatsApp (or the authenticated action route) — the page only shows.
+    crm: crmPanelFor(num),
   };
+}
+
+/** Tags, notes and auto-tag profile for one chat, or null when CRM is off. */
+export function crmPanelFor(number) {
+  const num = String(number || '').replace(/\D/g, '');
+  if (!num || !crmEnabled()) return null;
+  try {
+    const tags = tagsFor(num).map((row) => ({ tag: row.tag, source: row.source || 'owner' }));
+    const profile = crmProfile(num);
+    // A derived tag that is already sitting in the tag list is shown once.
+    const seen = new Set(tags.map((row) => row.tag));
+    profile.autoTags = (profile.autoTags || []).filter((tag) => !seen.has(tag)).slice(0, 8);
+    return {
+      tags,
+      notes: notesFor(num, { limit: 5 }).map((row) => ({
+        note: row.note,
+        author: row.author || 'owner',
+        at: row.created_at,
+      })),
+      profile,
+    };
+  } catch {
+    // A CRM read must never blank out a conversation.
+    return null;
+  }
 }
 
 /** Is the bot currently quiet in this chat? `release` undoes a takeover. */

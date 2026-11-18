@@ -87,6 +87,14 @@ export function exportContact(rawNumber) {
   const privacy = all('SELECT status, language, created_at, decided_at FROM privacy_requests WHERE number = ?', [number]);
   const requests = all('SELECT * FROM pending WHERE number = ?', [number]);
   const reminders = all('SELECT * FROM booking_reminders WHERE number = ?', [number]);
+  // CRM and order history are about this person too, so they travel with the
+  // export and are deleted by the forget.
+  const tags = all('SELECT tag, source, created_at FROM contact_tags WHERE number = ?', [number]);
+  const notes = all('SELECT note, author, created_at FROM contact_notes WHERE number = ?', [number]);
+  const orderIds = all('SELECT id FROM orders WHERE chat = ? OR chat = ?', [number, jid]).map((row) => row.id);
+  const orderHistory = orderIds.length
+    ? all(`SELECT * FROM order_events WHERE order_id IN (${orderIds.map(() => '?').join(',')}) ORDER BY id`, orderIds)
+    : [];
 
   const payload = {
     format: 'wa-assistant-contact-export',
@@ -125,10 +133,13 @@ export function exportContact(rawNumber) {
     privacyRequests: privacy,
     scheduledMessages: requests,
     bookingReminders: reminders,
+    tags,
+    notes,
+    orderHistory,
   };
 
   const counts = Object.fromEntries(
-    Object.entries({ messages, facts, leads, bookings, orders, followups, referrals, reviews, intake, calls, intents, consents })
+    Object.entries({ messages, facts, leads, bookings, orders, followups, referrals, reviews, intake, calls, intents, consents, tags, notes, orderHistory })
       .map(([key, rows]) => [key, rows.length])
   );
 
@@ -168,6 +179,8 @@ export const CONTACT_TABLES = [
   { table: 'booking_reminders', where: 'number = ?' },
   { table: 'objection_attempts', where: 'number = ?' },
   { table: 'privacy_requests', where: 'number = ?' },
+  { table: 'contact_tags', where: 'number = ?' },
+  { table: 'contact_notes', where: 'number = ?' },
   { table: 'message_intents', where: 'chat = ? OR chat = ?' },
   { table: 'bookings', where: 'chat = ? OR chat = ?' },
   { table: 'orders', where: 'chat = ? OR chat = ?' },
@@ -223,6 +236,18 @@ export function forgetContact(rawNumber, { reason = 'owner_request', now = new D
 
   const removed = {};
   let total = 0;
+
+  // Order history is keyed by order id, not by number: read the ids first, then
+  // delete the events, then let the generic loop finish the job on `orders`.
+  if (orderIds.length) {
+    const holes = orderIds.map(() => '?').join(',');
+    const before = get(`SELECT COUNT(*) AS n FROM order_events WHERE order_id IN (${holes})`, orderIds)?.n || 0;
+    if (before) {
+      run(`DELETE FROM order_events WHERE order_id IN (${holes})`, orderIds);
+      removed.order_events = before;
+      total += before;
+    }
+  }
   for (const { table, where } of CONTACT_TABLES) {
     const params = where.includes('OR') ? [number, jid] : [number];
     const before = countRows(table, where, params);

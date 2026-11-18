@@ -321,6 +321,43 @@ CREATE TABLE IF NOT EXISTS privacy_audit (
   created_at  TEXT
 );
 
+-- Mini-CRM: free-text tags and notes on a person, per tenant.
+-- Tags are normalised before they get here; the UNIQUE key is what makes a
+-- double ".tag vip" harmless.
+CREATE TABLE IF NOT EXISTS contact_tags (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  number      TEXT,
+  tag         TEXT,
+  source      TEXT,          -- owner | auto
+  created_at  TEXT,
+  UNIQUE(tenant, number, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_contact_tags_tag ON contact_tags(tenant, tag);
+
+CREATE TABLE IF NOT EXISTS contact_notes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  number      TEXT,
+  note        TEXT,
+  author      TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_contact_notes_number ON contact_notes(tenant, number, id);
+
+-- Every order transition, with who did it and when. The order row keeps "where",
+-- this table keeps "how it got there".
+CREATE TABLE IF NOT EXISTS order_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id    INTEGER,
+  from_status TEXT,
+  to_status   TEXT,
+  actor       TEXT,          -- owner | bot | customer
+  detail      TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_order_events_order ON order_events(order_id, id);
+
 CREATE TABLE IF NOT EXISTS admin_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT,
@@ -557,6 +594,8 @@ function migrate() {
   add('leads', 'score', 'INTEGER DEFAULT 0');
   add('leads', 'priority', 'TEXT');
   add('leads', 'next_action', 'TEXT');
+  add('orders', 'eta', 'TEXT');
+  add('orders', 'updated_at', 'TEXT');
   add('knowledge', 'embedding_model', 'TEXT');
   add('knowledge', 'embedded_hash', 'TEXT');
 }
@@ -1436,6 +1475,92 @@ export function logPrivacyAction({ action, subjectHash, detail = null }) {
 
 export function recentPrivacyAudit(limit = 10) {
   return all('SELECT * FROM privacy_audit ORDER BY id DESC LIMIT ?', [limit]);
+}
+
+// ── tags, notes, order events ───────────────────────────────
+
+export function addContactTag({ tenant = null, number, tag, source = 'owner' }) {
+  run('INSERT OR IGNORE INTO contact_tags (tenant, number, tag, source, created_at) VALUES (?,?,?,?,?)', [
+    tenant, number, tag, source, new Date().toISOString(),
+  ]);
+  saveDB(true);
+  return get('SELECT * FROM contact_tags WHERE tenant IS ? AND number = ? AND tag = ?', [tenant, number, tag]);
+}
+
+export function removeContactTag({ tenant = null, number, tag }) {
+  // `run` does not report a row count, so check first: the caller wants to know
+  // whether the tag was really there ("removed" vs "they never had it").
+  const found = get('SELECT 1 AS x FROM contact_tags WHERE tenant IS ? AND number = ? AND tag = ?', [tenant, number, tag]);
+  if (!found) return 0;
+  run('DELETE FROM contact_tags WHERE tenant IS ? AND number = ? AND tag = ?', [tenant, number, tag]);
+  saveDB(true);
+  return 1;
+}
+
+export function contactTags(number, { tenant = null } = {}) {
+  return all('SELECT tag, source, created_at FROM contact_tags WHERE tenant IS ? AND number = ? ORDER BY tag', [tenant, number]);
+}
+
+export function tagCounts({ tenant = null } = {}) {
+  return all(
+    `SELECT tag, COUNT(*) AS n, SUM(source = 'auto') AS auto
+       FROM contact_tags WHERE tenant IS ?
+      GROUP BY tag ORDER BY n DESC, tag`,
+    [tenant]
+  );
+}
+
+export function numbersWithTag(tag, { tenant = null } = {}) {
+  return all('SELECT number FROM contact_tags WHERE tenant IS ? AND tag = ? ORDER BY number', [tenant, tag]).map((r) => r.number);
+}
+
+export function countTagsFor(number, { tenant = null } = {}) {
+  return get('SELECT COUNT(*) AS n FROM contact_tags WHERE tenant IS ? AND number = ?', [tenant, number])?.n || 0;
+}
+
+export function addContactNote({ tenant = null, number, note, author = 'owner' }) {
+  run('INSERT INTO contact_notes (tenant, number, note, author, created_at) VALUES (?,?,?,?,?)', [
+    tenant, number, String(note || '').slice(0, 500), author, new Date().toISOString(),
+  ]);
+  saveDB(true);
+  return get('SELECT * FROM contact_notes WHERE tenant IS ? AND number = ? ORDER BY id DESC LIMIT 1', [tenant, number]);
+}
+
+export function contactNotes(number, { tenant = null, limit = 20 } = {}) {
+  return all('SELECT id, note, author, created_at FROM contact_notes WHERE tenant IS ? AND number = ? ORDER BY id DESC LIMIT ?', [
+    tenant, number, limit,
+  ]);
+}
+
+export function logOrderEvent({ orderId, from = null, to = null, actor = 'owner', detail = null }) {
+  run('INSERT INTO order_events (order_id, from_status, to_status, actor, detail, created_at) VALUES (?,?,?,?,?,?)', [
+    orderId, from, to, actor, detail ? String(detail).slice(0, 300) : null, new Date().toISOString(),
+  ]);
+  saveDB(true);
+}
+
+export function orderEvents(orderId) {
+  return all('SELECT * FROM order_events WHERE order_id = ? ORDER BY id', [orderId]);
+}
+
+// How many reminders have been attempted for this order. A draft counts (it is
+// a stage that has been spent), the "we are giving up" marker does not.
+export function countOrderReminders(orderId) {
+  return get(
+    "SELECT COUNT(*) AS n FROM order_events WHERE order_id = ? AND detail LIKE 'reminder:%' AND detail NOT LIKE '%:stop'",
+    [orderId]
+  )?.n || 0;
+}
+
+export function ordersWithStatus(statuses = [], limit = 50) {
+  if (!statuses.length) return [];
+  const holes = statuses.map(() => '?').join(',');
+  return all(`SELECT * FROM orders WHERE status IN (${holes}) ORDER BY id DESC LIMIT ?`, [...statuses, limit]);
+}
+
+export function setOrderEta(id, eta) {
+  run('UPDATE orders SET eta = ?, updated_at = ? WHERE id = ?', [eta, new Date().toISOString(), id]);
+  saveDB(true);
 }
 
 // ── MCP call log ────────────────────────────────────────────

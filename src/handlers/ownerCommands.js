@@ -27,6 +27,8 @@ import { pendingFollowUps, intentStatsForDay } from '../utils/db.js';
 import { intentSummary, managerEnabled, AGENTS } from '../core/manager.js';
 import { getTransport } from '../transport/index.js';
 import { growthSummary, optOutList, recordOptOut, recordOptIn, quietWindow } from '../services/growth.js';
+import { orderTrackingEnabled, reminderStats, recentOrderSkips } from '../services/orders.js';
+import { crmEnabled, addTag, removeTag, tagOverview, findByTag, addNote, tagsFor, notesFor } from '../services/crm.js';
 import { bookingsForOwner, cancelByChat } from '../services/bookingAgent.js';
 import { pendingDrafts, approveDraft, skipDraft } from '../services/followUpAgent.js';
 import { getBooking, cancelBooking, isOptedOut, recentReferrals, getContact, all } from '../utils/db.js';
@@ -64,6 +66,9 @@ const HELP = `*Bot commands*
 .export – JSON backup of leads + chats
 .export 92300… – everything held about one contact (a file)
 .forget 92300… 92300… – delete that contact everywhere (type the number twice)
+.orders – open orders (.order <id> for one)
+.status <id> <state> – move an order (ready, out_for_delivery, delivered…)
+.tag <number> <tag> / .untag / .tags / .find <tag> / .note <number> <text>
 .health – connection, AI, disk, backups, waiting chats
 .incidents – the last ten things that went wrong (and cleared)
 .sync – push leads to Google Sheets
@@ -126,6 +131,24 @@ async function dbNotify(sock, text) {
   }
 }
 
+/**
+ * The CRM part of a dossier: the tags and the last few notes a human added.
+ * Empty when the feature is off or nobody has written anything down.
+ */
+function crmDossierLines(number) {
+  if (!crmEnabled()) return [];
+  const num = String(number || '').replace(/\D/g, '');
+  if (!num) return [];
+  const lines = [];
+  const tags = tagsFor(num).map((row) => row.tag);
+  if (tags.length) lines.push(`🏷️ ${tags.join(', ')}`);
+  for (const note of notesFor(num, { limit: 3 })) {
+    const when = new Date(note.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: config.timezone });
+    lines.push(`📝 ${when}: ${note.note}`);
+  }
+  return lines;
+}
+
 export function isCommand(text = '') {
   return /^[.!/]\w+/i.test(String(text).trim());
 }
@@ -164,6 +187,12 @@ const OWNER_ONLY = new Set([
 /**
  * @returns {Promise<{handled:boolean, reply?:string, voice?:object}>}
  */
+/** Drop a flag word so it does not end up in the note. */
+function noteOrNull(args = []) {
+  const rest = args.slice(2).filter((word) => word !== '--force' && word !== 'override');
+  return rest.length ? rest.join(' ') : null;
+}
+
 export async function handleOwnerCommand(sock, chatJid, text, from = config.owner.number) {
   const input = String(text).trim();
   const [rawCmd, ...args] = input.slice(1).split(/\s+/);
@@ -388,6 +417,21 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         for (const d of drafts) lines.push(`#${d.id} → +${d.number}: "${String(d.text).slice(0, 70)}…"`);
         lines.push('.approve <id> · .skip <id>');
       }
+      // Order notifications: what the lifecycle tried to send and what growth.js
+      // refused (opt-out, quiet hours, no approved template outside the window).
+      if (orderTrackingEnabled()) {
+        const stats = reminderStats();
+        lines.push('');
+        lines.push(`*Orders* — ${stats.awaitingPayment} awaiting payment, ${stats.remindedOnce} reminded once`);
+        if (stats.stopped) lines.push(`💤 ${stats.stopped} unpaid order(s) already had both reminders — your call now (.orders)`);
+        const skips = recentOrderSkips(3);
+        if (skips.length) {
+          lines.push('');
+          lines.push('*Notifications held back*');
+          for (const row of skips) lines.push(`• +${row.number}: ${row.reason}${row.detail?.id ? ` (order #${row.detail.id})` : ''}`);
+          lines.push('A held order update needs an approved template outside the 24-hour window.');
+        }
+      }
       lines.push('');
       lines.push(`${summary.optOuts} opt-out${summary.optOuts === 1 ? '' : 's'} on file (.optouts)`);
       return { handled: true, reply: lines.join('\n') };
@@ -524,6 +568,34 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
 
     case 'status':
     case 'stats': {
+      // `.status 12 ready` moves an order; `.status` alone is still system
+      // health, because that is what it has always been and muscle memory is a
+      // feature.
+      if (args.length >= 2 && /^\d+$/.test(String(args[0] || ''))) {
+        const { orderTrackingEnabled, transitionOrder, statusLabel, ORDER_STATES } = await import('../services/orders.js');
+        if (!orderTrackingEnabled()) {
+          return { handled: true, reply: 'Order tracking is off. Turn it on: .set features.orderTracking true' };
+        }
+        const id = Number(args[0]);
+        const state = String(args[1] || '').toLowerCase();
+        const override = args.includes('--force') || args.includes('override');
+        const res = await transitionOrder(id, state, { actor: 'owner', override, note: noteOrNull(args) });
+        if (!res.ok) {
+          return { handled: true, reply: `${res.reply}\nStates: ${[...ORDER_STATES, 'cancelled', 'refunded'].join(' · ')}` };
+        }
+        const lines = [`✅ Order #${id}: ${statusLabel(res.from)} → *${statusLabel(res.to)}*`];
+        if (res.skipped) lines.push('(forward jump — allowed for the owner)');
+        if (res.review) lines.push('Review ask scheduled for this customer.');
+        const { notifyCustomer } = await import('../services/orders.js');
+        const transport = getTransport() || sock;
+        const told = await notifyCustomer(transport, res.order, res.to);
+        if (told.sent) lines.push('Customer notified.');
+        else if (told.reason && !['not_notifiable', 'no_transport'].includes(told.reason)) {
+          lines.push(`Customer not messaged: ${told.reason}${told.detail ? ` (${told.detail})` : ''} — .growth explains.`);
+        }
+        return { handled: true, reply: lines.join('\n') };
+      }
+
       const stats = dbStats();
       const llm = llmStatus();
       const vision = visionStatus();
@@ -591,7 +663,9 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       if (!target) return { handled: true, reply: 'Usage: .lead 923001234567' };
       const lead = getLead(target);
       const brief = buildOwnerBrief(target);
-      if (!lead) return { handled: true, reply: brief };
+      // Tags and notes are the part of the dossier a human wrote down, so they
+      // are shown even when there is no lead row yet.
+      if (!lead) return { handled: true, reply: [brief, ...crmDossierLines(target)].join('\n') };
       const scored = refreshLead(target) || {};
       const meta = priorityMeta(scored.priority || 'cold');
       const lines = [brief, ''];
@@ -603,6 +677,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         lines.push('');
       }
       lines.push(`📁 ${lead.project_type || '—'} · ${lead.status}`);
+      lines.push(...crmDossierLines(target));
       if (lead.quote_min) lines.push(`💰 ${formatMoney(lead.quote_min, lead.quote_currency || 'PKR')}–${formatMoney(lead.quote_max, lead.quote_currency || 'PKR')}`);
       if (lead.budget) lines.push(`🗒️ Their budget: ${lead.budget}`);
       const followups = pendingFollowUps(target);
@@ -785,6 +860,11 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     case 'campaign': {
       const R = await import('../services/reactivationAgent.js');
       const action = String(args[0] || '').toLowerCase();
+      // `.campaign preview tag:vip` narrows the audience. It can only ever
+      // narrow: opt-out, quiet hours and caps are applied afterwards, by
+      // growth.js, to every message regardless of how the list was built.
+      const tagArg = args.find((word) => /^tag:/i.test(word));
+      const tag = tagArg ? tagArg.slice(4) : null;
 
       if (!action || action === 'preview' || action === 'status') {
         const state = R.campaignStatus();
@@ -794,11 +874,11 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
             reply: `📣 Campaign running: ${state.sent} sent, ${state.skipped} skipped of ${state.total}.\n.campaign stop to halt.`,
           };
         }
-        return { handled: true, reply: R.previewText(new Date()) };
+        return { handled: true, reply: R.previewText(new Date(), { tag }) };
       }
 
       if (action === 'send' || action === 'start') {
-        const res = R.startCampaign({ now: new Date() });
+        const res = R.startCampaign({ now: new Date(), tag });
         if (!res.ok) {
           return {
             handled: true,
@@ -819,7 +899,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         return { handled: true, reply: res.ok ? '📣 Campaign stopped.' : 'No campaign is running.' };
       }
 
-      return { handled: true, reply: 'Usage: .campaign preview | send | stop' };
+      return { handled: true, reply: 'Usage: .campaign preview [tag:vip] | send [tag:vip] | stop' };
     }
 
     case 'referrals': {
@@ -1123,6 +1203,95 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
           ? `+${first} was already forgotten. Nothing left to delete; they stay blocked and opted out.`
           : `🗑️ Forgot +${first}.\n${rows}\n\nKept: a block/opt-out marker (so they are never messaged again) and an anonymous audit line. Nothing else.`,
       };
+    }
+
+    case 'orders': {
+      const { orderTrackingEnabled, openOrders, statusLabel } = await import('../services/orders.js');
+      if (!orderTrackingEnabled()) {
+        return { handled: true, reply: 'Order tracking is off. Turn it on: .set features.orderTracking true' };
+      }
+      const rows = openOrders(20);
+      if (!rows.length) return { handled: true, reply: 'No open orders. (.status <id> delivered closes one.)' };
+      const lines = [`*Open orders* (${rows.length})`];
+      for (const row of rows) {
+        const items = (row.items || []).map((i) => `${i.qty}× ${i.name}`).join(', ');
+        lines.push(`#${row.id} ${statusLabel(row.status)} · ${formatMoney(row.total, row.currency)}${row.eta ? ` · ETA ${row.eta}` : ''}`);
+        if (items) lines.push(`   ${items}`);
+        lines.push(`   +${String(row.chat).split('@')[0].replace(/\D/g, '')} · .order ${row.id}`);
+      }
+      lines.push('');
+      lines.push('Move one: .status <id> ready|out_for_delivery|delivered');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'order': {
+      const id = Number(args[0]);
+      const { orderTrackingEnabled, orderDetail, orderSummaryText } = await import('../services/orders.js');
+      if (!orderTrackingEnabled()) {
+        return { handled: true, reply: 'Order tracking is off. Turn it on: .set features.orderTracking true' };
+      }
+      if (!id) return { handled: true, reply: 'Usage: .order 12 (ids come from .orders)' };
+      const order = orderDetail(id);
+      if (!order) return { handled: true, reply: `No order with id ${id}.` };
+      return { handled: true, reply: orderSummaryText(order) };
+    }
+
+    case 'tag': {
+      if (!crmEnabled()) return { handled: true, reply: 'CRM is off. Turn it on: .set features.crm true' };
+      if (!target || args.length < 2) return { handled: true, reply: 'Usage: .tag 923001234567 vip   (tags: lowercase, one word)' };
+      const res = addTag(target, args.slice(1).join(' '));
+      if (!res.ok) {
+        const why = {
+          invalid_tag: 'That is not a usable tag. Lowercase letters, digits and dashes.',
+          too_many_tags: `That contact already has ${res.limit} tags — remove one first (.untag).`,
+          invalid_number: 'Which number? .tag 923001234567 vip',
+        }[res.reason] || `Could not add: ${res.reason}`;
+        return { handled: true, reply: why };
+      }
+      return {
+        handled: true,
+        reply: res.already ? `+${target} is already tagged "${res.tag}".` : `🏷️ Tagged +${target} as "${res.tag}".`,
+      };
+    }
+
+    case 'untag': {
+      if (!crmEnabled()) return { handled: true, reply: 'CRM is off. Turn it on: .set features.crm true' };
+      if (!target || args.length < 2) return { handled: true, reply: 'Usage: .untag 923001234567 vip' };
+      const res = removeTag(target, args.slice(1).join(' '));
+      return {
+        handled: true,
+        reply: res.removed ? `Removed "${res.tag}" from +${target}.` : `+${target} is not tagged "${res.tag}".`,
+      };
+    }
+
+    case 'tags': {
+      if (!crmEnabled()) return { handled: true, reply: 'CRM is off. Turn it on: .set features.crm true' };
+      const counts = tagOverview();
+      if (!counts.length) return { handled: true, reply: 'No tags yet. .tag 923001234567 vip' };
+      const lines = ['🏷️ *Tags*'];
+      for (const row of counts) lines.push(`${row.tag}: ${row.n}${row.auto ? ` (${row.auto} auto)` : ''}`);
+      lines.push('');
+      lines.push('Who has one: .find vip');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'find': {
+      if (!crmEnabled()) return { handled: true, reply: 'CRM is off. Turn it on: .set features.crm true' };
+      const res = findByTag(arg);
+      if (!res.ok) return { handled: true, reply: 'Usage: .find vip' };
+      if (!res.contacts.length) return { handled: true, reply: `Nobody is tagged "${res.tag}".` };
+      const lines = [`🏷️ *${res.tag}* — ${res.contacts.length} contact(s)`];
+      for (const c of res.contacts.slice(0, 20)) lines.push(`• ${c.name ? `${c.name} — ` : ''}+${c.number}${c.blocked ? ' (blocked)' : ''}`);
+      if (res.contacts.length > 20) lines.push(`…and ${res.contacts.length - 20} more`);
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'note': {
+      if (!crmEnabled()) return { handled: true, reply: 'CRM is off. Turn it on: .set features.crm true' };
+      if (!target || args.length < 2) return { handled: true, reply: 'Usage: .note 923001234567 prefers evening delivery' };
+      const res = addNote(target, args.slice(1).join(' '));
+      if (!res.ok) return { handled: true, reply: res.reason === 'empty_note' ? 'That note is empty.' : `Could not save: ${res.reason}` };
+      return { handled: true, reply: `📝 Noted on +${target}: "${res.note.note}"` };
     }
 
     case 'calls': {

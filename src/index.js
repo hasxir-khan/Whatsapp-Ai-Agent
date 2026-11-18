@@ -30,6 +30,7 @@ import { startAnalystLoop } from './services/analystAgent.js';
 import { startReviewLoop } from './services/reviewAgent.js';
 import { startReactivationLoop } from './services/reactivationAgent.js';
 import { startContentLoop } from './services/contentAgent.js';
+import { startOrderLoop, orderTrackingEnabled } from './services/orders.js';
 import { createTransport } from './transport/index.js';
 import { describeCapabilities } from './transport/base.js';
 
@@ -41,7 +42,7 @@ function banner() {
   const line = '─'.repeat(58);
   console.log(`
 ┌${line}┐
-│  🤖  WhatsApp Self-Knowledge Assistant  v9.16             │
+│  🤖  WhatsApp Self-Knowledge Assistant  v9.17             │
 │  ${config.bot.name.padEnd(54).slice(0, 54)}  │
 └${line}┘
 ${describeConfig()}
@@ -70,6 +71,9 @@ function startServices(t) {
   if (featureOn('reviewAgent')) startReviewLoop({ transport: t });
   if (featureOn('reactivationAgent')) startReactivationLoop({ transport: t });
   if (featureOn('contentAgent')) startContentLoop({ transport: t });
+  // Part 2: payment reminders. One loop for both transports; it is a no-op
+  // unless orderTracking is on.
+  if (orderTrackingEnabled()) startOrderLoop({ transport: t });
 
   startPendingFlusher(t);
 
