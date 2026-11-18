@@ -622,6 +622,23 @@ export function growthSettingsWarnings(profile = {}, env = {}, { transport = nul
     }
   }
 
+  if (on('adminPanel')) {
+    const adminToken = String(env.ADMIN_TOKEN || '');
+    if (!adminToken) {
+      warnings.push('adminPanel is on but ADMIN_TOKEN is empty — every admin route answers 404, so the panel cannot be opened at all');
+    } else if (adminToken.length < 16) {
+      warnings.push('ADMIN_TOKEN is shorter than 16 characters — it protects every tenant on this box, so make it long and random');
+    }
+    if (adminToken && env.DASHBOARD_TOKEN && adminToken === env.DASHBOARD_TOKEN) {
+      warnings.push('ADMIN_TOKEN is the same as DASHBOARD_TOKEN — a leaked inbox link would then also open the control panel');
+    }
+    const host = String(env.HOST || '0.0.0.0');
+    const publicUrl = String(env.PUBLIC_URL || '');
+    if ((host === '0.0.0.0' || host === '::') && !/^https:\/\//i.test(publicUrl)) {
+      warnings.push('adminPanel is on and the server binds 0.0.0.0 with no https PUBLIC_URL — put it behind a tunnel (cloudflared) or bind HOST=127.0.0.1, never an open port');
+    }
+  }
+
   if (on('selfHealing')) {
     // The loop is useless if the notice cannot reach the owner: the proposal is
     // stored, the owner is never told, and rules quietly pile up in pending_rules.

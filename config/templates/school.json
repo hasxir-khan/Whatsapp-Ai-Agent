@@ -109,6 +109,7 @@
     "contentAgent": false,
     "pdfInvoices": false,
     "selfHealing": false,
+    "adminPanel": false,
     "liveInbox": false
   }
 }

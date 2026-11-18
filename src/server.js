@@ -5,6 +5,7 @@
 
 import http from 'node:http';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { config, teamMembers } from './config/env.js';
 import { botState, uptimeMinutes } from './state.js';
@@ -28,6 +29,13 @@ import {
   liveInboxEnabled, inboxChats, inboxThread, inboxReply,
   inboxTakeover, inboxRelease, inboxSummary, latestMessageId,
 } from './services/liveInbox.js';
+import {
+  adminEnabled, adminMisconfigured, adminToken, verifyRequest, csrfOk, rateLimit, LIMITS,
+  clientIp, audit, recentAudit, issueSession, parseCookies, COOKIE, CSRF_COOKIE,
+  safeEqual, validSlug, listTenants, describeTenant, createTenantFromPanel, deleteTenantFromPanel,
+  readTenantProfile, writeTenantProfile, setTenantKeys, probeKey, saveUpload, ingestUpload,
+  startTenant, stopTenant, restartTenant, qrForTenant, tenantKeyFor, UPLOAD_MAX_BYTES, adminHooks,
+} from './services/adminPanel.js';
 
 const esc = (v) =>
   String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -488,6 +496,297 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// ── the admin panel (Phase 4 Part 3) ────────────────────────
+// Admin-only, and strict about it: no token configured means the routes do not
+// exist (404); a wrong or missing token means 401; every mutation needs CSRF
+// when it arrives with a cookie, is rate limited, and leaves an audit row.
+const ADMIN_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; " +
+  "connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+
+const ADMIN_STATIC = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' };
+let adminPageCache = null;
+let adminLoginCache = null;
+
+/** One static file, no build step, no external requests. Read once. */
+export function adminPage() {
+  if (adminPageCache === null) {
+    adminPageCache = fs.readFileSync(new URL('./web/admin.html', import.meta.url), 'utf8');
+  }
+  return adminPageCache;
+}
+
+export function adminLoginPage() {
+  if (adminLoginCache === null) {
+    adminLoginCache = fs.readFileSync(new URL('./web/admin-login.html', import.meta.url), 'utf8');
+  }
+  return adminLoginCache;
+}
+
+function adminHeaders(extra = {}, secure = false) {
+  return {
+    'Content-Security-Policy': ADMIN_CSP,
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'Permissions-Policy': 'geolocation=(), microphone=(), camera=()',
+    ...(secure ? { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } : {}),
+    ...extra,
+  };
+}
+
+function adminJson(res, status, body, secure = false) {
+  res.writeHead(status, adminHeaders({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, secure));
+  res.end(JSON.stringify(body));
+}
+
+function isSecure(req) {
+  return (
+    String(req?.headers?.['x-forwarded-proto'] || '').split(',')[0].trim() === 'https' ||
+    req?.socket?.encrypted === true
+  );
+}
+
+function sessionCookies(value, csrf, secure) {
+  const flags = `Path=/; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}`;
+  const csrfFlags = `Path=/; SameSite=Strict${secure ? '; Secure' : ''}`;
+  return [`${COOKIE}=${encodeURIComponent(value)}; ${flags}`, `${CSRF_COOKIE}=${encodeURIComponent(csrf)}; ${csrfFlags}`];
+}
+
+export async function handleAdminRoute(req, res, url) {
+  const pathname = url.pathname;
+  if (pathname !== '/admin' && !pathname.startsWith('/api/admin')) return false;
+
+  // No token, no panel — not even to say hello.
+  if (!adminEnabled()) {
+    if (adminMisconfigured() && pathname === '/admin') {
+      res.writeHead(404, adminHeaders({ 'Content-Type': 'text/plain; charset=utf-8' }));
+      res.end('The admin panel is on but ADMIN_TOKEN is empty. Set it in .env, then restart.');
+      return true;
+    }
+    adminJson(res, 404, { error: 'not_found' }, isSecure(req));
+    return true;
+  }
+
+  const secure = isSecure(req);
+  const ip = clientIp(req);
+  const method = (req.method || 'GET').toUpperCase();
+
+  // ── login: the only unauthenticated endpoint, and the most rate limited ──
+  if (pathname === '/api/admin/login' && method === 'POST') {
+    const limit = rateLimit(`login:${ip}`, LIMITS.login);
+    if (!limit.ok) {
+      audit('login_rate_limited', { ip, ok: false });
+      adminJson(res, 429, { error: 'too_many_attempts', retryAfter: limit.retryAfter }, secure);
+      return true;
+    }
+    const body = await readJsonBody(req, 4 * 1024);
+    const token = String(body?.token || '');
+    if (!token || !safeEqual(token, adminToken())) {
+      audit('login_failed', { ip, ok: false });
+      adminJson(res, 401, { error: 'unauthorised' }, secure);
+      return true;
+    }
+    const session = issueSession();
+    const csrf = crypto.randomBytes(18).toString('base64url');
+    res.writeHead(200, adminHeaders({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Set-Cookie': sessionCookies(session.value, csrf, secure) }, secure));
+    res.end(JSON.stringify({ ok: true, csrf, expiresAt: session.expiresAt }));
+    audit('login', { ip });
+    return true;
+  }
+
+  // Everything below needs proof.
+  if (pathname === '/admin' && method === 'GET') {
+    const auth = verifyRequest(req);
+    if (!auth.ok) {
+      res.writeHead(401, adminHeaders(ADMIN_STATIC, secure));
+      res.end(adminLoginPage());
+      audit('page_denied', { ip, ok: false });
+      return true;
+    }
+    res.writeHead(200, adminHeaders(ADMIN_STATIC, secure));
+    res.end(adminPage());
+    return true;
+  }
+
+  const auth = verifyRequest(req);
+  if (!auth.ok) {
+    adminJson(res, 401, { error: 'unauthorised' }, secure);
+    return true;
+  }
+
+  const apiLimit = rateLimit(`api:${ip}`, LIMITS.api);
+  if (!apiLimit.ok) {
+    adminJson(res, 429, { error: 'rate_limited', retryAfter: apiLimit.retryAfter }, secure);
+    return true;
+  }
+
+  const mutating = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+  let body = null;
+  if (mutating) {
+    const limit = pathname.endsWith('/knowledge') ? UPLOAD_MAX_BYTES + 64 * 1024 : 64 * 1024;
+    body = await readJsonBody(req, limit);
+    if (!csrfOk(req, auth, body)) {
+      audit('csrf_rejected', { ip, detail: pathname, ok: false });
+      adminJson(res, 403, { error: 'csrf_failed' }, secure);
+      return true;
+    }
+  }
+
+  const respond = (status, payload) => {
+    adminJson(res, status, payload, secure);
+    return true;
+  };
+
+  if (pathname === '/api/admin/session' && method === 'GET') {
+    return respond(200, { ok: true, via: auth.via, csrf: auth.csrf || null, tenant: config.tenant.slug });
+  }
+
+  if (pathname === '/api/admin/logout' && method === 'POST') {
+    res.writeHead(200, adminHeaders({ 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': [`${COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`, `${CSRF_COOKIE}=; Path=/; Max-Age=0; SameSite=Strict`] }, secure));
+    res.end(JSON.stringify({ ok: true }));
+    return true;
+  }
+
+  if (pathname === '/api/admin/tenants' && method === 'GET') {
+    return respond(200, { ok: true, tenants: listTenants(), root: config.tenant.slug });
+  }
+
+  if (pathname === '/api/admin/tenants' && method === 'POST') {
+    const limit = rateLimit(`create:${ip}`, LIMITS.create);
+    if (!limit.ok) return respond(429, { error: 'rate_limited', retryAfter: limit.retryAfter });
+    try {
+      const created = await createTenantFromPanel({
+        name: body?.name,
+        number: body?.number,
+        template: body?.template || null,
+        slug: body?.slug || null,
+        port: body?.port || null,
+      });
+      audit('tenant_create', { slug: created.slug, ip, detail: { template: body?.template || null } });
+      return respond(201, { ok: true, tenant: created });
+    } catch (err) {
+      audit('tenant_create_failed', { ip, detail: err.message, ok: false });
+      return respond(400, { error: err.message });
+    }
+  }
+
+  if (pathname === '/api/admin/audit' && method === 'GET') {
+    return respond(200, { ok: true, entries: recentAudit(url.searchParams.get('limit') || 50) });
+  }
+
+  const match = pathname.match(/^\/api\/admin\/tenants\/([^/]+)(?:\/([a-z-]+))?$/);
+  if (!match) return respond(404, { error: 'not_found' });
+
+  const slug = decodeURIComponent(match[1]);
+  const action = match[2] || null;
+  if (!validSlug(slug)) {
+    audit('bad_slug', { ip, detail: slug, ok: false });
+    return respond(400, { error: 'invalid_slug' });
+  }
+
+  const known = describeTenant(slug);
+  if (!known) return respond(404, { error: 'not_found' });
+
+  if (!action && method === 'GET') return respond(200, { ok: true, tenant: known });
+
+  if (!action && method === 'DELETE') {
+    const limit = rateLimit(`delete:${ip}`, LIMITS.delete);
+    if (!limit.ok) return respond(429, { error: 'rate_limited', retryAfter: limit.retryAfter });
+    try {
+      const result = deleteTenantFromPanel(slug, body?.confirm);
+      audit('tenant_delete', { slug, ip, detail: { confirmed: true } });
+      return respond(200, { ok: true, ...result });
+    } catch (err) {
+      audit('tenant_delete_refused', { slug, ip, detail: err.message, ok: false });
+      return respond(err.message === 'confirmation_required' ? 400 : 404, { error: err.message });
+    }
+  }
+
+  if (action === 'profile' && method === 'GET') {
+    try {
+      const profile = readTenantProfile(slug);
+      return respond(200, { ok: true, profile });
+    } catch (err) {
+      return respond(404, { error: err.message });
+    }
+  }
+
+  if (action === 'profile' && method === 'PUT') {
+    const result = writeTenantProfile(slug, body?.profile);
+    if (!result.ok) {
+      audit('profile_rejected', { slug, ip, detail: result.errors, ok: false });
+      return respond(400, { error: 'invalid_profile', errors: result.errors });
+    }
+    audit('profile_saved', { slug, ip, detail: { bytes: result.bytes } });
+    return respond(200, { ok: true, reloaded: result.reloaded, warnings: result.warnings });
+  }
+
+  if (action === 'keys' && method === 'POST') {
+    try {
+      const result = setTenantKeys(slug, body?.keys || {});
+      audit('keys_written', { slug, ip, detail: { saved: result.saved } });
+      return respond(200, { ok: true, ...result });
+    } catch (err) {
+      audit('keys_rejected', { slug, ip, detail: err.message, ok: false });
+      return respond(400, { error: err.message });
+    }
+  }
+
+  if (action === 'test-key' && method === 'POST') {
+    const provider = String(body?.provider || 'groq');
+    // A key typed into the form, or the one already on disk — tested here, in
+    // the server. The value never travels back to the browser either way.
+    const key = String(body?.key || '') || tenantKeyFor(slug, provider);
+    if (!key) return respond(400, { error: 'no_key_to_test' });
+    const result = await probeKey({ provider, key });
+    audit('key_probe', { slug, ip, detail: { provider, ok: result.ok, reason: result.reason } });
+    return respond(200, { ok: true, result });
+  }
+
+  if (action === 'knowledge' && method === 'POST') {
+    const limit = rateLimit(`upload:${ip}`, LIMITS.upload);
+    if (!limit.ok) return respond(429, { error: 'rate_limited', retryAfter: limit.retryAfter });
+    let buffer;
+    try {
+      buffer = Buffer.from(String(body?.contentBase64 || ''), 'base64');
+    } catch {
+      return respond(400, { error: 'bad_base64' });
+    }
+    const saved = saveUpload(slug, { name: body?.name, buffer });
+    if (!saved.ok) {
+      audit('upload_rejected', { slug, ip, detail: saved.reason, ok: false });
+      return respond(400, saved);
+    }
+    const ingested = await ingestUpload(slug, saved.file);
+    audit('knowledge_upload', { slug, ip, detail: { name: saved.name, bytes: saved.bytes, chunks: ingested.chunks ?? null } });
+    return respond(200, { ok: true, saved: { name: saved.name, bytes: saved.bytes, type: saved.type }, ingested });
+  }
+
+  if (action === 'qr' && method === 'GET') {
+    try {
+      return respond(200, await qrForTenant(slug));
+    } catch (err) {
+      return respond(400, { error: err.message });
+    }
+  }
+
+  if (['start', 'stop', 'restart'].includes(action) && method === 'POST') {
+    try {
+      // Through the hook, so a test never spawns a real bot.
+      const runner = action === 'start' ? adminHooks.start : action === 'stop' ? adminHooks.stop : adminHooks.restart;
+      const result = action === 'stop' ? await runner(slug) : await runner(slug);
+      audit(`tenant_${action}`, { slug, ip, detail: { pid: result.pid ?? null } });
+      return respond(200, { ok: true, ...result, tenant: describeTenant(slug) });
+    } catch (err) {
+      audit(`tenant_${action}_failed`, { slug, ip, detail: err.message, ok: false });
+      return respond(400, { error: err.message });
+    }
+  }
+
+  return respond(404, { error: 'not_found' });
+}
+
 /**
  * Demo only (DEMO_MODE=1): a visitor types as a customer and the real pipeline
  * answers. Never present in a normal deployment, and still behind the token.
@@ -649,6 +948,10 @@ export function startServer() {
       // Cloud API webhooks: /webhook/<slug> (GET verification, POST messages).
       // Unknown slugs answer honestly instead of pretending to be Meta's friend.
       if (await handleWebhookRequest(req, res, url)) return;
+
+      // The admin panel owns /admin and /api/admin, and answers 404 unless it is
+      // switched on with a token. Routed first so nothing below can shadow it.
+      if (await handleAdminRoute(req, res, url)) return;
 
       // Demo endpoint (DEMO_MODE=1 only), then the live inbox.
       if (await handleDemoRoute(req, res, url)) return;

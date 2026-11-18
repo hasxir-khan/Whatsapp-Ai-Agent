@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Admin — tenants</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#2a323d; --txt:#e6edf3; --dim:#8b949e; --acc:#3fb950;
+          --warn:#d29922; --bad:#f85149; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:2; }
+  header h1 { font-size:15px; margin:0; }
+  header .sp { flex:1; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--dim); }
+  main { display:grid; grid-template-columns: 320px 1fr; gap:0; min-height:calc(100vh - 52px); }
+  @media (max-width:820px) { main { grid-template-columns:1fr; } }
+  #list { border-right:1px solid var(--line); padding:12px; overflow:auto; max-height:calc(100vh - 52px); }
+  #pane { padding:16px; overflow:auto; }
+  .row { padding:9px 10px; border:1px solid var(--line); border-radius:9px; margin-bottom:8px; cursor:pointer; background:#11161d; }
+  .row:hover { border-color:#3d4653; }
+  .row.sel { border-color:#1f6feb; background:#131b26; }
+  .row .n { font-weight:600; }
+  .row .m { color:var(--dim); font-size:12px; font-family:var(--mono); }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; background:var(--dim); }
+  .dot.on { background:var(--acc); } .dot.warn { background:var(--warn); }
+  h2 { font-size:14px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); }
+  section { border:1px solid var(--line); border-radius:11px; padding:14px; margin-bottom:14px; background:#11161d; }
+  input, select, textarea, button { font:inherit; color:var(--txt); background:#0b0f14; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  textarea { width:100%; font-family:var(--mono); font-size:12px; min-height:260px; }
+  button { background:#1c2430; cursor:pointer; }
+  button.primary { background:#1f6feb; border-color:#1f6feb; font-weight:600; }
+  button.bad { color:#ffb3ae; border-color:#58312f; }
+  button:disabled { opacity:.5; cursor:default; }
+  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:9px; }
+  .field label { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .msg { font-size:12px; color:var(--dim); min-height:16px; }
+  .ok { color:var(--acc); } .err { color:var(--bad); } .warnc { color:var(--warn); }
+  code { font-family:var(--mono); font-size:12px; }
+  #qr img { width:220px; height:220px; background:#fff; padding:8px; border-radius:8px; image-rendering:pixelated; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-family:var(--mono); }
+  .hidden { display:none !important; }
+  .kv { font-family:var(--mono); font-size:12px; color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Admin — tenants</h1>
+  <span class="pill" id="who">…</span>
+  <span class="sp"></span>
+  <button id="refresh" title="Reload the list">Refresh</button>
+  <button id="logout" class="bad">Sign out</button>
+</header>
+
+<main>
+  <div id="list">
+    <section>
+      <h2>New tenant</h2>
+      <div class="field"><label for="c-name">Business name</label><input id="c-name" placeholder="Ayesha Designs"></div>
+      <div class="grid2">
+        <div class="field"><label for="c-number">WhatsApp number</label><input id="c-number" placeholder="923001112233" spellcheck="false"></div>
+        <div class="field"><label for="c-template">Template</label><select id="c-template"><option value="">generic</option></select></div>
+      </div>
+      <button class="primary" id="create">Create tenant</button>
+      <div class="msg" id="create-msg"></div>
+    </section>
+    <h2>Tenants</h2>
+    <div id="rows"><div class="msg">Loading…</div></div>
+    <div class="msg" id="list-msg"></div>
+  </div>
+
+  <div id="pane">
+    <div id="empty" class="msg">Pick a tenant on the left, or create one.</div>
+
+    <div id="detail" class="hidden">
+      <section>
+        <h2 id="d-name">Tenant</h2>
+        <div class="kv" id="d-facts"></div>
+        <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button id="start">Start</button>
+          <button id="stop">Stop</button>
+          <button id="restart">Restart</button>
+          <button id="qrbtn">Show QR / connection</button>
+        </div>
+        <div class="msg" id="run-msg"></div>
+        <div id="qr" style="margin-top:10px;"></div>
+      </section>
+
+      <section>
+        <h2>Business profile</h2>
+        <textarea id="profile" spellcheck="false"></textarea>
+        <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+          <button class="primary" id="save-profile">Save profile</button>
+          <span class="msg" id="profile-msg"></span>
+        </div>
+      </section>
+
+      <section>
+        <h2>Keys (write-only)</h2>
+        <div class="grid2">
+          <div class="field"><label for="k-groq">GROQ_API_KEY</label><input id="k-groq" type="password" placeholder="gsk_…" spellcheck="false"></div>
+          <div class="field"><label for="k-gemini">GEMINI_API_KEY</label><input id="k-gemini" type="password" placeholder="AQ…" spellcheck="false"></div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="primary" id="save-keys">Save keys</button>
+          <button id="test-key">Test Groq key</button>
+          <span class="msg" id="keys-msg"></span>
+        </div>
+        <div class="kv" id="keys-state" style="margin-top:8px;"></div>
+      </section>
+
+      <section>
+        <h2>Knowledge</h2>
+        <input type="file" id="file" accept=".pdf,.txt,.md,.csv,.docx,.png,.jpg,.jpeg">
+        <button id="upload">Upload &amp; learn</button>
+        <span class="msg" id="upload-msg"></span>
+        <div class="kv">pdf, txt, md, csv, docx, png, jpg — up to 5 MB.</div>
+      </section>
+
+      <section>
+        <h2>Delete</h2>
+        <div class="kv">This removes the tenant's folder: clients, database, session and keys.</div>
+        <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+          <input id="del-confirm" placeholder="type the slug to confirm" spellcheck="false">
+          <button class="bad" id="delete">Delete permanently</button>
+        </div>
+        <div class="msg" id="del-msg"></div>
+      </section>
+    </div>
+
+    <section>
+      <h2>Audit log</h2>
+      <table><thead><tr><th>when</th><th>action</th><th>tenant</th><th>detail</th><th>ip</th></tr></thead>
+      <tbody id="audit"><tr><td colspan="5" class="msg">…</td></tr></tbody></table>
+    </section>
+  </div>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const cookie = (name) => {
+    const hit = document.cookie.split(';').map((s) => s.trim()).find((s) => s.startsWith(name + '='));
+    return hit ? decodeURIComponent(hit.slice(name.length + 1)) : '';
+  };
+  const state = { slug: null, tenants: [], csrf: cookie('wa_admin_csrf') };
+
+  const say = (id, text, kind = '') => { const el = $(id); el.textContent = text; el.className = 'msg ' + kind; };
+
+  async function api(path, options = {}) {
+    const res = await fetch(path, {
+      credentials: 'same-origin',
+      ...options,
+      headers: {
+        ...(options.body ? { 'content-type': 'application/json' } : {}),
+        'x-admin-csrf': state.csrf,
+        ...(options.headers || {}),
+      },
+    });
+    if (res.status === 401) { location.href = '/admin'; throw new Error('unauthorised'); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'request_failed_' + res.status);
+    return data;
+  }
+
+  const fmt = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
+
+  async function loadTemplates() {
+    // Templates come from the server-side list via the create endpoint's errors;
+    // keep the picker simple and honest instead of guessing.
+    const options = ['generic', 'restaurant', 'salon', 'clinic', 'shop', 'agency', 'real-estate', 'school'];
+    $('c-template').innerHTML = options.map((t) => '<option value="' + (t === 'generic' ? '' : t) + '">' + t + '</option>').join('');
+  }
+
+  function renderRows() {
+    const box = $('rows');
+    if (!state.tenants.length) { box.innerHTML = '<div class="msg">No tenants yet.</div>'; return; }
+    box.innerHTML = state.tenants.map((t) => {
+      const dot = t.running ? 'on' : (t.session === 'linked' ? 'warn' : '');
+      return '<div class="row ' + (t.slug === state.slug ? 'sel' : '') + '" data-slug="' + t.slug + '">' +
+        '<div class="n"><span class="dot ' + dot + '"></span>' + t.name + '</div>' +
+        '<div class="m">' + t.slug + ' · ' + (t.number || '—') + ' · :' + (t.port || '—') + '</div>' +
+        '<div class="m">' + t.transport + ' · ' + t.session + '</div>' +
+        '</div>';
+    }).join('');
+    box.querySelectorAll('.row').forEach((row) => row.addEventListener('click', () => openTenant(row.dataset.slug)));
+  }
+
+  async function loadList() {
+    const data = await api('/api/admin/tenants');
+    state.tenants = data.tenants || [];
+    renderRows();
+    $('who').textContent = 'this process: ' + (data.root || '—');
+  }
+
+  async function loadAudit() {
+    try {
+      const data = await api('/api/admin/audit?limit=25');
+      const rows = (data.entries || []).map((e) =>
+        '<tr><td>' + fmt(e.created_at) + '</td><td>' + e.action + '</td><td>' + (e.slug || '—') + '</td>' +
+        '<td>' + String(e.detail || '').slice(0, 90) + '</td><td>' + (e.ip || '—') + '</td></tr>');
+      $('audit').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="5" class="msg">Nothing yet.</td></tr>';
+    } catch { /* audit is not worth breaking the page over */ }
+  }
+
+  async function openTenant(slug) {
+    state.slug = slug;
+    renderRows();
+    const { tenant } = await api('/api/admin/tenants/' + encodeURIComponent(slug));
+    $('empty').classList.add('hidden');
+    $('detail').classList.remove('hidden');
+    $('d-name').textContent = tenant.name + '  (' + tenant.slug + ')';
+    $('d-facts').textContent = [
+      'number ' + (tenant.number || '—'),
+      'port ' + (tenant.port || '—'),
+      'transport ' + tenant.transport,
+      'session ' + tenant.session,
+      'running ' + (tenant.running ? 'yes (pid ' + tenant.pid + ')' : 'no'),
+      'last activity ' + fmt(tenant.lastMessageAt),
+    ].join('  ·  ');
+    $('keys-state').textContent = 'Groq: ' + (tenant.keys.groq || 'not set') + '   Gemini: ' + (tenant.keys.gemini || 'not set');
+    $('del-confirm').value = '';
+    $('qr').innerHTML = '';
+    say('run-msg', ''); say('profile-msg', ''); say('keys-msg', ''); say('upload-msg', ''); say('del-msg', '');
+    const { profile } = await api('/api/admin/tenants/' + encodeURIComponent(slug) + '/profile');
+    $('profile').value = JSON.stringify(profile, null, 2);
+  }
+
+  async function withBusy(id, fn) {
+    const el = $(id);
+    const was = el.disabled;
+    el.disabled = true;
+    try { return await fn(); } finally { el.disabled = was; }
+  }
+
+  $('refresh').onclick = () => { loadList().then(loadAudit); };
+  $('logout').onclick = async () => { await api('/api/admin/logout', { method: 'POST', body: '{}' }); location.href = '/admin'; };
+
+  $('create').onclick = () => withBusy('create', async () => {
+    const body = { name: $('c-name').value.trim(), number: $('c-number').value.trim() };
+    if ($('c-template').value) body.template = $('c-template').value;
+    if (!body.name || !body.number) return say('create-msg', 'Name and number are both required.', 'warnc');
+    try {
+      const data = await api('/api/admin/tenants', { method: 'POST', body: JSON.stringify(body) });
+      say('create-msg', 'Created ' + data.tenant.slug + ' on port ' + data.tenant.port, 'ok');
+      $('c-name').value = ''; $('c-number').value = '';
+      await loadList(); await openTenant(data.tenant.slug); await loadAudit();
+    } catch (err) { say('create-msg', err.message, 'err'); }
+  });
+
+  $('start').onclick = () => withBusy('start', async () => {
+    try { const d = await api('/api/admin/tenants/' + state.slug + '/start', { method: 'POST', body: '{}' });
+      say('run-msg', d.alreadyRunning ? 'Already running (pid ' + d.pid + ')' : 'Started (pid ' + d.pid + ')', 'ok');
+      await loadList(); await openTenant(state.slug); } catch (e) { say('run-msg', e.message, 'err'); }
+  });
+  $('stop').onclick = () => withBusy('stop', async () => {
+    try { const d = await api('/api/admin/tenants/' + state.slug + '/stop', { method: 'POST', body: '{}' });
+      say('run-msg', d.alreadyStopped ? 'Already stopped' : 'Stopped', 'ok');
+      await loadList(); await openTenant(state.slug); } catch (e) { say('run-msg', e.message, 'err'); }
+  });
+  $('restart').onclick = () => withBusy('restart', async () => {
+    try { const d = await api('/api/admin/tenants/' + state.slug + '/restart', { method: 'POST', body: '{}' });
+      say('run-msg', 'Restarted (pid ' + (d.pid || '—') + ')', 'ok');
+      await loadList(); await openTenant(state.slug); } catch (e) { say('run-msg', e.message, 'err'); }
+  });
+
+  $('qrbtn').onclick = () => withBusy('qrbtn', async () => {
+    try {
+      const d = await api('/api/admin/tenants/' + state.slug + '/qr');
+      const box = $('qr');
+      if (d.transport === 'cloud') {
+        box.innerHTML = '<div class="kv">Webhook path: <code>' + d.webhookPath + '</code><br>' +
+          (d.webhookUrl ? 'URL: <code>' + d.webhookUrl + '</code><br>' : '') +
+          'Verify token: ' + (d.verifyTokenSet ? 'set' : 'missing') + ' · App secret: ' + (d.appSecretSet ? 'set' : 'missing') +
+          '<br>' + (d.note || '') + '</div>';
+      } else if (d.qr) {
+        box.innerHTML = '<img alt="WhatsApp QR" src="' + d.qr + '">';
+      } else {
+        box.innerHTML = '<div class="kv">' + (d.note || 'No QR right now.') + ' (status: ' + (d.status || '—') + ')</div>';
+      }
+    } catch (e) { say('run-msg', e.message, 'err'); }
+  });
+
+  $('save-profile').onclick = () => withBusy('save-profile', async () => {
+    let profile;
+    try { profile = JSON.parse($('profile').value); }
+    catch { return say('profile-msg', 'Not valid JSON.', 'err'); }
+    try {
+      const d = await api('/api/admin/tenants/' + state.slug + '/profile', { method: 'PUT', body: JSON.stringify({ profile }) });
+      say('profile-msg', 'Saved' + (d.reloaded ? ' and reloaded live' : '') + (d.warnings && d.warnings.length ? ' · ' + d.warnings.join('; ') : ''), 'ok');
+      await loadAudit();
+    } catch (e) { say('profile-msg', e.message, 'err'); }
+  });
+
+  $('save-keys').onclick = () => withBusy('save-keys', async () => {
+    const keys = {};
+    if ($('k-groq').value.trim()) keys.GROQ_API_KEY = $('k-groq').value.trim();
+    if ($('k-gemini').value.trim()) keys.GEMINI_API_KEY = $('k-gemini').value.trim();
+    if (!Object.keys(keys).length) return say('keys-msg', 'Type a key first.', 'warnc');
+    try {
+      const d = await api('/api/admin/tenants/' + state.slug + '/keys', { method: 'POST', body: JSON.stringify({ keys }) });
+      $('k-groq').value = ''; $('k-gemini').value = '';
+      say('keys-msg', 'Saved ' + d.saved.join(', ') + (d.restartRequired ? ' — restart to apply' : ''), 'ok');
+      $('keys-state').textContent = 'Groq: ' + (d.masked.groq || 'not set') + '   Gemini: ' + (d.masked.gemini || 'not set');
+      await loadAudit();
+    } catch (e) { say('keys-msg', e.message, 'err'); }
+  });
+
+  $('test-key').onclick = () => withBusy('test-key', async () => {
+    say('keys-msg', 'Asking Groq…');
+    try {
+      const d = await api('/api/admin/tenants/' + state.slug + '/test-key', { method: 'POST', body: JSON.stringify({ provider: 'groq' }) });
+      const r = d.result || {};
+      say('keys-msg', r.ok ? 'Key works.' : 'Key did not work: ' + (r.reason || 'unknown') + (r.status ? ' (' + r.status + ')' : ''), r.ok ? 'ok' : 'err');
+    } catch (e) { say('keys-msg', e.message, 'err'); }
+  });
+
+  $('upload').onclick = () => withBusy('upload', async () => {
+    const file = $('file').files[0];
+    if (!file) return say('upload-msg', 'Choose a file first.', 'warnc');
+    if (file.size > 5 * 1024 * 1024) return say('upload-msg', 'That file is over 5 MB.', 'err');
+    say('upload-msg', 'Uploading…');
+    try {
+      const buffer = await file.arrayBuffer();
+      let binary = '';
+      const bytes = new Uint8Array(buffer);
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      const contentBase64 = btoa(binary);
+      const d = await api('/api/admin/tenants/' + state.slug + '/knowledge', {
+        method: 'POST', body: JSON.stringify({ name: file.name, contentBase64 }),
+      });
+      say('upload-msg', 'Stored ' + d.saved.name + ' · ' + (d.ingested.chunks != null ? d.ingested.chunks + ' chunks' : 'queued for ' + d.ingested.mode), 'ok');
+      await loadAudit();
+    } catch (e) { say('upload-msg', e.message, 'err'); }
+  });
+
+  $('delete').onclick = () => withBusy('delete', async () => {
+    const typed = $('del-confirm').value.trim();
+    if (typed !== state.slug) return say('del-msg', 'Type the slug exactly: ' + state.slug, 'warnc');
+    try {
+      await api('/api/admin/tenants/' + state.slug, { method: 'DELETE', body: JSON.stringify({ confirm: typed }) });
+      say('del-msg', 'Deleted ' + typed, 'ok');
+      state.slug = null;
+      $('detail').classList.add('hidden'); $('empty').classList.remove('hidden');
+      await loadList(); await loadAudit();
+    } catch (e) { say('del-msg', e.message, 'err'); }
+  });
+
+  loadTemplates();
+  loadList().then(loadAudit).catch((err) => { $('rows').innerHTML = '<div class="msg err">' + err.message + '</div>'; });
+})();
+</script>
+</body>
+</html>

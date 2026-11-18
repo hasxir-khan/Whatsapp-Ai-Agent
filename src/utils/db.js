@@ -242,6 +242,16 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 CREATE INDEX IF NOT EXISTS idx_calls_created ON calls(created_at);
 
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT,
+  action TEXT,
+  slug TEXT,
+  detail TEXT,
+  ip TEXT,
+  ok INTEGER DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key         TEXT PRIMARY KEY,
   value       TEXT

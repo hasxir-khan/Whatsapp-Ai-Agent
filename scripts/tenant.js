@@ -22,14 +22,16 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { buildProfileFromTemplate, isTemplate, listTemplates, TEMPLATE_IDS } from '../src/services/templates.js';
 import { runSetup } from './wizard.js';
 
 // Where the users live: whatever folder you ran the command from.
 const ROOT = process.cwd();
-const TENANTS = path.join(ROOT, 'tenants');
+// Overridable so the admin panel (and its tests) can point at a folder of their
+// own without a second implementation of "where tenants live".
+const TENANTS = path.resolve(process.env.TENANTS_DIR || path.join(ROOT, 'tenants'));
 // Where the code lives: this script's folder, so child processes still work
 // when the manager is run from somewhere else.
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -128,21 +130,26 @@ function nextPort() {
 }
 
 // ── commands ────────────────────────────────────────────────
-function cmdNew(args, flags) {
-  const name = flags.name || args.join(' ').trim();
-  if (!name) die('Usage: node scripts/tenant.js new "Business Name" --number 923001112233');
+/**
+ * Create one tenant. Throws on bad input and returns the result — the CLI below
+ * and the admin panel both call this, so there is exactly one implementation of
+ * "what a tenant looks like".
+ */
+export function createTenant(opts = {}) {
+  const name = String(opts.name || '').trim();
+  if (!name) throw new Error('Usage: node scripts/tenant.js new "Business Name" --number 923001112233');
 
-  const slug = flags.slug ? slugify(flags.slug) : slugify(name);
-  if (!validSlug(slug)) die('Could not make a slug from that name. Pass --slug something-simple');
+  const slug = opts.slug ? slugify(opts.slug) : slugify(name);
+  if (!validSlug(slug)) throw new Error('Could not make a slug from that name. Pass --slug something-simple');
 
-  const number = normalizePhone(flags.number || '');
+  const number = normalizePhone(opts.number || '');
   if (!/^\d{10,15}$/.test(number)) {
-    die('Pass the WhatsApp number this user will run the bot on: --number 923001112233 (international, no +)');
+    throw new Error('Pass the WhatsApp number this user will run the bot on: --number 923001112233 (international, no +)');
   }
-  if (readTenant(slug)) die(`Tenant "${slug}" already exists.`);
+  if (readTenant(slug)) throw new Error(`Tenant "${slug}" already exists.`);
 
-  if (flags.template && !isTemplate(flags.template)) {
-    die(`Unknown template "${flags.template}". Available: ${TEMPLATE_IDS.join(', ')}`);
+  if (opts.template && !isTemplate(opts.template)) {
+    throw new Error(`Unknown template "${opts.template}". Available: ${TEMPLATE_IDS.join(', ')}`);
   }
 
   const dir = tenantDir(slug);
@@ -150,17 +157,10 @@ function cmdNew(args, flags) {
     fs.mkdirSync(path.join(dir, sub), { recursive: true });
   }
 
-  const port = Number(flags.port) || nextPort();
-  const brand = flags.brand || name;
-  const timezone = flags.timezone || 'Asia/Karachi';
-
-  let template = null;
-  if (flags.template) {
-    if (!isTemplate(flags.template)) {
-      die(`Unknown template "${flags.template}". Available: ${TEMPLATE_IDS.join(', ')}`);
-    }
-    template = flags.template;
-  }
+  const port = Number(opts.port) || nextPort();
+  const brand = opts.brand || name;
+  const timezone = opts.timezone || 'Asia/Karachi';
+  const template = opts.template || null;
 
   const tenant = {
     slug,
@@ -261,17 +261,40 @@ PORT=${port}
         brand,
         number,
         timezone,
-        city: flags.city || '',
-        currency: flags.currency || 'PKR',
-        languages: flags.languages
-          ? String(flags.languages).split(',').map((s) => s.trim()).filter(Boolean)
+        city: opts.city || '',
+        currency: opts.currency || 'PKR',
+        languages: opts.languages
+          ? String(opts.languages).split(',').map((s) => s.trim()).filter(Boolean)
           : undefined,
-        hours: flags.hours || '',
+        hours: opts.hours || '',
       })
     : starterProfile({ name, brand, number, timezone });
 
   fs.writeFileSync(path.join(dir, 'config', 'owner.json'), `${JSON.stringify(profile, null, 2)}\n`);
 
+  return { slug, name, number, port, dir, template };
+}
+
+function cmdNew(args, flags) {
+  let created;
+  try {
+    created = createTenant({
+      name: flags.name || args.join(' ').trim(),
+      slug: flags.slug,
+      number: flags.number,
+      template: flags.template,
+      port: flags.port,
+      brand: flags.brand,
+      timezone: flags.timezone,
+      city: flags.city,
+      currency: flags.currency,
+      languages: flags.languages,
+      hours: flags.hours,
+    });
+  } catch (err) {
+    die(err.message);
+  }
+  const { slug, name, number, port, template } = created;
   console.log(
     `\n${c.green('✔')} Tenant ${c.bold(slug)} created for ${c.bold(name)} (+${number})` +
       (template ? ` ${c.dim(`from the ${template} template`)}` : '')
@@ -459,6 +482,9 @@ function cmdRm(slug, flags) {
 }
 
 // ── arg parsing ─────────────────────────────────────────────
+// Everything below runs only when this file is executed. The admin panel
+// imports createTenant() from here, and importing must never read argv.
+function main() {
 const [, , command = 'help', ...rest] = process.argv;
 const flags = {};
 const positional = [];
@@ -603,3 +629,9 @@ ${c.bold('Multi-user manager')}
   Run them all together with: ${c.bold('node scripts/run-all.js')}
 `);
 }
+}
+
+const invokedDirectly =
+  process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (invokedDirectly) main();

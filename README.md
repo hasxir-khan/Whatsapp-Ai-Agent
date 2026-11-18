@@ -528,6 +528,7 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `pdfInvoices` | 4 | A4 PDF quote/invoice/receipt, sent on WhatsApp (alias `invoices`) |
 | `selfHealing` | 4 | Learns FAQ rules from your own manual replies (alias `healing`) |
 | `liveInbox` | 4 | Read and answer every chat from a browser page (alias `inbox`) |
+| `adminPanel` | 4 | Admin-only control panel for every tenant: create, profile, keys, QR, start/stop (alias `admin`) |
 | `closer` | 3 | Objection handling, payment links |
 | `reactivation` | 3 | Monthly win-back for old clients |
 | `reviews` | 3 | Review and referral requests |
@@ -1031,6 +1032,73 @@ Limits: **3 proposals a day** (`SELF_HEALING_MAX_PER_DAY`), at most 10 waiting a
 `.rules` shows what is waiting. Rules approved today are ordinary FAQs tomorrow — review them with `.features` like anything else.
 
 The notice goes to `MY_NUMBER`, so that number has to be real: if it is still the placeholder (`920000000000`), proposals are stored and you are never told — `npm run doctor` warns about exactly that, and the PDF rules are checked the same way (empty `business.payment`, a logo path that does not exist).
+
+---
+
+## The admin panel
+
+One page that runs the whole box: every tenant you host, with its status, its
+profile, its keys and its QR. It is **off by default and admin-only**, because it
+can create and delete tenants — a leaked link here is a leaked fleet, not a
+leaked conversation.
+
+```bash
+# .env
+ADMIN_TOKEN=$(openssl rand -hex 24)   # its own secret, never DASHBOARD_TOKEN
+```
+
+```json
+// the tenant's config/owner.json
+"features": { "adminPanel": true }
+```
+
+Then open `http://localhost:3000/admin` and paste the token. What is there:
+
+| Tab | What it does |
+|---|---|
+| Tenants | status, port, transport, session state, last activity, running pid |
+| New tenant | name + WhatsApp number + industry template → the **same** `createTenant()` the CLI uses |
+| Start / Stop / Restart | one tenant at a time, tracked by `tenants/<slug>/run.pid` |
+| QR | live QR for that tenant (Baileys), or the webhook URL + verify token for a Cloud tenant |
+| Profile | the raw `config/owner.json`, saved only if `profile.js` accepts it, reloaded live for the running tenant |
+| Knowledge | drop a file → the existing learn pipeline, with the chunk count it produced |
+| Keys | `GROQ_API_KEY` / `GEMINI_API_KEY`, **write-only**, shown masked, with a "test key" button that makes one small real call |
+| Delete | needs the slug typed out; stops the process, then removes that tenant's folder |
+
+### What protects it
+
+- **No token, no panel.** With `ADMIN_TOKEN` empty every `/admin` and `/api/admin`
+  route answers **404** — an unconfigured feature is never an open one.
+- **Constant-time compare** on the token, bearer for scripts, an HMAC-signed
+  `HttpOnly; SameSite=Strict` cookie for the browser.
+- **CSRF** on every cookie-authenticated write: a double-submit token, or a
+  same-origin check that a cross-site form cannot fake.
+- **Rate limits**: 5 login attempts / 15 min, 10 creates and 5 deletes / hour.
+- **Hardening headers**: `default-src 'none'` CSP, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer`, `nosniff`, `no-store`, HSTS when on HTTPS.
+- **No secrets out**: keys are write-only and masked; `.env`, session files and
+  the database are never served.
+- **Paths**: slugs must match `^[a-z0-9-]{2,40}$`, uploads are restricted to
+  pdf/txt/md/csv/docx/png/jpg under 5 MB, stored inside that tenant's folder
+  with the name reduced to a safe basename.
+- **Audit**: every login, create, delete, profile save, key write, upload and
+  process action lands in `admin_audit` (who / what / when / ip), and refused
+  attempts are logged too.
+
+### Deploying it safely
+
+Do **not** open the port to the internet. Bind it to localhost and put a tunnel
+in front:
+
+```bash
+HOST=127.0.0.1 ADMIN_TOKEN=… npm start
+cloudflared tunnel --url http://localhost:3000
+```
+
+Then set `PUBLIC_URL=https://<the-tunnel-host>` so links are absolute, and keep
+`ADMIN_TOKEN` different from `DASHBOARD_TOKEN` — `npm run doctor` warns about
+every one of these mistakes (missing token, short token, shared token, `0.0.0.0`
+without HTTPS).
 
 ---
 
@@ -1725,7 +1793,7 @@ scripts/
   backup.js  restore.js   one-file backup of DB + config
 src/web/inbox.html      the inbox page (one file, no dependencies)
 assets/fonts/           Noto Sans + Noto Naskh Arabic (bundled, subsetted, OFL)
-test/                   561 tests (node:test, no dependencies)
+test/                   596 tests (node:test, no dependencies)
 ```
 
 ---
@@ -1733,7 +1801,7 @@ test/                   561 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test                 # 561 tests, ~37s, no network, no keys, no config/owner.json
+npm test                 # 596 tests, ~38s, no network, no keys, no config/owner.json
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys

@@ -307,6 +307,15 @@ export const config = {
     ),
   },
 
+  // The admin panel is a different kind of surface from the inbox: it can create
+  // and delete tenants, read their profiles and write their keys. It gets its own
+  // token, separate from DASHBOARD_TOKEN, so a leaked inbox link is not a leaked
+  // control panel.
+  admin: {
+    token: process.env.ADMIN_TOKEN || '',
+    sessionMinutes: toInt(process.env.ADMIN_SESSION_MINUTES, 720),
+  },
+
   server: {
     enabled: toBool(process.env.ENABLE_WEB, true),
     port: toInt(process.env.PORT, 3000),

@@ -46,6 +46,7 @@ export const FEATURE_KEYS = [
   'injectionGuard',
   'pdfInvoices',
   'selfHealing',
+  'adminPanel',
   'liveInbox',
 ];
 
@@ -77,6 +78,7 @@ export const FEATURE_LABELS = {
   injectionGuard: 'Extra prompt-injection defence',
   pdfInvoices: 'PDF quotes, invoices and receipts on WhatsApp',
   selfHealing: 'Learn FAQ rules from your own manual replies (owner-approved)',
+  adminPanel: 'Browser control panel for every tenant (needs ADMIN_TOKEN)',
   liveInbox: 'Live inbox on the dashboard: read, reply and take over chats',
 };
 
@@ -110,6 +112,8 @@ export const FEATURE_ALIASES = {
   pdf: 'pdfInvoices',
   healing: 'selfHealing',
   inbox: 'liveInbox',
+  admin: 'adminPanel',
+  panel: 'adminPanel',
 };
 
 /** Flags that are ON unless explicitly turned off. */
