@@ -76,103 +76,110 @@ function extractFields(text) {
   return updates;
 }
 
+/**
+ * The fake provider itself, exported so a test can wrap it and look at the
+ * request bodies (that is how "the marker never reaches the model" is proven,
+ * rather than asserted by reading the code).
+ */
+export async function mockFetch(url, options = {}) {
+  const href = String(url);
+  const body = options.body ? safeParseBody(options.body) : {};
+
+  // ── speech-to-text ────────────────────────────────────
+  if (href.includes('/audio/transcriptions')) {
+    return jsonResponse({
+      text: 'Hi, I need a website for my clothing brand, maybe six pages with payments.',
+      language: 'english',
+      duration: 6.4,
+    });
+  }
+
+  // ── text-to-speech ────────────────────────────────────
+  if (href.includes('/audio/speech')) {
+    return new Response(Buffer.alloc(5000, 7), { status: 200 });
+  }
+
+  // ── gemini ────────────────────────────────────────────
+  if (href.includes('generativelanguage.googleapis.com')) {
+    if (href.includes(':generateContent')) {
+      return jsonResponse({
+        candidates: [{ content: { parts: [{ text: 'A screenshot of a clothing store homepage: hero image with a model, product grid of six items, prices in dollars, and a cart icon. The header navigation reads Home, Shop, About, Contact.' }] } }],
+        usageMetadata: { totalTokenCount: 120 },
+      });
+    }
+    return jsonResponse({ models: [{ name: 'models/gemini-3.8-flash', supportedGenerationMethods: ['generateContent'] }] });
+  }
+
+  // ── openai-compatible chat (groq / openrouter) ────────
+  const messages = body.messages || [];
+  const system = messages.find((m) => m.role === 'system')?.content || '';
+  const user = [...messages].reverse().find((m) => m.role === 'user')?.content;
+  const userText = typeof user === 'string' ? user : JSON.stringify(user || '');
+
+  // Intake extraction
+  if (/extract structured project requirements/i.test(system) || /Extract the project details/i.test(userText)) {
+    const quoted = /Client's message:\s*\"\"\"([\s\S]*?)\"\"\"/.exec(userText);
+    const source = (quoted ? quoted[1] : userText).trim().slice(0, 2000);
+    return jsonResponse({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              intent: 'project',
+              updates: extractFields(source),
+              ready_to_quote: /quote|price|how much/.test(source.toLowerCase()),
+              name: '',
+              company: '',
+            }),
+          },
+        },
+      ],
+      usage: { total_tokens: 180 },
+    });
+  }
+
+  // CRM summary
+  if (/CRM memory|Return JSON with exactly these keys/i.test(`${system} ${userText}`)) {
+    return jsonResponse({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              summary: 'Client wants a website for their clothing brand. Budget and timeline discussed. Needs payments.',
+              facts: { country: '', company: '', budget: '', timeline: '' },
+              stage: 'discovering',
+              sentiment: 'positive',
+              next_step: 'Confirm feature list',
+            }),
+          },
+        },
+      ],
+      usage: { total_tokens: 90 },
+    });
+  }
+
+  // Document summary / brief extraction
+  if (/extract project requirements from documents/i.test(system)) {
+    return jsonResponse({
+      choices: [{ message: { content: JSON.stringify(extractFields(userText)) } }],
+      usage: { total_tokens: 120 },
+    });
+  }
+
+  // Default: a human-sounding reply
+  return jsonResponse({
+    choices: [{ message: { content: pickTextReply(userText) } }],
+    usage: { total_tokens: 60 },
+  });
+}
+
+/** Point the whole pipeline at the fake provider. */
 export function mockTransport() {
-  // Pretend keys exist so the whole pipeline (chat, vision, speech) runs offline
+  // Pretend keys exist so everything (chat, vision, speech) runs offline.
   config.keys.groq = config.keys.groq || 'mock-groq-key';
   config.keys.gemini = config.keys.gemini || 'mock-gemini-key';
   config.keys.openrouter = config.keys.openrouter || 'mock-openrouter-key';
-
-  __setFetch(async (url, options = {}) => {
-    const href = String(url);
-    const body = options.body ? safeParseBody(options.body) : {};
-
-    // ── speech-to-text ────────────────────────────────────
-    if (href.includes('/audio/transcriptions')) {
-      return jsonResponse({
-        text: 'Hi, I need a website for my clothing brand, maybe six pages with payments.',
-        language: 'english',
-        duration: 6.4,
-      });
-    }
-
-    // ── text-to-speech ────────────────────────────────────
-    if (href.includes('/audio/speech')) {
-      return new Response(Buffer.alloc(5000, 7), { status: 200 });
-    }
-
-    // ── gemini ────────────────────────────────────────────
-    if (href.includes('generativelanguage.googleapis.com')) {
-      if (href.includes(':generateContent')) {
-        return jsonResponse({
-          candidates: [{ content: { parts: [{ text: 'A screenshot of a clothing store homepage: hero image with a model, product grid of six items, prices in dollars, and a cart icon. The header navigation reads Home, Shop, About, Contact.' }] } }],
-          usageMetadata: { totalTokenCount: 120 },
-        });
-      }
-      return jsonResponse({ models: [{ name: 'models/gemini-3.8-flash', supportedGenerationMethods: ['generateContent'] }] });
-    }
-
-    // ── openai-compatible chat (groq / openrouter) ────────
-    const messages = body.messages || [];
-    const system = messages.find((m) => m.role === 'system')?.content || '';
-    const user = [...messages].reverse().find((m) => m.role === 'user')?.content;
-    const userText = typeof user === 'string' ? user : JSON.stringify(user || '');
-
-    // Intake extraction
-    if (/extract structured project requirements/i.test(system) || /Extract the project details/i.test(userText)) {
-      const quoted = /Client's message:\s*\"\"\"([\s\S]*?)\"\"\"/.exec(userText);
-      const source = (quoted ? quoted[1] : userText).trim().slice(0, 2000);
-      return jsonResponse({
-        choices: [
-          {
-            message: {
-              content: JSON.stringify({
-                intent: 'project',
-                updates: extractFields(source),
-                ready_to_quote: /quote|price|how much/.test(source.toLowerCase()),
-                name: '',
-                company: '',
-              }),
-            },
-          },
-        ],
-        usage: { total_tokens: 180 },
-      });
-    }
-
-    // CRM summary
-    if (/CRM memory|Return JSON with exactly these keys/i.test(`${system} ${userText}`)) {
-      return jsonResponse({
-        choices: [
-          {
-            message: {
-              content: JSON.stringify({
-                summary: 'Client wants a website for their clothing brand. Budget and timeline discussed. Needs payments.',
-                facts: { country: '', company: '', budget: '', timeline: '' },
-                stage: 'discovering',
-                sentiment: 'positive',
-                next_step: 'Confirm feature list',
-              }),
-            },
-          },
-        ],
-        usage: { total_tokens: 90 },
-      });
-    }
-
-    // Document summary / brief extraction
-    if (/extract project requirements from documents/i.test(system)) {
-      return jsonResponse({
-        choices: [{ message: { content: JSON.stringify(extractFields(userText)) } }],
-        usage: { total_tokens: 120 },
-      });
-    }
-
-    // Default: a human-sounding reply
-    return jsonResponse({
-      choices: [{ message: { content: pickTextReply(userText) } }],
-      usage: { total_tokens: 60 },
-    });
-  });
+  __setFetch(mockFetch);
 }
 
 function safeParseBody(body) {
@@ -184,4 +191,4 @@ function safeParseBody(body) {
   }
 }
 
-export default { mockTransport, setMockReply };
+export default { mockTransport, setMockReply, mockFetch };

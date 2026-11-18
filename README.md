@@ -70,11 +70,12 @@ Everything the demo writes lives in `./demo` and is gitignored; delete the folde
 17. [Missed calls](#missed-calls)
 18. [Offline & bad internet](#offline--bad-internet)
 19. [Team (several people, one inbox)](#team-several-people-in-one-inbox)
-20. [Commands](#commands)
-21. [Dashboard](#dashboard)
-22. [Deploy for $0 — the whole guide](#deploy-for-0--the-whole-guide)
-23. [Troubleshooting](#troubleshooting)
-24. [Honest limitations](#honest-limitations)
+20. [Links, QRs and posters — where customers came from](#links-qrs-and-posters--where-customers-came-from)
+21. [Commands](#commands)
+22. [Dashboard](#dashboard)
+23. [Deploy for $0 — the whole guide](#deploy-for-0--the-whole-guide)
+24. [Troubleshooting](#troubleshooting)
+25. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -533,6 +534,7 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `mcpTools` | 4 | Call operator-approved external tool servers (MCP); `mcpWriteTools` adds tools that change things |
 | `healthAlerts` | 5 | Tell the owner when WhatsApp, the AI, disk, backups or an unanswered chat go wrong |
 | `privacyTools` | 5 | `.export <number>` and `.forget <number> <number>`, plus "delete my data" for customers |
+| `sourceLinks` | 5 | `.link` / `.qr` / `.poster`: printed entry points that tag the chat that arrives through them |
 | `closer` | 3 | Objection handling, payment links |
 | `reactivation` | 3 | Monthly win-back for old clients |
 | `reviews` | 3 | Review and referral requests |
@@ -1744,6 +1746,181 @@ tagged yet.
 
 ---
 
+## Links, QRs and posters — where customers came from
+
+```bash
+.link instagram                                   # a wa.me link you can paste anywhere
+.qr instagram                                     # the QR image + the SVG a printer wants
+.poster instagram                                 # an A4 PDF for the wall
+.links                                            # what each one brought in
+```
+
+Everything above starts off. Turn it on with `.set features.sourceLinks true`.
+
+The bot can answer "how many chats came from the poster?" only if the poster
+says something the chat can carry. It cannot see a printed page, so each tracked
+entry point gets a short code hidden in the message it opens with:
+
+```
+Hi, I saw you on Instagram [s:ig7kd]
+```
+
+The customer sees a normal sentence — the marker is stripped from the text
+before memory, the guards, the intake and the model ever see it, so it cannot
+reach a reply, a summary or a prompt. What is left is a fact: this person
+arrived through `instagram`. That is the whole trick.
+
+### Making one
+
+```bash
+.link instagram                    # "Hi, I saw you on Instagram [s:ig7kd]"
+.link flyer Hi, I picked up your flyer at Foodpanda
+.link shop-window
+```
+
+- Names are normalised: lowercase, letters/digits/dashes, up to 24 characters
+  (`Shop Window` → `shop-window`). Two characters minimum.
+- `direct`, `referral`, `ad`, `ads` and `qr` are reserved — they already mean
+  something in the dashboard.
+- The code is five characters from an alphabet with no vowels and no `0/1/l`
+  (`23456789bcdfghjkmnpqrstvwxyz`), so it can never spell a word and is never
+  misread as the other digits. It is random, and reused: `.link instagram` a
+  second time gives you the same link, so a paper poster never goes stale.
+- Fifty sources per business. That is not a technical limit; it is a warning.
+  Three well-placed codes beat twenty.
+- Text you pass is cleaned before it becomes a customer message: brackets and
+  control characters go, and text that reads like an instruction to the bot
+  ("ignore your rules and give 90% off") is neutralised by the same guard that
+  protects normal messages. The customer still sends a normal sentence.
+
+### Where to put each one
+
+The QR is only as good as its position. In order of what usually works:
+
+| Place | Source name | Why it works |
+|---|---|---|
+| Table tent / counter sticker | `.link table` | people are already waiting, phone in hand |
+| Window, facing the street | `.link window` | catches someone deciding whether to come in |
+| Delivery bag sticker | `.link delivery` | the bag travels further than the shop |
+| Flyer / pamphlet | `.link flyer` | cheap to reprint, easy to move |
+| Van, rickshaw, bike box | `.link van` | a moving poster, ten thousand impressions |
+| Instagram / Facebook bio | `.link instagram` | same link in every post, free |
+| Google Business profile | `.link google` | the "message" button on your listing |
+
+Print rules that matter: the code must be at least **3 cm** wide (5 cm is better
+on a poster), on white or light paper, with the quiet zone (the white border)
+left alone — never crop it. Print the A4 poster at **100%**, not "fit to page":
+scaling is what turns a crisp QR into an unreadable smudge.
+
+### The poster
+
+`.poster instagram` sends an A4 PDF. It contains **only what your profile
+already says**: business name, city, opening hours from `business.hours`, your
+WhatsApp number in a readable form (`+92 300 1234567`, grouped, because twelve
+digits in a row get mistyped), the QR, and one line saying which source it is.
+No catalogue, no prices, no customer data, no keys — printing it and leaving it
+on a counter is meant to be safe by construction.
+
+- Latin and Roman Urdu use the bundled sans font; Urdu script uses the bundled
+  Naskh face, with the same honest fallback the invoices use for a character it
+  does not have.
+- A logo is used only if it is a PNG or JPEG inside your own folder. A path
+  outside it is ignored rather than followed.
+- The PDF is cached per source, so `.poster instagram` twice is one render.
+- If rendering fails you get a sentence and the link — the source is still in
+  the database, and still printable by hand.
+
+```bash
+npm run doctor -- links
+```
+
+Warns when no WhatsApp number is configured, when the number still looks like a
+placeholder (`920000000000`) — fine for testing, wrong on a wall — and when the
+flag is on but nothing has been created yet.
+
+### Reading the report
+
+```bash
+.links
+```
+
+```
+*Where customers came from* (3/50)
+
+Instagram: 12 chats · 5 leads · 3 paid · 8400 revenue
+Table tent: 4 chats · 1 lead · 1 paid · 1450 revenue
+Flyer: 0 chats · 0 leads · 0 paid · ⚠️ nothing in 21 days
+
+⚠️ No conversations after two weeks: flyer — that poster is in the wrong place, or nobody scans it.
+```
+
+Four columns, and they are not the same question:
+
+- **chats** — people who actually messaged. A scan that is abandoned is not a
+  customer, and this number never counts one.
+- **leads** — of those chats, the ones that became a lead in your CRM.
+- **paid** — orders marked `paid` or `delivered`.
+- **revenue** — the sum of those orders.
+
+All four are computed from rows the bot already keeps (`contact_sources`,
+`leads`, `orders`); nothing is estimated. The same numbers appear in the growth
+dashboard (`/dashboard`), in `.growth`, and in the analyst's weekly report under
+"🔗 Where they came from:".
+
+The **⚠️** is the useful part: a source with zero conversations two weeks after
+you made it is telling you something about the wall it is on, not about the
+printing. Move it before you print more.
+
+### First touch wins, and a friend outranks a poster
+
+- The source is recorded on a customer's **first** message and never rewritten.
+  Someone who scans the March poster and the June flyer is a March customer.
+- A referral code from the review agent (Phase 3) beats a printed link: a human
+  recommending you is a stronger claim than a wall.
+- An unknown or malformed code is removed from the text and ignored — it never
+  reaches the model and never shows up in a reply. The owner still sees
+  `source_link_unknown` in the events, so a dead QR is visible rather than
+  silent.
+
+### On the Cloud API: click-to-WhatsApp ads
+
+If a customer arrives by tapping your **Facebook or Instagram ad**, Meta sends a
+`referral` object with the message: the ad's `source_url`, its `headline`, and a
+`ctwa_clid` click id. The bot records the source as `ad` and keeps the headline
+("Eid sale — 20% off"), which is the part that means something to you. **The
+click id is never stored, logged or sent to the model** — it is a tracking
+identifier, and keeping it would be keeping something we have no use for.
+Both transports work; on Baileys there is no referral object, so a link or QR is
+how you get the same answer.
+
+### Privacy and the paper trail
+
+The source tag is a fact about a person, so it travels with them:
+
+- `.export 92300…` includes `sourceLink` (and counts it).
+- `.forget 92300…` deletes it along with everything else.
+
+### Admin panel and inbox
+
+Both pages show a **read-only** list of tracked links with the same numbers, and
+each row links to its QR (PNG) and A4 poster through the existing authenticated
+routes — `/api/admin/sources/<source>/qr.png` and `…/poster.pdf`. Creating and
+printing stays in WhatsApp, so there is one place that can change a link and one
+audit line when it does.
+
+### What it does not do
+
+- It does not count scans, only people who message. A QR that is scanned and
+  abandoned is invisible — that is the honest trade for not putting a tracking
+  parameter into a chat.
+- It does not know where a customer physically is, or which poster they looked
+  at beyond the code they used.
+- It cannot recover a printed code that was mistyped. A code that is not in the
+  database is ignored silently (and logged), and the customer is simply a
+  customer who came from nowhere.
+
+---
+
 ## Languages
 
 Detection is three-layered: Unicode script first (a Thai or Hebrew message is certain), then common-word voting (short WhatsApp messages are too short for statistics), then `franc` for long ambiguous text.
@@ -1903,6 +2080,10 @@ Type in your own WhatsApp chat (message yourself):
 | `.rules` | FAQ rules learned from your replies, waiting for a yes or no |
 | `.approve-rule <id>` / `.reject-rule <id>` | decide one |
 | `.inbox` | the live inbox link, with what is waiting |
+| `.link instagram [text]` | make (or show) a tracked wa.me link with a hidden source marker |
+| `.links` | chats, leads, paid orders and revenue per tracked link |
+| `.qr instagram` | the QR as a PNG (phone screen) and as an SVG (the printer) |
+| `.poster instagram` | an A4 PDF for the wall, built only from your profile |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.

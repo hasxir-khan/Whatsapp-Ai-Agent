@@ -102,7 +102,12 @@ export function resetDatabase(db) {
 
 // Only rows a customer or the owner would notice. A pending confirmation and a
 // growth draft are internal bookkeeping, not side effects on the world.
-const SIDE_EFFECT_TABLES = ['orders', 'bookings', 'contact_tags', 'contact_notes', 'review_asks', 'referrals'];
+const SIDE_EFFECT_TABLES = [
+  'orders', 'bookings', 'contact_tags', 'contact_notes', 'review_asks', 'referrals',
+  // A source attribution is a write too: the first message adds a row, and a
+  // scenario may assert it happened exactly once.
+  'contact_sources',
+];
 
 function countTable(db, table) {
   try {
@@ -112,7 +117,7 @@ function countTable(db, table) {
   }
 }
 
-function seedScenario({ db, scenario, number, now }) {
+function seedScenario({ db, scenario, number, now, tenant = null }) {
   const seed = scenario.seed || {};
   const jid = `${number}@s.whatsapp.net`;
   const ago = (days) => new Date(now.getTime() - Number(days) * 86_400_000).toISOString();
@@ -123,6 +128,14 @@ function seedScenario({ db, scenario, number, now }) {
     push_name: seed.contact?.name || 'Test Customer',
     language: seed.contact?.language || scenario.language,
   });
+  // `upsertContact` numbers a brand-new row as 1 message even though nobody has
+  // written yet. Zero it here so a scenario that seeds a name (but no history)
+  // looks like a genuinely first-time contact — which is what first-touch
+  // attribution keys off.
+  db.run('UPDATE contacts SET message_count = ? WHERE number = ?', [
+    Number(seed.contact?.message_count ?? 0),
+    number,
+  ]);
   if (seed.contact?.last_seen_days_ago !== undefined) {
     db.run('UPDATE contacts SET last_seen = ? WHERE number = ?', [ago(seed.contact.last_seen_days_ago), number]);
   }
@@ -192,6 +205,24 @@ function seedScenario({ db, scenario, number, now }) {
       booking.name || 'Test Customer',
       booking.status || 'booked',
     ]);
+  }
+
+  // Tracked links the owner already created: a scenario can then send the
+  // message the QR would send, marker and all.
+  for (const src of seed.sources || []) {
+    const name = String(src.source || 'poster').toLowerCase();
+    db.run('INSERT OR IGNORE INTO tracked_sources (tenant, source, code, label, message, created_at) VALUES (?,?,?,?,?,?)', [
+      tenant,
+      name,
+      String(src.code || 'ab12c').toLowerCase(),
+      src.label || name,
+      src.message || `Hi, I saw you on ${name} [s:${String(src.code || 'ab12c').toLowerCase()}]`,
+      src.createdAt || now.toISOString(),
+    ]);
+  }
+
+  if (seed.referralAttributed) {
+    db.logEvent('referral_attributed', number, 'REF-XXXX');
   }
 
   for (const doc of seed.knowledge || []) {
@@ -323,7 +354,7 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
   // state in memory (repeat discounts, spam scores, booking offers), so one
   // scenario's history must not be able to change another's result.
   const number = String(scenario.number || customerFor(nonce)).replace(/\D/g, '');
-  const { jid } = seedScenario({ db, scenario, number, now: FIXED_NOW });
+  const { jid } = seedScenario({ db, scenario, number, now: FIXED_NOW, tenant: env.config?.tenant?.slug || null });
   const transport = makeTransport({ db, number, now: FIXED_NOW });
   transport.jid = jid;
 

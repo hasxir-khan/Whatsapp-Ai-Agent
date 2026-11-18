@@ -130,6 +130,13 @@
       </section>
 
       <section>
+        <h2>Tracked links</h2>
+        <div class="kv" id="sources-note">Read-only. Create and print them from WhatsApp: <code>.link</code>, <code>.qr</code>, <code>.poster</code>.</div>
+        <table style="margin-top:8px;"><thead><tr><th>source</th><th>chats</th><th>leads</th><th>paid</th><th>revenue</th><th>files</th></tr></thead>
+        <tbody id="sources"><tr><td colspan="6" class="msg">…</td></tr></tbody></table>
+      </section>
+
+      <section>
         <h2>Delete</h2>
         <div class="kv">This removes the tenant's folder: clients, database, session and keys.</div>
         <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
@@ -176,6 +183,42 @@
   }
 
   const fmt = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
+
+  // Read-only view of the running tenant's tracked links. Downloads go through
+  // the same authenticated endpoints as the rest of the panel.
+  async function loadSources() {
+    const body = $('sources');
+    if (!body) return;
+    let data;
+    try {
+      data = await api('/api/admin/sources');
+    } catch (err) {
+      body.innerHTML = '<tr><td colspan="6" class="msg">Could not read sources: ' + String(err.message).replace(/[<>&]/g, '') + '</td></tr>';
+      return;
+    }
+    if (!data.enabled) {
+      $('sources-note').textContent = 'Source links are off for this tenant. Turn them on with .set features.sourceLinks true in WhatsApp.';
+      body.innerHTML = '<tr><td colspan="6" class="msg">—</td></tr>';
+      return;
+    }
+    if (!(data.sources || []).length) {
+      body.innerHTML = '<tr><td colspan="6" class="msg">No tracked links yet.</td></tr>';
+      return;
+    }
+    body.innerHTML = data.sources
+      .map((x) => {
+        const base = '/api/admin/sources/' + encodeURIComponent(x.source);
+        const flag = x.stale ? ' <span class="msg">⚠️ ' + x.ageDays + 'd</span>' : '';
+        return '<tr><td>' + x.label + flag + '</td>' +
+          '<td>' + x.conversations + '</td>' +
+          '<td>' + x.leads + '</td>' +
+          '<td>' + x.orders + '</td>' +
+          '<td>' + x.revenue + '</td>' +
+          '<td><a href="' + base + '/qr.png" target="_blank" rel="noopener">QR</a> · ' +
+          '<a href="' + base + '/poster.pdf">A4 PDF</a></td></tr>';
+      })
+      .join('');
+  }
 
   async function loadTemplates() {
     // Templates come from the server-side list via the create endpoint's errors;
@@ -236,6 +279,8 @@
     say('run-msg', ''); say('profile-msg', ''); say('keys-msg', ''); say('upload-msg', ''); say('del-msg', '');
     const { profile } = await api('/api/admin/tenants/' + encodeURIComponent(slug) + '/profile');
     $('profile').value = JSON.stringify(profile, null, 2);
+    // Best-effort: the sources list is about the running tenant's database.
+    loadSources();
   }
 
   async function withBusy(id, fn) {

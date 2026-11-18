@@ -73,6 +73,27 @@ const TYPE_MAP = {
   unsupported: 'other',
 };
 
+/**
+ * Click-to-WhatsApp: the first message from someone who tapped an ad carries a
+ * `referral` object. We keep the headline and the source url — enough to say
+ * "the Eid ad brought 12 people" — and deliberately drop `ctwa_clid`, which is
+ * a per-click identifier with no use outside Meta's own reporting.
+ */
+export function normalizeReferral(referral) {
+  if (!referral || typeof referral !== 'object') return null;
+  const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const out = {
+    sourceUrl: clean(referral.source_url),
+    sourceType: clean(referral.source_type),
+    headline: clean(referral.headline),
+    body: clean(referral.body),
+    // Only whether it was there, never the value.
+    hasClickId: Boolean(referral.ctwa_clid),
+  };
+  if (!out.sourceUrl && !out.headline && !out.sourceType) return null;
+  return out;
+}
+
 /** One Cloud API `message` object → our normalised shape. */
 export function normalizeCloudMessage(message = {}, { pushName = null } = {}) {
   const kind = TYPE_MAP[message.type] || 'other';
@@ -106,6 +127,7 @@ export function normalizeCloudMessage(message = {}, { pushName = null } = {}) {
     contactName: message.contacts?.[0]?.name?.formatted_name || null,
     timestamp: message.timestamp ? new Date(Number(message.timestamp) * 1000).toISOString() : new Date().toISOString(),
     mediaRef: mediaNode ? { mediaId: mediaNode.id, kind, mimetype: mediaNode.mime_type } : null,
+    referral: normalizeReferral(message.referral),
     raw: message,
   });
 }

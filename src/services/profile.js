@@ -53,6 +53,8 @@ export const FEATURE_KEYS = [
   'mcpWriteTools',
   'healthAlerts',
   'privacyTools',
+  // phase 5
+  'sourceLinks',
 ];
 
 export const FEATURE_LABELS = {
@@ -90,6 +92,7 @@ export const FEATURE_LABELS = {
   mcpWriteTools: 'Allow MCP tools that take actions — still needs the customer to confirm each one',
   healthAlerts: 'Tell the owner when WhatsApp, the AI, disk, backups or an unanswered chat go wrong',
   privacyTools: 'Data export and deletion: .export <number>, .forget <number> <number>',
+  sourceLinks: 'Tracked wa.me links, QR codes and printable posters: .link, .links, .qr, .poster',
 };
 
 // ── live profile access ─────────────────────────────────────

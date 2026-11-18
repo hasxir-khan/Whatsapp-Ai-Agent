@@ -131,6 +131,7 @@
     "mcpWriteTools": false,
     "healthAlerts": false,
     "privacyTools": false,
+    "sourceLinks": false,
     "liveInbox": false,
     "orderTracking": false,
     "crm": false

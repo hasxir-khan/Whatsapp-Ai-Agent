@@ -13,6 +13,7 @@
 
 import { get, all, logEvent } from '../utils/db.js';
 import { featureOn } from './profile.js';
+import { sourceSummary, sourceLinksEnabled } from './sourceLinks.js';
 
 const count = (sql, params = []) => get(sql, params)?.c || 0;
 const sum = (sql, params = []) => get(sql, params)?.s || 0;
@@ -114,15 +115,26 @@ export const SOURCE_LABELS = {
 
 /**
  * Source per contact: an explicit tag (QR sticker, ad link) wins, then a
- * referral, then how they were first categorised.
+ * referral, then the tracked link this phase added, then how they were first
+ * categorised. A referral outranks a tracked link because a human vouched for
+ * us — that is the stronger claim.
  */
 export function sourceOf(number) {
   const tag = get("SELECT detail FROM events WHERE type = 'source_tag' AND number = ? ORDER BY id LIMIT 1", [number]);
   if (tag?.detail) return normaliseSource(tag.detail);
   const referred = get("SELECT 1 AS c FROM events WHERE type = 'referral_attributed' AND number = ? LIMIT 1", [number]);
   if (referred) return 'referral';
+  const tracked = get('SELECT source FROM contact_sources WHERE number = ?', [number]);
+  if (tracked?.source) return tracked.source;
   const contact = get('SELECT category FROM contacts WHERE number = ?', [number]);
   return normaliseSource(contact?.category || 'direct');
+}
+
+/** A tracked source keeps its own name; the five old buckets keep their label. */
+function labelFor(key) {
+  if (SOURCE_LABELS[key]) return SOURCE_LABELS[key];
+  const tracked = get('SELECT label FROM tracked_sources WHERE source = ?', [key]);
+  return tracked?.label || key;
 }
 
 function normaliseSource(raw) {
@@ -161,7 +173,7 @@ export function sourceBreakdown() {
   }
 
   return Object.entries(sources)
-    .map(([key, value]) => ({ source: key, label: SOURCE_LABELS[key] || key, ...value }))
+    .map(([key, value]) => ({ source: key, label: labelFor(key), ...value }))
     .sort((a, b) => b.revenue - a.revenue || b.conversations - a.conversations);
 }
 
@@ -171,6 +183,9 @@ export function growthSnapshot() {
     funnel: funnel(),
     agents: agentStats(),
     sources: sourceBreakdown(),
+    // Per tracked link: what it cost to print, and what it brought in. Empty
+    // unless the owner has made one.
+    sourceLinks: sourceLinksEnabled() ? sourceSummary() : { enabled: false, sources: [], stale: [], total: 0 },
     optOuts: count('SELECT COUNT(*) AS c FROM growth_optouts'),
     revenue: sum("SELECT SUM(total) AS s FROM orders WHERE status IN ('paid','delivered')"),
     features: {

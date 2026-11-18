@@ -89,6 +89,7 @@ test('golden: the suite covers every template, every language and the hard cases
     'voice',
     'quiet',
     'crm',
+    'source',
   ]) {
     assert.ok(categories.has(category), `no scenario covers "${category}"`);
   }

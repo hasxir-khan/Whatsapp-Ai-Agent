@@ -1030,6 +1030,48 @@ async function checkEval() {
   }
 }
 
+async function checkSourceLinks() {
+  const L = await import('../src/services/sourceLinks.js');
+  const b = business() || {};
+  const number = L.whatsappNumber();
+
+  section('Source links');
+
+  // The number is the whole product: a poster with the wrong number on it is a
+  // wasted printing bill, so it is checked even before the feature is used.
+  // Deliberately a warning, not a blocker: a bot with a placeholder number still
+  // runs, it just must not be printed on anything until it is replaced.
+  if (!number) {
+    warn('no WhatsApp number is configured — a QR or poster would have nothing to point at');
+    notes.push('Set MY_NUMBER in .env to the business WhatsApp number (international format, e.g. 923001234567) before printing a QR.');
+  } else if (L.placeholderNumber(number)) {
+    warn(`+${number} looks like a placeholder — fine for testing, wrong on a poster`);
+    notes.push('Replace MY_NUMBER with the real business number before you print a poster or a QR.');
+  } else {
+    ok(`links point at ${L.readableNumber(number)} (${b.whatsapp || b.whatsappNumber ? 'business.whatsapp' : 'MY_NUMBER'})`);
+  }
+
+  if (!L.sourceLinksEnabled()) {
+    warn('features.sourceLinks is off — .link / .qr / .poster are disabled');
+    notes.push('Turn it on with: .set features.sourceLinks true, then .link instagram');
+    return;
+  }
+
+  const summary = L.sourceSummary();
+  if (!summary.total) {
+    ok('flag is on, nothing created yet');
+    notes.push('Make your first one in WhatsApp: .link instagram — then .qr instagram or .poster instagram.');
+    return;
+  }
+
+  const withChats = summary.sources.filter((row) => row.conversations > 0).length;
+  ok(`${summary.total}/${summary.limit} source(s), ${withChats} bringing chats, ${summary.conversations} chat(s) total`);
+  if (summary.stale.length) {
+    warn(`${summary.stale.length} source(s) with no conversations after 14 days: ${summary.stale.join(', ')}`);
+    notes.push('A source with nothing after two weeks is in the wrong place: move the poster, or stop printing it.');
+  }
+}
+
 async function main() {
   // `npm run doctor -- gemini` runs only the checks whose name matches.
   const args = process.argv.slice(2);
@@ -1062,6 +1104,7 @@ async function main() {
   if (want('health', 'alerts', 'privacy')) await checkHealthAndPrivacy();
   if (want('orders', 'crm', 'tags')) await checkOrdersAndCrm();
   if (want('eval', 'golden')) await checkEval();
+  if (want('links', 'sources', 'qr', 'poster')) await checkSourceLinks();
   if (want('whatsapp', 'session')) await checkWhatsApp();
 
   section('Summary');

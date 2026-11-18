@@ -1,0 +1,49 @@
+{
+  "id": "shop-source-tag-en",
+  "title": "A tracked link tags the first chat, and the marker never reaches the customer",
+  "template": "shop",
+  "category": "source",
+  "language": "en",
+  "profile": {
+    "features": {
+      "sourceLinks": true
+    }
+  },
+  "seed": {
+    "sources": [
+      {
+        "source": "instagram",
+        "code": "ig7kd",
+        "label": "Instagram"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "user": "Hi, I saw you on Instagram [s:ig7kd] — how much is the leather jacket?",
+      "model": [
+        {
+          "text": "The leather jacket is 6500 PKR. Would you like me to keep one aside for you?"
+        }
+      ],
+      "expect": "price answered from the catalogue, marker stripped before the model saw it"
+    }
+  ],
+  "assert": {
+    "events": [
+      "source_link_attributed"
+    ],
+    "numbers": [
+      "contacts",
+      "messages"
+    ],
+    "forbid": [
+      "\\[s:",
+      "ig7kd",
+      "Source:"
+    ],
+    "minReplies": 1,
+    "sideEffects": "allowed",
+    "noErrorEvents": true
+  }
+}

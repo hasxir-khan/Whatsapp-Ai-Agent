@@ -335,6 +335,34 @@ CREATE TABLE IF NOT EXISTS contact_tags (
 );
 CREATE INDEX IF NOT EXISTS idx_contact_tags_tag ON contact_tags(tenant, tag);
 
+-- Tracked entry points: a QR, a poster or a link the owner printed somewhere.
+-- One row per source name per tenant, with the short code that travels inside
+-- the prefilled message. First touch wins in contact_sources, so a customer can
+-- only ever be counted once.
+CREATE TABLE IF NOT EXISTS tracked_sources (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  source      TEXT NOT NULL,
+  code        TEXT NOT NULL,
+  label       TEXT,
+  message     TEXT,
+  created_at  TEXT,
+  UNIQUE(tenant, source),
+  UNIQUE(tenant, code)
+);
+
+CREATE TABLE IF NOT EXISTS contact_sources (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  number      TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  code        TEXT,
+  detail      TEXT,          -- the ad headline, when the arrival came from a click-to-WhatsApp ad
+  created_at  TEXT,
+  UNIQUE(tenant, number)
+);
+CREATE INDEX IF NOT EXISTS idx_contact_sources_source ON contact_sources(tenant, source);
+
 CREATE TABLE IF NOT EXISTS contact_notes (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   tenant      TEXT,

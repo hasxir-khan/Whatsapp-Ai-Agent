@@ -90,6 +90,9 @@ export function exportContact(rawNumber) {
   // CRM and order history are about this person too, so they travel with the
   // export and are deleted by the forget.
   const tags = all('SELECT tag, source, created_at FROM contact_tags WHERE number = ?', [number]);
+  // Which tracked link (or ad) brought them, if any. It is a fact about this
+  // person, so it travels with them.
+  const sourceLink = all('SELECT source, code, detail, created_at FROM contact_sources WHERE number = ?', [number]);
   const notes = all('SELECT note, author, created_at FROM contact_notes WHERE number = ?', [number]);
   const orderIds = all('SELECT id FROM orders WHERE chat = ? OR chat = ?', [number, jid]).map((row) => row.id);
   const orderHistory = orderIds.length
@@ -135,11 +138,12 @@ export function exportContact(rawNumber) {
     bookingReminders: reminders,
     tags,
     notes,
+    sourceLink,
     orderHistory,
   };
 
   const counts = Object.fromEntries(
-    Object.entries({ messages, facts, leads, bookings, orders, followups, referrals, reviews, intake, calls, intents, consents, tags, notes, orderHistory })
+    Object.entries({ messages, facts, leads, bookings, orders, followups, referrals, reviews, intake, calls, intents, consents, tags, notes, sourceLink, orderHistory })
       .map(([key, rows]) => [key, rows.length])
   );
 
@@ -180,6 +184,7 @@ export const CONTACT_TABLES = [
   { table: 'objection_attempts', where: 'number = ?' },
   { table: 'privacy_requests', where: 'number = ?' },
   { table: 'contact_tags', where: 'number = ?' },
+  { table: 'contact_sources', where: 'number = ?' },
   { table: 'contact_notes', where: 'number = ?' },
   { table: 'message_intents', where: 'chat = ? OR chat = ?' },
   { table: 'bookings', where: 'chat = ? OR chat = ?' },

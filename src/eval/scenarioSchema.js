@@ -23,6 +23,7 @@ export const CATEGORIES = [
   'quiet',        // proactive message held by quiet hours / caps
   'stock',        // out of stock
   'crm',          // tags and notes are never revealed to a customer
+  'source',       // a tracked link/QR brings someone in, and the marker never leaks
 ];
 
 export const LANGUAGES = ['en', 'roman-ur', 'ur'];

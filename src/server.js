@@ -384,6 +384,74 @@ export function authorised(req, url) {
   return !!m && decodeURIComponent(m[1]) === token;
 }
 
+/**
+ * One binary download per tracked source: `…/sources/<source>/qr.png`,
+ * `qr.svg` or `poster.pdf`.
+ *
+ * Both the inbox and the admin panel reach this, and both have already proved
+ * who they are before it is called — that is the whole reason it takes an
+ * `auth` label instead of doing its own checks. Nothing here writes anything:
+ * a GET on the dashboard cannot change a row.
+ */
+async function sendSourceAsset(req, res, pathname, { auth = 'inbox', secure = false } = {}) {
+  const headers = (extra = {}) =>
+    auth === 'admin'
+      ? adminHeaders({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...extra }, secure)
+      : { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...extra };
+
+  const parts = pathname.split('/').filter(Boolean); // ['api','inbox'|'admin','sources',source,file]
+  const source = parts[3] ? decodeURIComponent(parts[3]) : '';
+  const file = parts[4] || 'qr.png';
+
+  const L = await import('./services/sourceLinks.js');
+  if (!L.sourceLinksEnabled()) {
+    res.writeHead(404, headers({ 'Content-Type': 'application/json; charset=utf-8' }));
+    res.end(JSON.stringify({ error: 'Source links are off', hint: '.set features.sourceLinks true' }));
+    return true;
+  }
+
+  const link = L.sourceLink(source);
+  if (!link) {
+    res.writeHead(404, headers({ 'Content-Type': 'application/json; charset=utf-8' }));
+    res.end(JSON.stringify({ error: 'unknown_source' }));
+    return true;
+  }
+
+  try {
+    if (file === 'qr.png') {
+      const png = await L.qrPng(link.url);
+      res.writeHead(200, headers({ 'Content-Type': 'image/png', 'Content-Disposition': `inline; filename="${link.source}-qr.png"` }));
+      res.end(png);
+      return true;
+    }
+    if (file === 'qr.svg') {
+      const svg = await L.qrSvg(link.url);
+      res.writeHead(200, headers({ 'Content-Type': 'image/svg+xml', 'Content-Disposition': `attachment; filename="${link.source}-qr.svg"` }));
+      res.end(svg);
+      return true;
+    }
+    if (file === 'poster.pdf') {
+      const P = await import('./services/poster.js');
+      const built = await P.buildPoster({ link });
+      if (!built.ok) {
+        res.writeHead(500, headers({ 'Content-Type': 'text/plain; charset=utf-8' }));
+        res.end(`Could not build the poster: ${built.reason}`);
+        return true;
+      }
+      res.writeHead(200, headers({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${built.fileName}"` }));
+      res.end(built.buffer);
+      return true;
+    }
+    res.writeHead(404, headers({ 'Content-Type': 'application/json; charset=utf-8' }));
+    res.end(JSON.stringify({ error: 'not_found', hint: 'qr.png, qr.svg or poster.pdf' }));
+    return true;
+  } catch (err) {
+    res.writeHead(500, headers({ 'Content-Type': 'text/plain; charset=utf-8' }));
+    res.end(`Could not build that file: ${err.message}`);
+    return true;
+  }
+}
+
 export function growthSection(growth) {
   if (!growth) return '';
   const f = growth.funnel;
@@ -421,6 +489,19 @@ export function growthSection(growth) {
     )
     .join('');
 
+  const links = growth.sourceLinks?.enabled ? growth.sourceLinks.sources : [];
+  const linkRows = links
+    .map(
+      (l) =>
+        `<tr><td>${esc(l.label || l.source)}</td>
+          <td class="small">${l.conversations}</td>
+          <td class="small">${l.leads}</td>
+          <td class="small">${l.orders}</td>
+          <td class="small">${esc(formatMoney(l.revenue))}</td>
+          <td class="small">${l.stale ? `⚠️ ${l.ageDays}d, no chats` : ''}</td></tr>`
+    )
+    .join('');
+
   return `
   <div class="card" style="margin-bottom:14px;">
     <h2>Growth funnel</h2>
@@ -446,6 +527,20 @@ export function growthSection(growth) {
       <div class="small" style="margin-top:8px;">Tag a QR or an ad link with #qr, #ads, #link — the first message carries it.</div>
     </div>
   </div>
+
+  ${
+    growth.sourceLinks?.enabled
+      ? `<div class="card">
+    <h2>Tracked links</h2>
+    <table>
+      <tr><td class="small">source</td><td class="small">chats</td><td class="small">leads</td>
+          <td class="small">paid</td><td class="small">revenue</td><td class="small">note</td></tr>
+      ${linkRows || '<tr><td class="small">No tracked links yet — .link instagram in WhatsApp makes one.</td></tr>'}
+    </table>
+    <div class="small" style="margin-top:8px;">Create with <code>.link &lt;source&gt;</code>, print with <code>.qr</code> or <code>.poster</code>. A source with no chats after two weeks is in the wrong place.</div>
+  </div>`
+      : ''
+  }
   `;
 }
 
@@ -675,6 +770,19 @@ export async function handleAdminRoute(req, res, url) {
     }
   }
 
+  if (pathname === '/api/admin/sources' && method === 'GET') {
+    const L = await import('./services/sourceLinks.js');
+    return respond(200, {
+      ok: true,
+      tenant: config.tenant.slug,
+      ...(L.sourceLinksEnabled() ? L.sourceSummary() : { enabled: false, sources: [], stale: [], total: 0 }),
+    });
+  }
+
+  if (pathname.startsWith('/api/admin/sources/') && method === 'GET') {
+    return await sendSourceAsset(req, res, pathname, { auth: 'admin', secure });
+  }
+
   if (pathname === '/api/admin/audit' && method === 'GET') {
     return respond(200, { ok: true, entries: recentAudit(url.searchParams.get('limit') || 50) });
   }
@@ -891,6 +999,22 @@ async function handleInboxRoute(req, res, url) {
     });
     res.end(inboxPage());
     return true;
+  }
+
+  // The read-only source strip on the inbox page. Counts and links only: the
+  // page can look, and can download a QR, but nothing here writes.
+  if (pathname === '/api/inbox/sources' && (req.method === 'GET' || !req.method)) {
+    const L = await import('./services/sourceLinks.js');
+    if (!L.sourceLinksEnabled()) {
+      sendJson(res, 200, { enabled: false, sources: [], stale: [], total: 0 });
+      return true;
+    }
+    sendJson(res, 200, L.sourceSummary());
+    return true;
+  }
+
+  if (pathname.startsWith('/api/inbox/sources/') && (req.method === 'GET' || !req.method)) {
+    return await sendSourceAsset(req, res, pathname, { auth: 'inbox' });
   }
 
   if (pathname === '/api/inbox' && (req.method === 'GET' || !req.method)) {

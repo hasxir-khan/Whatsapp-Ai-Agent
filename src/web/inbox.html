@@ -39,6 +39,11 @@
   #composer textarea { flex:1; resize:none; height:44px; background:#101318; color:var(--txt); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:inherit; }
   #composer button { background:var(--accent); color:#04150b; font-weight:700; border:0; border-radius:10px; padding:0 18px; cursor:pointer; }
   #composer button:disabled { opacity:.5; cursor:not-allowed; }
+  #sources { display:none; gap:10px; align-items:center; flex-wrap:wrap; padding:7px 14px; border-bottom:1px solid var(--line); background:#12151c; }
+  #sources .src { border:1px solid var(--line); border-radius:8px; padding:2px 8px; font-size:12px; color:var(--dim); white-space:nowrap; }
+  #sources .src b { color:var(--txt); }
+  #sources .src.stale { border-color:#5a3a1f; color:#e0a458; }
+  #sources .src a { color:var(--accent); text-decoration:none; margin-left:6px; }
   #note { padding:6px 14px; font-size:12px; color:var(--dim); border-top:1px solid var(--line); min-height:26px; }
   #crm { display:none; gap:6px; flex-wrap:wrap; padding:0 14px 10px; align-items:center; }
   #crm.on { display:flex; }
@@ -55,6 +60,7 @@
   <span class="spacer"></span>
   <span class="tag" id="counts">loading…</span>
 </header>
+<div id="sources" aria-label="Tracked sources (read-only)"></div>
 <div id="demobar" style="display:none; padding:8px 14px; background:#1b2330; border-bottom:1px solid var(--line); gap:8px; align-items:center; flex-wrap:wrap;">
   <span id="demomode" style="font-size:12px; color:var(--dim); white-space:nowrap;"></span>
   <span style="font-size:12px; color:var(--dim); white-space:nowrap;">Type as a customer:</span>
@@ -153,6 +159,39 @@
     $('biz').textContent = data.summary.name ? data.summary.name : 'Inbox';
   }
 
+  // Read-only: counts and downloads, no create/edit. Anything that changes a
+  // source is an owner command in WhatsApp.
+  function renderSources(s) {
+    const box = $('sources');
+    if (!s || !s.enabled || !(s.sources || []).length) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+    box.style.display = 'flex';
+    const chips = s.sources.map((x) => {
+      const qr = q('/api/inbox/sources/' + encodeURIComponent(x.source) + '/qr.png');
+      const pdf = q('/api/inbox/sources/' + encodeURIComponent(x.source) + '/poster.pdf');
+      return `<span class="src${x.stale ? ' stale' : ''}">${esc(x.label)} <b>${x.conversations}</b>` +
+        (x.orders ? ` · ${x.orders} paid` : '') +
+        (x.stale ? ` ⚠️ ${x.ageDays}d` : '') +
+        ` <a href="${qr}" target="_blank" rel="noopener">QR</a>` +
+        `<a href="${pdf}">A4</a></span>`;
+    });
+    box.innerHTML = '<span class="tag">Sources:</span>' + chips.join('');
+  }
+
+  let sourcesAt = 0;
+  async function loadSources() {
+    if (Date.now() - sourcesAt < 30000) return;
+    sourcesAt = Date.now();
+    try {
+      renderSources(await api('/api/inbox/sources'));
+    } catch {
+      /* the strip is a nicety; the inbox must keep working without it */
+    }
+  }
+
   async function open(number) {
     current = number;
     lastId = 0;
@@ -173,6 +212,7 @@
   async function tick() {
     try {
       await loadChats();
+      loadSources();
       $('live').classList.add('on');
       if (current && lastId) {
         const t = await api('/api/inbox/' + encodeURIComponent(current) + '?after=' + lastId);

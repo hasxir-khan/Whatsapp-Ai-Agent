@@ -30,6 +30,7 @@ import { cancelFor as cancelFollowUpDrafts } from '../services/followUpAgent.js'
 import { closerAgentEnabled, handleCloserTurn, readyToBuy, startOrder, handleReceipt } from '../services/closerAgent.js';
 import { reviewAgentEnabled, handleRating, attributeReferral } from '../services/reviewAgent.js';
 import { recordSourceTag } from '../services/growthDashboard.js';
+import { sourceLinksEnabled, stripSourceMarker, attributeSource } from '../services/sourceLinks.js';
 import {
   toolCallingEnabled, hasPendingConfirmation, confirmPending, cancelPending,
   isAffirmative, isNegative,
@@ -117,6 +118,22 @@ export async function handleIncoming(transport, rawIncoming) {
     // A teammate messaging the bot is an operator, never a client.
     if (isTeam(number)) {
       return await handleTeammate(transport, jid, number, info);
+    }
+
+    // ── a tracked link or QR left its mark in the message ──
+    // The marker is data for us and noise for everyone else, so it comes out
+    // before memory, the guards, intake or the model see the text. A malformed
+    // marker is removed too: a customer should never be shown the machinery.
+    let sourceCode = null;
+    let sourceMarkerSeen = false;
+    if (sourceLinksEnabled() && (info.text || info.caption)) {
+      const stripped = stripSourceMarker(info.text || info.caption);
+      if (stripped.found) {
+        sourceMarkerSeen = true;
+        sourceCode = stripped.code;
+        if (info.text) info.text = stripped.text;
+        if (info.caption) info.caption = stripped.text;
+      }
     }
 
     // ── bookkeeping ────────────────────────────────────────
@@ -237,6 +254,22 @@ export async function handleIncoming(transport, rawIncoming) {
         if (ref) db.logEvent('referral_captured', number, ref.code);
       } catch (err) {
         db.logEvent('referral_error', number, err.message);
+      }
+    }
+
+    // ── and where they came from, if we printed something ──
+    // Runs after the referral check on purpose: a code from a friend outranks
+    // a QR on a wall, and attributeSource refuses when a referral is on file.
+    if (sourceLinksEnabled() && (sourceMarkerSeen || incoming.referral)) {
+      try {
+        attributeSource({
+          number,
+          code: sourceCode,
+          referral: incoming.referral || null,
+          firstTouch: (existing?.message_count || 0) === 0,
+        });
+      } catch (err) {
+        db.logEvent('source_link_error', number, err.message);
       }
     }
 

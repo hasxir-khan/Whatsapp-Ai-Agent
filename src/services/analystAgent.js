@@ -14,6 +14,7 @@ import { sendToOwner } from './growth.js';
 import { formatMoney } from './geo.js';
 import { all, get, getSetting, setSetting, logEvent } from '../utils/db.js';
 import { chat, hasLLM } from '../core/llm.js';
+import { sourceCounts, sourceLinksEnabled } from './sourceLinks.js';
 
 const DAY_MS = 86_400_000;
 const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -209,6 +210,7 @@ export function weeklyNumbers({ from, to } = weekWindow()) {
       ? Math.round((reviewsRated.reduce((a, r) => a + Number(r.rating || 0), 0) / reviewsRated.length) * 10) / 10
       : null,
     referrals,
+    sources: sourceLinksEnabled() ? sourceCounts() : [],
     low: conv.conversations < MIN_CONVERSATIONS,
   };
 }
@@ -360,6 +362,19 @@ export async function buildWeeklyReport({ now = new Date(), withSuggestions = tr
     lines.push(`⭐ ${numbers.reviewsAsked} reviews asked, ${numbers.reviewsRated} rated${numbers.avgRating ? ` (avg ${numbers.avgRating}/5)` : ''}`);
   }
   if (numbers.referrals) lines.push(`🤝 ${numbers.referrals} referral${numbers.referrals === 1 ? '' : 's'} arrived`);
+  // Tracked links: which printed thing actually brought people, and which one
+  // has been hanging on a wall for a fortnight without a single scan.
+  if (numbers.sources?.length) {
+    lines.push('🔗 Where they came from:');
+    for (const row of numbers.sources) {
+      const bits = [`${row.conversations} chat${row.conversations === 1 ? '' : 's'}`];
+      if (row.leads) bits.push(`${row.leads} lead${row.leads === 1 ? '' : 's'}`);
+      if (row.orders) bits.push(`${row.orders} paid`);
+      const money = row.revenue ? ` (${formatMoney(row.revenue, numbers.currency)})` : '';
+      const flag = row.stale ? ` — ⚠️ nothing in ${row.ageDays} days` : '';
+      lines.push(`  ${row.label}: ${bits.join(' → ')}${money}${flag}`);
+    }
+  }
   if (numbers.busiestHours.length) {
     lines.push(`🕒 busiest: ${numbers.busiestHours.map((b) => b.label).join(', ')}`);
   }

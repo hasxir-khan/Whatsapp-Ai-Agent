@@ -96,6 +96,10 @@ const HELP = `*Bot commands*
 .campaign preview – who would get a win-back message, and a sample
 .campaign send / .campaign stop – start or halt it
 .invoice <id> – the PDF for an order/quote (.invoice <id> send → to the client)
+.link <source> [text] – a tracked wa.me link (instagram, poster, flyer…)
+.links – every source with chats → leads → paid, and what looks dead
+.qr <source> – the tracked link as a QR image
+.poster <source> – an A4 poster with the QR, ready to print
 .rules – FAQ rules learned from your own replies, waiting for a yes/no
 .approve-rule <id> / .reject-rule <id>
 .inbox – the live inbox link (read + reply from the browser)
@@ -181,7 +185,7 @@ const OWNER_ONLY = new Set([
   'export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq',
   'features', 'knowledge', 'tools', 'intents', 'growth', 'optouts', 'bookings', 'cancel', 'approve', 'skip',
   'done', 'paid', 'referrals', 'content', 'campaign', 'invoice', 'rules', 'approve-rule', 'reject-rule',
-  'inbox',
+  'inbox', 'link', 'links', 'qr', 'poster',
 ]);
 
 /**
@@ -855,6 +859,133 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
           `${model.label} ${model.invoiceNo} · ${model.total}\n${where}` +
           (toClient ? '' : `\n.invoice ${id} send → deliver it to the client`),
       };
+    }
+
+    case 'link': {
+      const L = await import('../services/sourceLinks.js');
+      if (!L.sourceLinksEnabled()) {
+        return { handled: true, reply: 'Source links are off.\nTurn them on with: .set features.sourceLinks true' };
+      }
+      const [name, ...rest] = args;
+      if (!name) {
+        return {
+          handled: true,
+          reply:
+            'Usage: .link <source> [text]\n' +
+            'Example: .link instagram Hi, I saw you on Instagram\n\n' +
+            'Sources are lowercase: poster, flyer, shop-window, google-profile, facebook.',
+        };
+      }
+      const res = L.createSource({ name, text: rest.join(' ') });
+      if (!res.ok) return { handled: true, reply: `⚠️ ${res.message || `Could not create "${name}".`}` };
+
+      const s = res.source;
+      const header = res.already ? `Already tracked: *${s.source}*` : `✅ *${s.source}* is ready to print.`;
+      return {
+        handled: true,
+        reply:
+          `${header}\n\n` +
+          `${res.url}\n\n` +
+          `The message it opens with:\n_"${res.message}"_\n\n` +
+          `.qr ${s.source} → the QR image\n.poster ${s.source} → an A4 PDF for the wall`,
+      };
+    }
+
+    case 'links': {
+      const L = await import('../services/sourceLinks.js');
+      if (!L.sourceLinksEnabled()) {
+        return { handled: true, reply: 'Source links are off.\nTurn them on with: .set features.sourceLinks true' };
+      }
+      const summary = L.sourceSummary();
+      if (!summary.total) {
+        return {
+          handled: true,
+          reply:
+            'No tracked sources yet.\n\n' +
+            '.link instagram\n.link poster Hi, I saw the poster at the shop\n\n' +
+            'Each one gets a QR and a poster, and every chat that arrives through it is counted here.',
+        };
+      }
+      const lines = [`*Where customers came from* (${summary.total}/${summary.limit})`, ''];
+      for (const row of summary.sources) {
+        const money = row.revenue ? ` · ${row.revenue} revenue` : '';
+        const flag = row.stale ? ` · ⚠️ nothing in ${row.ageDays} days` : '';
+        lines.push(`${row.label}: ${row.conversations} chat${row.conversations === 1 ? '' : 's'} · ${row.leads} lead${row.leads === 1 ? '' : 's'} · ${row.orders} paid${money}${flag}`);
+      }
+      const stale = summary.stale;
+      if (stale.length) {
+        lines.push('');
+        lines.push(`⚠️ No conversations after two weeks: ${stale.join(', ')} — that poster is in the wrong place, or nobody scans it.`);
+      }
+      lines.push('');
+      lines.push('.qr <source> for the image · .poster <source> for the A4 print');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'qr': {
+      const L = await import('../services/sourceLinks.js');
+      if (!L.sourceLinksEnabled()) {
+        return { handled: true, reply: 'Source links are off.\nTurn them on with: .set features.sourceLinks true' };
+      }
+      const name = args[0];
+      if (!name) return { handled: true, reply: 'Usage: .qr instagram   (create one first with .link instagram)' };
+      const link = L.sourceLink(name);
+      if (!link) return { handled: true, reply: `No source called "${name}". .links shows what exists, .link ${name} creates it.` };
+
+      try {
+        const png = await L.qrPng(link.url);
+        const svg = await L.qrSvg(link.url);
+        try {
+          await sock.sendMessage(chatJid, {
+            image: png,
+            mimetype: 'image/png',
+            caption: `QR for *${link.label}*\n${link.url}`,
+          });
+          // The vector is for whoever prints the sign, not for a phone screen.
+          await sock.sendMessage(chatJid, {
+            document: Buffer.from(svg, 'utf8'),
+            mimetype: 'image/svg+xml',
+            fileName: `${link.source}-qr.svg`,
+            caption: 'Same QR, as vector — send this file to the printer.',
+          });
+        } catch (err) {
+          db.logEvent('source_qr_send_failed', null, err.message);
+          return { handled: true, reply: `Could not send the QR (${err.message}).\nThe link still works:\n${link.url}` };
+        }
+        return { handled: true, reply: `QR for *${link.label}* sent.\nPrint it at least 3 cm wide; bigger is better.` };
+      } catch (err) {
+        db.logEvent('source_qr_failed', null, err.message);
+        return { handled: true, reply: `Could not build the QR (${err.message}).\nThe link still works:\n${link.url}` };
+      }
+    }
+
+    case 'poster': {
+      const L = await import('../services/sourceLinks.js');
+      if (!L.sourceLinksEnabled()) {
+        return { handled: true, reply: 'Source links are off.\nTurn them on with: .set features.sourceLinks true' };
+      }
+      const name = args[0];
+      if (!name) return { handled: true, reply: 'Usage: .poster instagram   (create one first with .link instagram)' };
+      const link = L.sourceLink(name);
+      if (!link) return { handled: true, reply: `No source called "${name}". .links shows what exists, .link ${name} creates it.` };
+
+      const P = await import('../services/poster.js');
+      const built = await P.buildPoster({ link });
+      if (!built.ok) {
+        return { handled: true, reply: `Could not build the poster (${built.reason}).\nThe link still works:\n${link.url}` };
+      }
+      try {
+        await sock.sendMessage(chatJid, {
+          document: built.buffer,
+          mimetype: 'application/pdf',
+          fileName: built.fileName,
+          caption: `A4 poster for *${link.label}* — print at 100% (no "fit to page").`,
+        });
+      } catch (err) {
+        db.logEvent('source_poster_send_failed', null, err.message);
+        return { handled: true, reply: `The poster is built but could not be sent (${err.message}).` };
+      }
+      return { handled: true, reply: `Poster for *${link.label}* sent (A4 PDF).\nPaste it where people already stand still: counter, waiting area, lift.` };
     }
 
     case 'campaign': {
