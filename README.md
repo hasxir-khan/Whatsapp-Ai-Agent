@@ -531,6 +531,8 @@ Everything new is **opt-in and off by default**, so an existing install behaves 
 | `adminPanel` | 4 | Admin-only control panel for every tenant: create, profile, keys, QR, start/stop (alias `admin`) |
 | `visualSearch` | 4 | Recognise a customer's photo against your own catalogue, locally and free (alias `visual`) |
 | `mcpTools` | 4 | Call operator-approved external tool servers (MCP); `mcpWriteTools` adds tools that change things |
+| `healthAlerts` | 5 | Tell the owner when WhatsApp, the AI, disk, backups or an unanswered chat go wrong |
+| `privacyTools` | 5 | `.export <number>` and `.forget <number> <number>`, plus "delete my data" for customers |
 | `closer` | 3 | Objection handling, payment links |
 | `reactivation` | 3 | Monthly win-back for old clients |
 | `reviews` | 3 | Review and referral requests |
@@ -1192,6 +1194,107 @@ the program gets nothing it was not given:
   server, real-world latency, the SDK's stderr handling, and how a particular
   server reacts to being killed and restarted. The tests here inject a fake
   transport, so they prove the boundary — not the remote end.
+
+---
+
+## Reliability alerts — the bot tells you when it is in trouble
+
+A WhatsApp bot fails quietly. The socket drops at 2am, the free AI tier runs out
+at noon, the disk fills, replies sit in the outbox, and the first sign of
+trouble is a customer who never got an answer.
+
+With `features.healthAlerts` on, the bot checks itself every minute and pings
+**you once per problem**, then once more when it clears:
+
+```
+🟠 *Replies stuck in the outbox*: 6 queued, oldest 24 min
+🔴 *WhatsApp connection*: logged_out
+🟢 *AI provider* is back to normal (was out for 41 min).
+```
+
+| What is watched | Fires when |
+|---|---|
+| WhatsApp connection | the transport is disconnected, logged out, stopped or errored |
+| Reconnect loop | `ALERT_RECONNECTS` (3) failures in `ALERT_RECONNECT_WINDOW_MINUTES` (10) |
+| Outbox | a reply has been queued longer than `ALERT_OUTBOX_MINUTES` (10) |
+| AI provider | no key configured, daily quota spent, or `ALERT_LLM_FAILURES` (3) failures in 10 min |
+| Tenant AI budget | this tenant's daily LLM cap is reached |
+| Disk | under `DISK_WARN_PERCENT` (10%) free — red under 5% |
+| Backups | nothing in `BACKUP_DIR` newer than `BACKUP_MAX_AGE_DAYS` (7) |
+| Waiting customer | an unanswered message in business hours, older than `SLA_ALERT_MINUTES` (15) |
+
+```bash
+# config/owner.json → "features": { "healthAlerts": true }
+ALERT_WEBHOOK_URL=https://ntfy.sh/your-topic npm start
+```
+
+Then `.health` for the current state, `.incidents` for the last ten.
+
+**The second channel matters.** If WhatsApp is the thing that broke, an alert
+sent over WhatsApp is a message to nobody. Set `ALERT_WEBHOOK_URL` and every
+incident and recovery is also POSTed there (5 s timeout, one attempt, failures
+logged — a dead webhook never costs the bot a reply). The same state is in
+`/api/status` under `health` and in `node scripts/doctor.js`, so a monitor that
+is up can see it too.
+
+The SLA ping names the chat only if you set `ALERT_INCLUDE_CONTENT=true`; the
+default says "a chat is waiting 20 min" and nothing else. Paused, blocked and
+opted-out chats never count, and neither does a message that arrived while the
+business was closed — that is not an SLA miss, that is a closed shop.
+
+## Privacy tools — export, forget, retention
+
+Two tools and one honest map of where everything lives.
+
+```bash
+# config/owner.json → "features": { "privacyTools": true }
+```
+
+- **`.export <number>`** — a JSON file of that one contact: messages, facts,
+  leads, bookings, orders, follow-ups, referrals, review asks, consents,
+  scheduled messages. Nothing about anyone else is in it; the file name carries
+  the number.
+- **`.forget <number> <number>`** — the number typed twice. Deletes that
+  contact's rows table by table — messages, the seen-message cache, facts,
+  summaries, intake, leads, follow-ups, pending sends, learned-rule
+  candidates, calls, review asks, referrals, reactivation log, growth
+  sends/drafts, booking reminders, objection attempts, message intents,
+  bookings, orders, tool-call rows, outbox entries, Cloud-API message rows and
+  their PDF invoices — then sweeps temp media. What stays: a blocked contact
+  shell, an opt-out marker (so no agent ever messages them again) and one audit
+  line with a **hash** of the number and row counts, no content. Refuses your
+  own number. Running it twice is safe and says so.
+- **`"delete my data"`** — a customer can ask in English, Roman Urdu or Urdu
+  ("mera data delete karo", "میرا ڈیٹا ڈیلیٹ کرو"). They get a polite
+  acknowledgement; you get a ping and a queue (`.forget` with no arguments) and
+  you decide. A WhatsApp message is a weak identity claim, so the bot never
+  deletes on its own say-so.
+- **Retention** — `PRIVACY_RETENTION_DAYS=90` replaces message bodies older than
+  90 days with `[purged]` and deletes old temp media, keeping the rows so the
+  owner's counts still add up. Off by default: keeping the transcript is a
+  choice, not an accident.
+
+### Data map — what is stored, where, and for how long
+
+| Where | What | How long |
+|---|---|---|
+| `data/*.sqlite` → `messages` | every customer message and reply, with its kind and timestamp | until you delete it, or `PRIVACY_RETENTION_DAYS` purges the bodies |
+| `data/*.sqlite` → `contacts`, `facts`, `summaries`, `intake` | the contact's name, category, language, known facts, a short summary | until `.forget` |
+| `data/*.sqlite` → `leads`, `bookings`, `orders`, `calls` | pipeline, appointments, orders, calls | until `.forget` |
+| `data/*.sqlite` → `followups`, `pending`, `outbox`, `growth_*` | scheduled and attempted messages, opt-outs | until sent or `.forget` |
+| `data/*.sqlite` → `tool_calls`, `message_intents`, `events` | what the bot did and why — operational, not content | until `.forget` (events are aggregate and kept) |
+| `data/invoices/*.pdf` | quotes, invoices, receipts | `INVOICE_KEEP_DAYS` (90), or `.forget` |
+| `tmp/` | downloaded media while it is being read | swept hourly; nothing is kept |
+| `sessions/` | the WhatsApp login | until you delete it |
+| `backups/` | gzipped copies of the above | your cron, your retention |
+| `data/knowledge` | owner-uploaded documents | until you remove the document |
+
+Nothing is sent to a third party except the model provider (the text of a
+conversation, as the prompt) and, if you configure it, your own webhook.
+
+**What this does not do.** It does not scrub your model provider's copy, your
+phone's WhatsApp backup, or anything a teammate screenshotted. It deletes what
+this bot holds — which is the part it can honestly promise.
 
 ---
 
@@ -1876,6 +1979,8 @@ Run through this once, in order. It takes about twenty minutes and prevents most
 - Nothing leaves the machine except the calls to your chosen AI providers.
 - `.env`, `sessions/`, `data/`, `tenants/` and `config/owner.local.json` are gitignored.
 - Each user's data is in their own folder — there is no cross-tenant query path.
+- For the table-by-table version, and the commands that delete it, see
+  [Privacy tools](#privacy-tools--export-forget-retention) above.
 
 ---
 
@@ -1953,7 +2058,7 @@ scripts/
   backup.js  restore.js   one-file backup of DB + config
 src/web/inbox.html      the inbox page (one file, no dependencies)
 assets/fonts/           Noto Sans + Noto Naskh Arabic (bundled, subsetted, OFL)
-test/                   658 tests (node:test, no dependencies)
+test/                   695 tests (node:test, no dependencies)
 ```
 
 ---
@@ -1961,7 +2066,7 @@ test/                   658 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test                 # 658 tests, ~39s, no network, no keys, no config/owner.json
+npm test                 # 695 tests, ~39s, no network, no keys, no config/owner.json
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys

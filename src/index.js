@@ -8,6 +8,8 @@
 import { config, describeConfig, assertConfig } from './config/env.js';
 import { initDB, startAutoSave, getSetting, logEvent } from './utils/db.js';
 import { startServer } from './server.js';
+import { startHealthMonitor } from './services/health.js';
+import { startRetention } from './services/privacy.js';
 import { botState, setStatus, bumpStat } from './state.js';
 import { handleIncoming, startPendingFlusher } from './handlers/messageHandler.js';
 import { startDailyReport } from './services/report.js';
@@ -39,7 +41,7 @@ function banner() {
   const line = '─'.repeat(58);
   console.log(`
 ┌${line}┐
-│  🤖  WhatsApp Self-Knowledge Assistant  v9.15             │
+│  🤖  WhatsApp Self-Knowledge Assistant  v9.16             │
 │  ${config.bot.name.padEnd(54).slice(0, 54)}  │
 └${line}┘
 ${describeConfig()}
@@ -70,6 +72,12 @@ function startServices(t) {
   if (featureOn('contentAgent')) startContentLoop({ transport: t });
 
   startPendingFlusher(t);
+
+  // Reliability alerts and retention run on their own timers, off the message
+  // path: a monitor that needs a customer to write before it notices is not a
+  // monitor. Both are no-ops unless their flag/env is set.
+  startHealthMonitor({ onError: (err) => console.error('Health check failed:', err.message) });
+  startRetention({ onError: (err) => console.error('Retention purge failed:', err.message) });
   startOutboxLoop(t);
 }
 

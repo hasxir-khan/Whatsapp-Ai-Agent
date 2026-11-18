@@ -9,7 +9,7 @@ import {
 import {
   listLeads, getLead, listContacts, blockContact, setContactPaused, setSetting,
   getSetting, dbStats, getUsage, listIntakes, exportAll, writeExport, countLeads,
-  assignContact, contactsFor, teamWorkload, recentCalls,
+  assignContact, contactsFor, teamWorkload, recentCalls, logEvent,
 } from '../utils/db.js';
 import { buildReport } from '../services/report.js';
 import { buildOwnerBrief } from '../services/memory.js';
@@ -62,6 +62,10 @@ const HELP = `*Bot commands*
 .voice off|request|match|always
 .ai on|off – global switch
 .export – JSON backup of leads + chats
+.export 92300… – everything held about one contact (a file)
+.forget 92300… 92300… – delete that contact everywhere (type the number twice)
+.health – connection, AI, disk, backups, waiting chats
+.incidents – the last ten things that went wrong (and cleared)
 .sync – push leads to Google Sheets
 .id – current chat id
 .profile – business profile summary
@@ -861,6 +865,29 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     }
 
     case 'export': {
+      // `.export <number>` is a privacy export for one person, not a backup.
+      if (target) {
+        const { privacyEnabled, exportContact, exportFileName } = await import('../services/privacy.js');
+        if (!privacyEnabled()) {
+          return { handled: true, reply: 'Privacy tools are off. Turn them on first: .set features.privacyTools true' };
+        }
+        const exported = exportContact(target);
+        if (!exported.ok) return { handled: true, reply: `Could not export: ${exported.reason}` };
+        const counts = Object.entries(exported.counts).filter(([, n]) => n).map(([key, n]) => `${key} ${n}`).join(' · ');
+        try {
+          await sock.sendMessage(chatJid, {
+            document: Buffer.from(exported.text, 'utf8'),
+            fileName: exportFileName(target),
+            mimetype: 'application/json',
+            caption: `📄 +${target}: ${counts || 'nothing stored'}`,
+          });
+          logEvent('privacy_export', target, exported.counts);
+          return { handled: true };
+        } catch (err) {
+          return { handled: true, reply: `Export built but not sent: ${err.message}` };
+        }
+      }
+
       const data = exportAll();
       const file = writeExport(data);
       try {
@@ -1009,6 +1036,93 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         lines.push('No external calls yet.');
       }
       return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'health': {
+      const { healthSnapshot, alertsEnabled } = await import('../services/health.js');
+      const snap = healthSnapshot();
+      const icon = { ok: '✅', degraded: '🟠', down: '🔴' }[snap.status] || '•';
+      const lines = [`${icon} *Health* — ${snap.status}${alertsEnabled() ? '' : ' (alerts off: .set features.healthAlerts true)'}`];
+      for (const check of snap.checks) {
+        if (check.kind === 'sla') continue; // one line per waiting chat is spam here
+        lines.push(`${check.ok ? '✅' : check.severity === 'bad' ? '🔴' : '🟠'} ${check.kind}: ${check.detail}`);
+      }
+      const waiting = snap.checks.filter((c) => c.kind === 'sla');
+      lines.push(waiting.length ? `🟠 ${waiting.length} chat(s) waiting for a reply` : '✅ no chat waiting');
+      if (snap.open.length) {
+        lines.push('');
+        lines.push(`Open incidents: ${snap.open.length} (see .incidents)`);
+      }
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'incidents': {
+      const { recentIncidents } = await import('../services/health.js');
+      const rows = recentIncidents(10);
+      if (!rows.length) return { handled: true, reply: 'No incidents recorded yet. That is the good outcome.' };
+      const lines = ['*Incidents*'];
+      for (const row of rows) {
+        const when = new Date(row.opened_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
+        const end = row.resolved_at ? 'resolved' : 'OPEN';
+        lines.push(`${row.severity === 'bad' ? '🔴' : '🟠'} ${when} ${row.kind}: ${row.detail || ''} — ${end}`);
+      }
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'forget': {
+      const { privacyEnabled, forgetContact, privacyQueue } = await import('../services/privacy.js');
+
+      // `.forget` with no arguments: who is waiting to be forgotten?
+      if (!args.length) {
+        const queue = privacyQueue(10);
+        const lines = [`*Privacy* ${privacyEnabled() ? '✅ on' : '⏸ off (.set features.privacyTools true)'}`];
+        if (!queue.length) {
+          lines.push('Nobody has asked to be deleted.');
+        } else {
+          lines.push('Waiting for you:');
+          for (const row of queue) {
+            const when = new Date(row.created_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
+            lines.push(`• +${row.number} — asked ${when}`);
+          }
+          lines.push('');
+          lines.push('Delete one with: .forget <number> <number>');
+        }
+        return { handled: true, reply: lines.join('\n') };
+      }
+
+      if (!privacyEnabled()) {
+        return { handled: true, reply: 'Privacy tools are off. Turn them on first: .set features.privacyTools true' };
+      }
+
+      const first = normalizePhone(args[0] || '');
+      const second = normalizePhone(args[1] || '');
+      if (!first) return { handled: true, reply: 'Which number? .forget 923001234567 923001234567' };
+      if (!second) {
+        return {
+          handled: true,
+          reply: `⚠️ This deletes every message, lead, booking, order and note for +${first}.\n\nIf that is what you want, type it twice:\n.forget ${first} ${first}`,
+        };
+      }
+      if (first !== second) {
+        return { handled: true, reply: `The two numbers do not match (+${first} ≠ +${second}). Nothing was deleted.` };
+      }
+
+      const result = forgetContact(first, { reason: 'owner_forget' });
+      if (!result.ok) {
+        const why = result.reason === 'owner_number' ? "That is your own number. It is not going to delete you." : `Could not delete: ${result.reason}`;
+        return { handled: true, reply: why };
+      }
+
+      const rows = Object.entries(result.removed)
+        .filter(([table]) => table !== 'tempSwept')
+        .map(([table, n]) => `${table}: ${n}`)
+        .join(' · ');
+      return {
+        handled: true,
+        reply: result.already
+          ? `+${first} was already forgotten. Nothing left to delete; they stay blocked and opted out.`
+          : `🗑️ Forgot +${first}.\n${rows}\n\nKept: a block/opt-out marker (so they are never messaged again) and an anonymous audit line. Nothing else.`,
+      };
     }
 
     case 'calls': {

@@ -912,6 +912,54 @@ async function checkMcp() {
   ok(`calls today: ${status.usedToday}/${status.dailyCap}${status.writesEnabled ? ' · writes enabled' : ' · writes off'}`);
 }
 
+async function checkHealthAndPrivacy() {
+  const {
+    alertsEnabled, alertSettings, healthSnapshot, backupDir,
+  } = await import('../src/services/health.js');
+  const { privacyEnabled, retentionDays } = await import('../src/services/privacy.js');
+
+  if (alertsEnabled()) {
+    section('Reliability alerts');
+    const settings = alertSettings();
+    const snap = healthSnapshot();
+    const failingBad = snap.failing.filter((f) => f.severity === 'bad');
+    const failingWarn = snap.failing.filter((f) => f.severity !== 'bad');
+    for (const entry of failingBad) bad(`now: ${entry.kind} — ${entry.detail}`);
+    for (const entry of failingWarn) warn(`now: ${entry.kind} — ${entry.detail}`);
+    if (!snap.failing.length) ok('nothing failing right now');
+
+    const webhook = String(process.env.ALERT_WEBHOOK_URL || '').trim();
+    if (webhook) ok(`second channel configured (${webhook.replace(/[?#].*$/, '')})`);
+    else {
+      warn('no ALERT_WEBHOOK_URL — if WhatsApp is the thing that is down, the alert cannot reach you');
+      notes.push('Set ALERT_WEBHOOK_URL to any endpoint that accepts a POST (ntfy, Slack, a webhook.site URL).');
+    }
+    ok(`dedupe + cooldown: ${Math.round(settings.cooldownMs / 60000)} min · SLA ${settings.slaMinutes} min (business hours only)`);
+    if (settings.slaMinutes < 5) warn(`SLA_ALERT_MINUTES is ${settings.slaMinutes} — that is chat noise, not an SLA`);
+    if (!settings.includeContent) ok('SLA pings carry no message content');
+
+    const dir = backupDir();
+    if (!fs.existsSync(dir)) {
+      warn(`no backup folder at ${dir} — backups stay "missing" until you run npm run backup`);
+      notes.push('Add a cron: npm run backup → backups/, then copy it off the machine.');
+    }
+  }
+
+  if (privacyEnabled() || retentionDays()) {
+    section('Privacy');
+    if (privacyEnabled()) {
+      ok('privacyTools on: .export <number>, .forget <number> <number>');
+    } else {
+      warn('privacyTools is off — .export/.forget refuse until it is switched on');
+    }
+    if (retentionDays()) {
+      ok(`retention: message bodies purged after ${retentionDays()} days (counts kept)`);
+    } else {
+      notes.push('PRIVACY_RETENTION_DAYS is unset — messages are kept forever (the default, on purpose).');
+    }
+  }
+}
+
 async function main() {
   // `npm run doctor -- gemini` runs only the checks whose name matches.
   const args = process.argv.slice(2);
@@ -941,6 +989,7 @@ async function main() {
   if (want('memory', 'db', 'database')) await checkMemory();
   if (want('visual', 'images')) await checkVisual();
   if (want('mcp', 'tools', 'external')) await checkMcp();
+  if (want('health', 'alerts', 'privacy')) await checkHealthAndPrivacy();
   if (want('whatsapp', 'session')) await checkWhatsApp();
 
   section('Summary');

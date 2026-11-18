@@ -51,6 +51,8 @@ export const FEATURE_KEYS = [
   'liveInbox',
   'mcpTools',
   'mcpWriteTools',
+  'healthAlerts',
+  'privacyTools',
 ];
 
 export const FEATURE_LABELS = {
@@ -86,6 +88,8 @@ export const FEATURE_LABELS = {
   liveInbox: 'Live inbox on the dashboard: read, reply and take over chats',
   mcpTools: 'Operator-approved external tool servers (MCP), read-only unless writes are switched on',
   mcpWriteTools: 'Allow MCP tools that take actions — still needs the customer to confirm each one',
+  healthAlerts: 'Tell the owner when WhatsApp, the AI, disk, backups or an unanswered chat go wrong',
+  privacyTools: 'Data export and deletion: .export <number>, .forget <number> <number>',
 };
 
 // ── live profile access ─────────────────────────────────────
@@ -126,6 +130,10 @@ export const FEATURE_ALIASES = {
   mcptools: 'mcpTools',
   mcptools_write: 'mcpWriteTools',
   mcpwrite: 'mcpWriteTools',
+  alerts: 'healthAlerts',
+  health: 'healthAlerts',
+  privacy: 'privacyTools',
+  gdpr: 'privacyTools',
 };
 
 /** Flags that are ON unless explicitly turned off. */

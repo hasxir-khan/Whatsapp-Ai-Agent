@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { config, teamMembers } from './config/env.js';
 import { botState, uptimeMinutes } from './state.js';
+import { healthSnapshot } from './services/health.js';
 import {
   dbStats, recentEvents, getUsage, getSetting, getContact,
   teamWorkload, recentCalls, callsToday,
@@ -86,6 +87,9 @@ function buildStatus() {
       ttsChars: usage.tts_chars,
       ttsLimit: config.limits.dailyTtsChars,
     },
+    // Reliability, as data: a monitor that only works when WhatsApp is up is
+    // not a monitor. This is readable with no token, like the rest of status.
+    health: healthSnapshot(),
     events: recentEvents(14)
       .filter((e) => !['ignored_chat', 'memory_summary_error'].includes(e.type))
       .map((e) => {

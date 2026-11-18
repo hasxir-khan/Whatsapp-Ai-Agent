@@ -18,6 +18,12 @@ import { detectLanguage, detectTone, fromWhisperLanguage } from '../services/lan
 import { generateReply, detectMood, needsOwner } from '../core/brain.js';
 import { routeMessage, managerEnabled } from '../core/manager.js';
 import { detectOptOut, detectOptIn, recordOptOut, recordOptIn, optOutConfirmation } from '../services/growth.js';
+import {
+  privacyEnabled as privacyToolsEnabled,
+  isDeletionRequest,
+  requestDeletion,
+  deletionAcknowledgement,
+} from '../services/privacy.js';
 import { bookingAgentEnabled, handleBookingTurn } from '../services/bookingAgent.js';
 import { cancelFor as cancelFollowUpDrafts } from '../services/followUpAgent.js';
 import { closerAgentEnabled, handleCloserTurn, readyToBuy, startOrder, handleReceipt } from '../services/closerAgent.js';
@@ -150,6 +156,31 @@ export async function handleIncoming(transport, rawIncoming) {
       memory.saveUserTurn(number, said, info.kind, { optIn: true });
       memory.saveAssistantTurn(number, reply, 'text');
       await sendTyping(transport, jid, reply, { delay: 300 });
+      return;
+    }
+
+    // ── "delete my data" ───────────────────────────────────
+    // Before the model, before intake, before anything can decide to be clever.
+    // A deletion request is a legal-ish act, not a conversation: acknowledge it
+    // in the customer's language and put it in front of the owner, who is the
+    // only one who can run .forget.
+    if (said && privacyToolsEnabled() && isDeletionRequest(said)) {
+      const lang = detectLanguage(said).code;
+      const ackLang = lang === 'ur' ? 'ur' : lang === 'roman-ur' ? 'roman' : 'en';
+      const ack = deletionAcknowledgement(ackLang);
+      try {
+        requestDeletion(number, { language: lang });
+      } catch (err) {
+        db.logEvent('privacy_request_error', number, err.message);
+      }
+      memory.saveUserTurn(number, said, info.kind, { lang, privacy: 'delete_request' });
+      memory.saveAssistantTurn(number, ack, 'text');
+      await sendTyping(transport, jid, ack, { delay: 500 });
+      noteSent([]);
+      await notifyOwner(
+        transport,
+        `🔐 +${number} asked to have their data deleted.\nWhen you are sure, type: .forget ${number} ${number}`
+      );
       return;
     }
 

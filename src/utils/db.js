@@ -283,6 +283,44 @@ CREATE TABLE IF NOT EXISTS mcp_idempotency (
   created_at  TEXT
 );
 
+-- Reliability incidents: one row per thing that went wrong, when it opened,
+-- when the owner was told, and when it recovered. "detail" never holds a
+-- customer's words — it holds numbers and states.
+CREATE TABLE IF NOT EXISTS incidents (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  key         TEXT,
+  kind        TEXT,
+  severity    TEXT,          -- warn | bad
+  detail      TEXT,
+  status      TEXT,          -- open | resolved
+  opened_at   TEXT,
+  resolved_at TEXT,
+  notified_at TEXT,
+  notify_count INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_key ON incidents(key, status);
+CREATE INDEX IF NOT EXISTS idx_incidents_opened ON incidents(opened_at);
+
+-- A customer asked to be forgotten; the owner decides.
+CREATE TABLE IF NOT EXISTS privacy_requests (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      TEXT,
+  status      TEXT,          -- pending | done | declined
+  language    TEXT,
+  created_at  TEXT,
+  decided_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_privacy_requests_status ON privacy_requests(status, created_at);
+
+-- The audit line for a deletion: what happened, how much, never who or what.
+CREATE TABLE IF NOT EXISTS privacy_audit (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  action      TEXT,          -- forget | retention
+  subject_hash TEXT,         -- sha256(number)[0..16] — irreversible, and enough
+  detail      TEXT,          -- row counts, never content
+  created_at  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS admin_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT,
@@ -1313,6 +1351,91 @@ export function recentToolCalls(limit = 10) {
     args: safeJson(row.args),
     result: safeJson(row.result),
   }));
+}
+
+// ── incidents ───────────────────────────────────────────────
+
+export function findOpenIncident(key) {
+  return get("SELECT * FROM incidents WHERE key = ? AND status = 'open' ORDER BY id DESC LIMIT 1", [key]) || null;
+}
+
+export function openIncident({ key, kind, severity = 'warn', detail = null }) {
+  run(
+    `INSERT INTO incidents (key, kind, severity, detail, status, opened_at, notified_at, notify_count)
+     VALUES (?,?,?,?,?,?,?,?)`,
+    [key, kind, severity, detail, 'open', new Date().toISOString(), null, 0]
+  );
+  saveDB(true);
+  const row = get("SELECT * FROM incidents WHERE key = ? AND status = 'open' ORDER BY id DESC LIMIT 1", [key]);
+  return row || null;
+}
+
+/** Record that the owner was told (or that a repeat was deliberately skipped). */
+export function markIncidentNotified(id, at = new Date().toISOString()) {
+  run('UPDATE incidents SET notified_at = ?, notify_count = notify_count + 1 WHERE id = ?', [at, id]);
+  saveDB(true);
+}
+
+export function resolveIncident(id) {
+  run("UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?", [new Date().toISOString(), id]);
+  saveDB(true);
+}
+
+export function openIncidents() {
+  return all("SELECT * FROM incidents WHERE status = 'open' ORDER BY id DESC");
+}
+
+export function recentIncidents(limit = 10) {
+  return all('SELECT * FROM incidents ORDER BY id DESC LIMIT ?', [limit]);
+}
+
+export function incidentStats() {
+  const row = get("SELECT COUNT(*) AS open FROM incidents WHERE status = 'open'");
+  const day = get("SELECT COUNT(*) AS today FROM incidents WHERE opened_at >= ?", [new Date().toISOString().slice(0, 10)]);
+  return { open: row?.open || 0, today: day?.today || 0 };
+}
+
+// ── privacy requests and audit ──────────────────────────────
+
+export function addPrivacyRequest(number, { language = 'en' } = {}) {
+  const existing = get("SELECT * FROM privacy_requests WHERE number = ? AND status = 'pending' ORDER BY id DESC LIMIT 1", [number]);
+  if (existing) return existing;
+  run('INSERT INTO privacy_requests (number, status, language, created_at) VALUES (?,?,?,?)', [
+    number,
+    'pending',
+    language,
+    new Date().toISOString(),
+  ]);
+  saveDB(true);
+  return get("SELECT * FROM privacy_requests WHERE number = ? AND status = 'pending' ORDER BY id DESC LIMIT 1", [number]);
+}
+
+export function pendingPrivacyRequests(limit = 20) {
+  return all("SELECT * FROM privacy_requests WHERE status = 'pending' ORDER BY id DESC LIMIT ?", [limit]);
+}
+
+export function resolvePrivacyRequests(number, status = 'done') {
+  const changed = run("UPDATE privacy_requests SET status = ?, decided_at = ? WHERE number = ? AND status = 'pending'", [
+    status,
+    new Date().toISOString(),
+    number,
+  ]);
+  if (changed) saveDB(true);
+  return changed;
+}
+
+export function logPrivacyAction({ action, subjectHash, detail = null }) {
+  run('INSERT INTO privacy_audit (action, subject_hash, detail, created_at) VALUES (?,?,?,?)', [
+    action,
+    subjectHash,
+    detail ? JSON.stringify(detail).slice(0, 500) : null,
+    new Date().toISOString(),
+  ]);
+  saveDB(true);
+}
+
+export function recentPrivacyAudit(limit = 10) {
+  return all('SELECT * FROM privacy_audit ORDER BY id DESC LIMIT ?', [limit]);
 }
 
 // ── MCP call log ────────────────────────────────────────────

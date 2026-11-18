@@ -111,6 +111,8 @@
     "visualSearch": false,
     "mcpTools": false,
     "mcpWriteTools": false,
+    "healthAlerts": false,
+    "privacyTools": false,
     "liveInbox": false
   }
 }
