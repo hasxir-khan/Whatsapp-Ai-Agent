@@ -415,6 +415,19 @@ export async function generateReply({
   // Owner chats keep the plain path: the owner does things with commands.
   if (featureFlag('toolCalling') && chatId && chatType !== 'owner') {
     try {
+      // External (MCP) tools: the operator's list, this tenant's slice. If the
+      // feature is off or discovery is slow, this returns nothing and the turn
+      // is exactly what it was before.
+      const allowed = specialist ? allowedTools(agent) : null;
+      if (featureFlag('mcpTools')) {
+        const { prepareTenantBounded } = await import('../services/mcpClient.js');
+        const exposed = await prepareTenantBounded(config.tenant.slug);
+        // Read-only external tools are safe enough for a specialist to see;
+        // write tools stay with the general agent, where a confirmation is the
+        // normal flow, and are still off unless the owner switched them on.
+        if (allowed) for (const def of exposed) if (def.readOnly) allowed.add(def.name);
+      }
+
       const tooled = await generateWithTools({
         system,
         messages: [...history, { role: 'user', content: userContent }],
@@ -425,7 +438,7 @@ export async function generateReply({
           send,
           notifyOwner,
           who: dossier?.name || number,
-          allowedTools: specialist ? allowedTools(agent) : null,
+          allowedTools: allowed,
         },
       });
 

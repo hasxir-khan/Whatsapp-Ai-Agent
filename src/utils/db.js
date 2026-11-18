@@ -253,6 +253,36 @@ CREATE TABLE IF NOT EXISTS image_embeddings (
   updated_at TEXT
 );
 
+-- Every call that leaves this machine for an external tool server.
+-- The arguments themselves are never stored, only a hash: a tool argument can
+-- be a customer's address or an order's contents.
+CREATE TABLE IF NOT EXISTS mcp_calls (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  server      TEXT,
+  tool        TEXT,
+  arg_hash    TEXT,
+  ok          INTEGER,
+  status      TEXT,          -- ok | error | timeout | rejected | breaker | budget
+  ms          INTEGER,
+  error       TEXT,
+  truncated   INTEGER,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_calls_created ON mcp_calls(created_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_calls_tenant ON mcp_calls(tenant, created_at);
+
+-- A write tool must not run twice for one confirmation, however often the
+-- customer's "yes" is replayed.
+CREATE TABLE IF NOT EXISTS mcp_idempotency (
+  key         TEXT PRIMARY KEY,
+  tenant      TEXT,
+  server      TEXT,
+  tool        TEXT,
+  result      TEXT,
+  created_at  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS admin_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT,
@@ -1283,6 +1313,68 @@ export function recentToolCalls(limit = 10) {
     args: safeJson(row.args),
     result: safeJson(row.result),
   }));
+}
+
+// ── MCP call log ────────────────────────────────────────────
+// The log is the only place a tool call is remembered. Arguments are hashed,
+// results are not kept: the point is to be able to answer "what did the bot
+// send out, to whom, and did it work", not to build a second copy of the data.
+
+export function logMcpCall({
+  tenant = null, server = null, tool = null, argHash = null,
+  ok = null, status = 'ok', ms = null, error = null, truncated = 0,
+} = {}) {
+  run(
+    `INSERT INTO mcp_calls (tenant, server, tool, arg_hash, ok, status, ms, error, truncated, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    [tenant, String(server || '').slice(0, 40), String(tool || '').slice(0, 80), argHash, ok === null ? null : ok ? 1 : 0, status, ms, error ? String(error).slice(0, 300) : null, truncated ? 1 : 0, new Date().toISOString()]
+  );
+  saveDB(true);
+}
+
+export function recentMcpCalls(limit = 10) {
+  return all('SELECT * FROM mcp_calls ORDER BY id DESC LIMIT ?', [limit]);
+}
+
+export function mcpCallStats(sinceIso = null) {
+  const row = sinceIso
+    ? get('SELECT COUNT(*) AS total, SUM(ok = 0) AS errors FROM mcp_calls WHERE created_at >= ?', [sinceIso])
+    : get('SELECT COUNT(*) AS total, SUM(ok = 0) AS errors FROM mcp_calls');
+  return { total: row?.total || 0, errors: row?.errors || 0 };
+}
+
+/** Calls that actually reached a server today, for the per-tenant budget. */
+export function mcpCallsSince(tenant, sinceIso) {
+  const row = get('SELECT COUNT(*) AS n FROM mcp_calls WHERE tenant = ? AND created_at >= ? AND status NOT IN (?, ?, ?)', [
+    tenant || null,
+    sinceIso,
+    'rejected',
+    'budget',
+    'breaker',
+  ]);
+  return row?.n || 0;
+}
+
+export function getMcpIdempotent(key) {
+  if (!key) return null;
+  const row = get('SELECT * FROM mcp_idempotency WHERE key = ?', [key]);
+  if (!row) return null;
+  try {
+    return { ...row, result: row.result ? JSON.parse(row.result) : null };
+  } catch {
+    return { ...row, result: null };
+  }
+}
+
+export function saveMcpIdempotent({ key, tenant = null, server, tool, result }) {
+  if (!key) return false;
+  run(
+    `INSERT OR IGNORE INTO mcp_idempotency (key, tenant, server, tool, result, created_at)
+     VALUES (?,?,?,?,?,?)`,
+    [key, tenant, server, tool, JSON.stringify(result ?? null).slice(0, 8000), new Date().toISOString()]
+  );
+  saveDB(true);
+  return true;
 }
 
 export function toolCallStats(sinceIso = null) {

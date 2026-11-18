@@ -131,12 +131,51 @@ export const TOOLS = Object.fromEntries(TOOL_DEFS.map((def) => [def.name, def]))
 
 export const SIDE_EFFECT_TOOLS = new Set(['book_slot', 'create_order']);
 
-export function isTool(name) {
-  return Object.prototype.hasOwnProperty.call(TOOLS, String(name || ''));
+// ── external tools (MCP) ────────────────────────────────────
+// Namespaced, per tenant, and registered only by the MCP client after an
+// operator-configured server answered listTools. There is no public "add a tool"
+// entry point here: `registerDynamicTools` takes what the client discovered and
+// is the only way anything enters this map.
+//
+// Every lookup is tenant-scoped. Two tenants in one process cannot see each
+// other's tools, and a call for tenant B with tenant A's tool name is rejected
+// rather than "not found" — the difference matters when reading the log.
+
+const DYNAMIC = new Map(); // name -> { name, description, parameters, sideEffect, tenant, server, tool, run }
+const DYNAMIC_NAME_RE = /^mcp\.[a-z0-9][a-z0-9_-]{0,31}\.[A-Za-z0-9_.:-]{1,64}$/;
+
+/** Replace every external tool for one tenant, atomically. */
+export function registerDynamicTools(defs = [], { tenant = null } = {}) {
+  for (const [name, def] of DYNAMIC) {
+    if (def.tenant === tenant) DYNAMIC.delete(name);
+  }
+  for (const def of defs) {
+    if (!def || typeof def !== 'object' || typeof def.run !== 'function') continue;
+    const name = String(def.name || '');
+    if (!DYNAMIC_NAME_RE.test(name)) continue; // only our namespace, only our shape
+    if (def.tenant !== tenant) continue;
+    DYNAMIC.set(name, { ...def, tenant });
+  }
+  return DYNAMIC.size;
 }
 
-export function toolNames() {
-  return TOOL_DEFS.map((t) => t.name);
+export function dynamicToolNames(tenant = null) {
+  return [...DYNAMIC.values()].filter((def) => def.tenant === tenant).map((def) => def.name);
+}
+
+/** Static tools plus the external ones this tenant may use. */
+export function allToolDefs(tenant = null) {
+  return [...TOOL_DEFS, ...[...DYNAMIC.values()].filter((def) => def.tenant === tenant)];
+}
+
+export function isTool(name, tenant = null) {
+  const key = String(name || '');
+  if (Object.prototype.hasOwnProperty.call(TOOLS, key)) return true;
+  return Boolean(tenant && DYNAMIC.get(key)?.tenant === tenant);
+}
+
+export function toolNames(tenant = null) {
+  return [...TOOL_DEFS.map((t) => t.name), ...dynamicToolNames(tenant)];
 }
 
 // ── validation ──────────────────────────────────────────────
@@ -199,9 +238,11 @@ function checkValue(schema, value, path, errors) {
 /**
  * @returns {{ok:boolean, value:object, errors:string[]}}
  */
-export function validateArgs(name, args = {}) {
-  const def = TOOLS[name];
-  if (!def) return { ok: false, value: {}, errors: [`unknown tool ${name}`] };
+export function validateArgs(name, args = {}, tenant = null) {
+  const def = TOOLS[name] || (tenant ? DYNAMIC.get(name) : null);
+  if (!def || (def.tenant !== undefined && def.tenant !== tenant)) {
+    return { ok: false, value: {}, errors: [`unknown tool ${name}`] };
+  }
   const errors = [];
   const payload = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
   if (!args || typeof args !== 'object' || Array.isArray(args)) errors.push('arguments must be an object');
@@ -537,7 +578,7 @@ export async function executeTool(name, rawArgs, ctx = {}) {
       key: ctx.confirmationToken || null,
     });
 
-  if (!isTool(name)) {
+  if (!isTool(name, ctx.tenant)) {
     log('rejected', { error: 'not in whitelist' });
     return { status: 'rejected', message: 'unknown tool' };
   }
@@ -549,6 +590,15 @@ export async function executeTool(name, rawArgs, ctx = {}) {
   }
 
   const { args, removed } = stripMoneyFields(rawArgs);
+
+  // ── external (MCP) tools ──────────────────────────────────
+  // Different rules from the built-ins, for one reason: the schema and the
+  // result both come from a program the operator did not write.
+  const external = ctx.tenant ? DYNAMIC.get(name) : null;
+  if (external && external.tenant === ctx.tenant) {
+    return runExternalTool(external, args, ctx, { log, removed });
+  }
+
   const { ok, value, errors } = validateArgs(name, args);
   if (!ok) {
     log('rejected', { error: errors.join('; '), result: { removed } });
@@ -586,6 +636,62 @@ export async function executeTool(name, rawArgs, ctx = {}) {
     log('error', { error: err.message });
     return { status: 'error', message: 'unavailable' };
   }
+}
+
+/**
+ * One external tool call, with its own guard rails:
+ *   • write tools need the owner's switch *and* the customer's yes
+ *   • a write never runs after a tool result has entered this turn (that is the
+ *     only route by which untrusted output could choose the arguments)
+ *   • arguments are validated against the tool's own schema plus our limits
+ */
+async function runExternalTool(def, args, ctx, { log, removed = [] } = {}) {
+  const { validateArgs: validateExternal, mcpWriteEnabled } = await import('../services/mcpClient.js');
+
+  if (def.sideEffect) {
+    if (!mcpWriteEnabled()) {
+      log('rejected', { error: 'write tools are switched off', result: { removed } });
+      return { status: 'rejected', message: 'not available in this conversation' };
+    }
+    if (ctx.tainted) {
+      log('rejected', { error: 'arguments could have come from tool output' });
+      return { status: 'rejected', message: 'not available in this conversation' };
+    }
+  }
+
+  const check = validateExternal(def.parameters || { type: 'object' }, args);
+  if (!check.ok) {
+    log('rejected', { error: check.errors.join('; ') });
+    return { status: 'rejected', errors: check.errors };
+  }
+
+  const summary = `${def.tool} on ${def.server}: ${JSON.stringify(check.value).slice(0, 120)}`;
+  if (def.sideEffect && !ctx.confirmed) {
+    const token = newToken();
+    saveConfirmation({
+      token,
+      tenant: ctx.tenant || null,
+      chat: ctx.chat || '',
+      tool: def.name,
+      args: check.value,
+      summary,
+    });
+    log('needs_confirmation', { result: { summary } });
+    return { status: 'needs_confirmation', token, summary };
+  }
+
+  const outcome = await def.run({ args: check.value, ctx, key: ctx.confirmationToken || null });
+  if (!outcome?.ok) {
+    log('error', { error: outcome?.reason || outcome?.status || 'external tool failed' });
+    return { status: 'error', message: 'unavailable', reason: outcome?.reason || outcome?.status || null };
+  }
+
+  log('ok', { result: { truncated: Boolean(outcome.data?.truncated) } });
+  return {
+    status: 'ok',
+    // `untrusted` is the contract with the prompt: this is data, fence it.
+    result: { untrusted: true, server: def.server, tool: def.tool, ...outcome.data },
+  };
 }
 
 function PROMISE_RUNNER(name, args, ctx) {
@@ -634,8 +740,8 @@ export function hasPendingConfirmation(chat) {
 // ── prompt material ─────────────────────────────────────────
 
 /** Tool list + rules, injected into the system prompt. */
-export function toolsPrompt(allowed = null) {
-  const usable = TOOL_DEFS.filter((def) => !allowed || allowed.has(def.name));
+export function toolsPrompt(allowed = null, tenant = null) {
+  const usable = allToolDefs(tenant).filter((def) => !allowed || allowed.has(def.name));
   const lines = ['── ACTIONS YOU CAN TAKE ──'];
   if (!usable.length) {
     lines.push('None for this conversation. Answer in words only.');
@@ -658,8 +764,8 @@ export function toolsPrompt(allowed = null) {
 }
 
 /** The JSON protocol, used when a provider has no native function calling. */
-export function toolJsonProtocol(allowed = null) {
-  const schemas = TOOL_DEFS.filter((def) => !allowed || allowed.has(def.name)).map((def) => ({
+export function toolJsonProtocol(allowed = null, tenant = null) {
+  const schemas = allToolDefs(tenant).filter((def) => !allowed || allowed.has(def.name)).map((def) => ({
     tool: def.name,
     args: def.parameters,
   }));
@@ -674,7 +780,7 @@ export function toolJsonProtocol(allowed = null) {
 }
 
 /** Parse a JSON-protocol tool request out of a model reply. */
-export function parseToolRequest(text = '') {
+export function parseToolRequest(text = '', tenant = null) {
   const raw = String(text).trim();
   if (!raw.startsWith('{') || !raw.endsWith('}')) return null;
   let parsed;
@@ -685,7 +791,7 @@ export function parseToolRequest(text = '') {
   }
   if (!parsed || typeof parsed !== 'object') return null;
   const name = parsed.tool || parsed.tool_name || parsed.action;
-  if (!isTool(name)) return null;
+  if (!isTool(name, tenant)) return null;
   const args = parsed.args || parsed.arguments || parsed.parameters || {};
   return { name, args: args && typeof args === 'object' ? args : {} };
 }
@@ -718,6 +824,9 @@ export default {
   toolsPrompt,
   toolJsonProtocol,
   parseToolRequest,
+  registerDynamicTools,
+  allToolDefs,
+  dynamicToolNames,
   toolCallingEnabled,
   findCatalogItem,
   summarise,

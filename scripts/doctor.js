@@ -849,6 +849,69 @@ async function checkVisual() {
   if (dailyCap() === 0) warn('VISUAL_SEARCH_DAILY_CAP is 0 — the feature is on but every lookup is refused');
 }
 
+async function checkMcp() {
+  const {
+    mcpEnabled, mcpWriteEnabled, loadConfig, serversForTenant, mcpStatus, configPath,
+  } = await import('../src/services/mcpClient.js');
+  if (!mcpEnabled()) return;
+
+  section('External tools (MCP)');
+  const loaded = loadConfig();
+
+  if (loaded.missing) {
+    warn(`mcpTools is on but ${path.basename(configPath())} does not exist — no external tools will be offered`);
+    notes.push(`Start from config/mcp.servers.example.json, copy it to ${configPath()}, and list your tenants under allowedTenants.`);
+  } else if (loaded.errors.length) {
+    for (const error of loaded.errors.slice(0, 6)) bad(`mcp config: ${error}`);
+    notes.push('A config error switches that server off. Nothing runs half-configured.');
+  }
+
+  let installed = false;
+  try {
+    await import('@modelcontextprotocol/sdk/client/index.js');
+    installed = true;
+  } catch {
+    installed = false;
+  }
+  if (installed) ok('@modelcontextprotocol/sdk is installed');
+  else {
+    warn('mcpTools is on but @modelcontextprotocol/sdk is not installed — external tools stay off');
+    notes.push('npm install @modelcontextprotocol/sdk');
+  }
+
+  const mine = serversForTenant(config.tenant.slug);
+  if (!loaded.servers.length && !loaded.errors.length) {
+    ok('no servers configured — nothing to attack');
+  } else if (!loaded.servers.length) {
+    bad('every configured server was refused — nothing will run until the config is fixed');
+  } else if (!mine.length) {
+    warn(`no server lists this tenant (${config.tenant.slug}) in allowedTenants — all ${loaded.servers.length} are refused`);
+  } else {
+    ok(`${mine.length} server(s) allowed for this tenant: ${mine.map((s) => s.id).join(', ')}`);
+  }
+
+  const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  for (const server of loaded.servers) {
+    if (!server.readOnly) {
+      warn(`"${server.id}" is not marked readOnly — its tools can change things (needs mcpWriteTools + a customer yes)`);
+    }
+    if (runningAsRoot) {
+      warn(`"${server.id}" would run as root (this process is root) — a tool server should run as a nobody user`);
+    }
+    if (Object.keys(server.env).length) {
+      ok(`"${server.id}" passes ${Object.keys(server.env).join(', ')} (secrets are refused outright)`);
+    }
+    if (server.timeoutMs > 10_000) warn(`"${server.id}" timeout is ${server.timeoutMs} ms — a customer will notice`);
+  }
+
+  if (mcpWriteEnabled() && loaded.servers.every((s) => s.readOnly)) {
+    notes.push('mcpWriteTools is on but every server is readOnly — nothing can write');
+  }
+
+  const status = mcpStatus(config.tenant.slug);
+  ok(`calls today: ${status.usedToday}/${status.dailyCap}${status.writesEnabled ? ' · writes enabled' : ' · writes off'}`);
+}
+
 async function main() {
   // `npm run doctor -- gemini` runs only the checks whose name matches.
   const args = process.argv.slice(2);
@@ -877,6 +940,7 @@ async function main() {
   if (want('media', 'ffmpeg', 'vision')) await checkMedia();
   if (want('memory', 'db', 'database')) await checkMemory();
   if (want('visual', 'images')) await checkVisual();
+  if (want('mcp', 'tools', 'external')) await checkMcp();
   if (want('whatsapp', 'session')) await checkWhatsApp();
 
   section('Summary');

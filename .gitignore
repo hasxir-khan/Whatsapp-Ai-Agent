@@ -14,6 +14,10 @@ qr.png
 config/owner.json
 config/owner.local.json
 
+# The operator's external tool servers: host paths, tenant names, maybe a
+# service-account id. The example is committed; the real one is not.
+config/mcp.servers.json
+
 # each user's private workspace (keys, session, clients)
 tenants/
 

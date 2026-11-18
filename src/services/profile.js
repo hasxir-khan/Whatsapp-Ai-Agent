@@ -49,6 +49,8 @@ export const FEATURE_KEYS = [
   'adminPanel',
   'visualSearch',
   'liveInbox',
+  'mcpTools',
+  'mcpWriteTools',
 ];
 
 export const FEATURE_LABELS = {
@@ -82,6 +84,8 @@ export const FEATURE_LABELS = {
   adminPanel: 'Browser control panel for every tenant (needs ADMIN_TOKEN)',
   visualSearch: 'Match customer photos to catalogue images locally (free, no API)',
   liveInbox: 'Live inbox on the dashboard: read, reply and take over chats',
+  mcpTools: 'Operator-approved external tool servers (MCP), read-only unless writes are switched on',
+  mcpWriteTools: 'Allow MCP tools that take actions — still needs the customer to confirm each one',
 };
 
 // ── live profile access ─────────────────────────────────────
@@ -118,6 +122,10 @@ export const FEATURE_ALIASES = {
   panel: 'adminPanel',
   visual: 'visualSearch',
   images: 'visualSearch',
+  mcp: 'mcpTools',
+  mcptools: 'mcpTools',
+  mcptools_write: 'mcpWriteTools',
+  mcpwrite: 'mcpWriteTools',
 };
 
 /** Flags that are ON unless explicitly turned off. */

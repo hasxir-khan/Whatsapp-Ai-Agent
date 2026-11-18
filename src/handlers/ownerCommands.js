@@ -72,6 +72,7 @@ const HELP = `*Bot commands*
 .features – which capabilities are on
 .knowledge – learned documents + vector status
 .tools – last 10 actions the bot took
+.mcp – external tool servers: what's allowed, what ran today
 .intents – who answered what today (sales / support / booking / complaint)
 .growth – proactive messages sent today, per agent, with caps
 .optouts – everyone who asked to stop
@@ -959,6 +960,55 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         /* their number may not have WhatsApp */
       }
       return { handled: true, reply: `Assigned +${target} to ${person.name}.` };
+    }
+
+    case 'mcp': {
+      const { mcpStatus, mcpEnabled, mcpWriteEnabled, recentCallsFor } = await import('../services/mcpClient.js');
+      const status = mcpStatus(config.tenant.slug);
+      const lines = [
+        `*External tools (MCP)* ${mcpEnabled() ? '✅ on' : '⏸ off (.set features.mcpTools true)'}`,
+        `Writes: ${mcpWriteEnabled() ? 'on — each one still needs the customer to confirm' : 'off (.set features.mcpWriteTools true)'}`,
+        `Server file: ${status.fileExists ? status.file : 'missing — the operator has not configured any'}`,
+      ];
+
+      if (status.errors.length) {
+        lines.push('');
+        lines.push('Config problems:');
+        for (const error of status.errors.slice(0, 5)) lines.push(`• ${error}`);
+      }
+
+      if (!status.servers.length) {
+        lines.push('');
+        lines.push('No server is allowed for this tenant. Unlisted means refused — that is the design.');
+      } else {
+        lines.push('');
+        for (const server of status.servers) {
+          const stateBits = [
+            server.readOnly ? 'read-only' : '⚠️ writes',
+            server.connected ? 'connected' : 'idle',
+            server.breakerOpen ? 'circuit open' : null,
+          ].filter(Boolean);
+          lines.push(`• ${server.id} — ${stateBits.join(' · ')}`);
+          lines.push(`  tools: ${server.tools.join(', ')}`);
+        }
+      }
+
+      lines.push('');
+      lines.push(`Calls today: ${status.usedToday}/${status.dailyCap}`);
+
+      const recent = recentCallsFor(10);
+      if (recent.length) {
+        lines.push('');
+        for (const call of recent) {
+          const when = new Date(call.created_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
+          const ok = call.ok ? '✅' : '❌';
+          lines.push(`${ok} ${when} ${call.server}.${call.tool} · ${call.ms ?? '?'} ms · #${call.arg_hash || '—'}${call.error ? ` · ${String(call.error).slice(0, 60)}` : ''}`);
+        }
+      } else {
+        lines.push('');
+        lines.push('No external calls yet.');
+      }
+      return { handled: true, reply: lines.join('\n') };
     }
 
     case 'calls': {

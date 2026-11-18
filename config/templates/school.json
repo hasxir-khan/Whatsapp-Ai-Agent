@@ -111,6 +111,8 @@
     "selfHealing": false,
     "adminPanel": false,
     "visualSearch": false,
+    "mcpTools": false,
+    "mcpWriteTools": false,
     "liveInbox": false
   }
 }
