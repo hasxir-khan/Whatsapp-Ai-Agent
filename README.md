@@ -1030,6 +1030,8 @@ Limits: **3 proposals a day** (`SELF_HEALING_MAX_PER_DAY`), at most 10 waiting a
 
 `.rules` shows what is waiting. Rules approved today are ordinary FAQs tomorrow — review them with `.features` like anything else.
 
+The notice goes to `MY_NUMBER`, so that number has to be real: if it is still the placeholder (`920000000000`), proposals are stored and you are never told — `npm run doctor` warns about exactly that, and the PDF rules are checked the same way (empty `business.payment`, a logo path that does not exist).
+
 ---
 
 ## The live inbox
@@ -1723,7 +1725,7 @@ scripts/
   backup.js  restore.js   one-file backup of DB + config
 src/web/inbox.html      the inbox page (one file, no dependencies)
 assets/fonts/           Noto Sans + Noto Naskh Arabic (bundled, subsetted, OFL)
-test/                   559 tests (node:test, no dependencies)
+test/                   561 tests (node:test, no dependencies)
 ```
 
 ---
@@ -1731,7 +1733,7 @@ test/                   559 tests (node:test, no dependencies)
 ## Tests
 
 ```bash
-npm test                 # 559 tests, ~37s, no network, no keys, no config/owner.json
+npm test                 # 561 tests, ~37s, no network, no keys, no config/owner.json
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys

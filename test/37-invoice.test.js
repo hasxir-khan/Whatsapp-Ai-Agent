@@ -292,6 +292,36 @@ test('owner command: .invoice <id> sends the document and names it correctly', a
   assert.equal(sent[0].jid, '923001234567@s.whatsapp.net');
 });
 
+test('the payload works on both transports, because both speak {document}', async () => {
+  const { BaileysTransport } = await import('../src/transport/baileys.js');
+  const { CloudTransport } = await import('../src/transport/cloud.js');
+  for (const T of [BaileysTransport, CloudTransport]) {
+    const t = new T({});
+    assert.equal(typeof t.can, 'function');
+    assert.equal(t.can('document'), true, `${T.name} must be able to carry a PDF`);
+  }
+
+  // The exact contract both transports consume: a buffer, a mimetype, a name.
+  setFlag('pdfInvoices', true);
+  const sent = [];
+  const recorder = {
+    can: (name) => name === 'document',
+    async sendMessage(jid, payload) {
+      sent.push({ jid, payload });
+      return { key: { id: 'X' } };
+    },
+  };
+  const res = await invoice.sendInvoice({ transport: recorder, jid: '923001234567@s.whatsapp.net', order: makeOrder() });
+  assert.equal(res.ok, true);
+  assert.equal(sent.length, 1);
+  const { payload } = sent[0];
+  assert.ok(Buffer.isBuffer(payload.document), 'document must be a Buffer');
+  assert.equal(payload.document.subarray(0, 5).toString(), '%PDF-', 'must be a real PDF');
+  assert.equal(payload.mimetype, 'application/pdf');
+  assert.match(payload.fileName, /^INV-\d{4}-\d{4}\.pdf$/);
+  assert.match(payload.caption, /Invoice \(unpaid\)|Quote|Receipt/);
+});
+
 test('owner command: .invoice <id> send delivers to the customer, not to the owner', async () => {
   setFlag('pdfInvoices', true);
   const order = makeOrder();

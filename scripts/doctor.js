@@ -622,8 +622,16 @@ export function growthSettingsWarnings(profile = {}, env = {}, { transport = nul
     }
   }
 
-  if (on('selfHealing') && Number(env.SELF_HEALING_MAX_PER_DAY || 3) > 5) {
-    warnings.push(`SELF_HEALING_MAX_PER_DAY is ${env.SELF_HEALING_MAX_PER_DAY} — more proposals than you will actually review is noise, not learning`);
+  if (on('selfHealing')) {
+    // The loop is useless if the notice cannot reach the owner: the proposal is
+    // stored, the owner is never told, and rules quietly pile up in pending_rules.
+    const ownerNumber = String(env.MY_NUMBER || '').replace(/\D/g, '');
+    if (!ownerNumber || /^920{6,}$/.test(ownerNumber)) {
+      warnings.push('selfHealing is on but MY_NUMBER is a placeholder — proposals are stored, but the "New rule learned" notice has nowhere to go');
+    }
+    if (Number(env.SELF_HEALING_MAX_PER_DAY || 3) > 5) {
+      warnings.push(`SELF_HEALING_MAX_PER_DAY is ${env.SELF_HEALING_MAX_PER_DAY} — more proposals than you will actually review is noise, not learning`);
+    }
   }
   return warnings;
 }

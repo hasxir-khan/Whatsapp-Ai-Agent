@@ -280,10 +280,38 @@ test('doctor refuses to be quiet about an inbox with no token', async () => {
 
 test('doctor warns when rule proposals outnumber what anyone would review', async () => {
   const { growthSettingsWarnings } = await import('../scripts/doctor.js');
-  const loud = growthSettingsWarnings({ features: { selfHealing: true }, business: {} }, { SELF_HEALING_MAX_PER_DAY: '9' });
+  const loud = growthSettingsWarnings(
+    { features: { selfHealing: true }, business: {} },
+    { SELF_HEALING_MAX_PER_DAY: '9', MY_NUMBER: '923001234567' }
+  );
   assert.ok(loud.some((w) => /SELF_HEALING_MAX_PER_DAY is 9/i.test(w)), loud.join('\n'));
-  const quiet = growthSettingsWarnings({ features: { selfHealing: true }, business: {} }, { SELF_HEALING_MAX_PER_DAY: '3' });
+  const quiet = growthSettingsWarnings(
+    { features: { selfHealing: true }, business: {} },
+    { SELF_HEALING_MAX_PER_DAY: '3', MY_NUMBER: '923001234567' }
+  );
   assert.deepEqual(quiet, []);
+});
+
+test('doctor notices a learning loop that has nobody to tell', async () => {
+  const { growthSettingsWarnings } = await import('../scripts/doctor.js');
+  // The demo placeholder: proposals would be stored and never announced.
+  const placeholder = growthSettingsWarnings(
+    { features: { selfHealing: true }, business: {} },
+    { SELF_HEALING_MAX_PER_DAY: '3', MY_NUMBER: '920000000000' }
+  );
+  assert.ok(placeholder.some((w) => /MY_NUMBER is a placeholder/i.test(w)), placeholder.join('\n'));
+
+  const missing = growthSettingsWarnings({ features: { selfHealing: true }, business: {} }, { SELF_HEALING_MAX_PER_DAY: '3' });
+  assert.ok(missing.some((w) => /MY_NUMBER is a placeholder/i.test(w)), missing.join('\n'));
+
+  // A real number, and the flag off, are both quiet.
+  const fine = growthSettingsWarnings(
+    { features: { selfHealing: true }, business: {} },
+    { SELF_HEALING_MAX_PER_DAY: '3', MY_NUMBER: '+92 300 1234567' }
+  );
+  assert.deepEqual(fine, []);
+  const off = growthSettingsWarnings({ features: {}, business: {} }, { MY_NUMBER: '920000000000' });
+  assert.deepEqual(off, []);
 });
 
 test('every growth flag is a known feature key', async () => {
