@@ -262,8 +262,12 @@ test('doctor refuses to be quiet about an inbox with no token', async () => {
     { features: { liveInbox: true }, business: { name: 'Demo Cafe' } },
     { HOST: '0.0.0.0', DASHBOARD_TOKEN: '' }
   );
-  assert.ok(exposed.some((w) => /DASHBOARD_TOKEN is empty/i.test(w)), exposed.join('\n'));
+  // UPDATED in the security pass: an empty token no longer means "anyone can read
+  // every conversation" — it means the dashboard does not serve at all. The
+  // warning now says which routes stay up, because the bot and its webhooks do.
+  assert.ok(exposed.some((w) => /bind HOST=127\.0\.0\.1 or set DASHBOARD_TOKEN/.test(w)), exposed.join('\n'));
   assert.ok(exposed.some((w) => /0\.0\.0\.0/.test(w)));
+  assert.ok(exposed.some((w) => /Webhooks \(\/webhook\/<slug>\) and \/health stay up/.test(w)));
 
   const noWeb = growthSettingsWarnings(
     { features: { liveInbox: true }, business: { name: 'Demo Cafe' } },

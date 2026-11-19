@@ -31,6 +31,7 @@ import {
 } from './services/webAuth.js';
 import { getTransport } from './transport/index.js';
 import { growthSnapshot, SOURCE_LABELS } from './services/growthDashboard.js';
+import * as accuracyModule from './services/accuracy.js';
 import {
   liveInboxEnabled, inboxChats, inboxThread, inboxReply,
   inboxTakeover, inboxRelease, inboxSummary, latestMessageId,
@@ -73,6 +74,8 @@ function buildStatus() {
     },
     botEnabled: getSetting('bot_enabled', true) !== false,
     growth: growthSnapshot(),
+    // Same report `.accuracy` texts and /api/accuracy serves.
+    accuracy: accuracyModule.accuracyReport({ days: 7 }),
     stats,
     features: {
       llm: llm.providers,
@@ -316,6 +319,7 @@ function page(data) {
   </div>
 
   ${growthSection(data.growth)}
+  ${accuracySection(data.accuracy)}
 
   <div class="card" style="margin-bottom:14px;">
     <h2>Client pipeline <span class="small" style="font-weight:400;">— score · next action</span></h2>
@@ -457,6 +461,13 @@ async function sendSourceAsset(req, res, pathname, { auth = 'inbox', secure = fa
     res.end(`Could not build that file: ${err.message}`);
     return true;
   }
+}
+
+export function accuracySection(accuracy) {
+  // The card is rendered from the same report `.accuracy` texts and
+  // /api/accuracy returns, so the three can never disagree.
+  const { accuracySection: render } = accuracyModule;
+  return render(accuracy || accuracyModule.accuracyReport());
 }
 
 export function growthSection(growth) {
@@ -1166,9 +1177,13 @@ async function handleInboxRoute(req, res, url) {
 let webRefusal = null;
 
 export function webSecurityStatus() {
+  const state = webSecurityState();
   return {
-    ...webSecurityState(),
+    ...state,
     listening: !!startedServer,
+    dashboard: state.ok,
+    webhooks: !!startedServer,
+    health: !!startedServer,
     refused: webRefusal,
   };
 }
@@ -1182,17 +1197,19 @@ export function startServer() {
   }
 
   // No token + a reachable bind address = the dashboard, the growth figures and
-  // the QR code on the open internet. Refuse, and say exactly what to do.
+  // the QR code on the open internet. Refuse *the dashboard*, not the process:
+  // Cloud API webhooks are how customers get answered and /health is how a
+  // monitor knows we are alive, so both keep working.
   const exposure = webSecurityState();
   if (!exposure.ok) {
     webRefusal = { reason: exposure.reason, message: exposure.message, host: config.server.host, at: new Date().toISOString() };
     console.error(`🔒 ${exposure.message}`);
-    return null;
-  }
-  if (exposure.mode === 'local' && !exposure.loopback) {
+    console.error('   Webhooks (/webhook/<slug>) and /health stay up; the dashboard, inbox, growth figures and QR code are off.');
+  } else if (exposure.mode === 'local' && !exposure.loopback) {
     console.warn('🔒 No DASHBOARD_TOKEN and a public bind: demo mode is serving fake data to anyone who asks. Never put real customers here.');
+  } else {
+    webRefusal = null;
   }
-  webRefusal = null;
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -1226,6 +1243,19 @@ export function startServer() {
       // Cloud API webhooks: /webhook/<slug> (GET verification, POST messages).
       // Unknown slugs answer honestly instead of pretending to be Meta's friend.
       if (await handleWebhookRequest(req, res, url)) return;
+
+      // Restricted mode (no token on a public bind). The process is still here
+      // for Meta and for a monitor; the business surfaces are not.
+      if (!exposure.ok) {
+        if (url.pathname === '/health') {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ ok: true, uptime: uptimeMinutes() }));
+          return;
+        }
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end('Dashboard disabled: no DASHBOARD_TOKEN on a public bind. Webhooks and /health only.');
+        return;
+      }
 
       // The admin panel owns /admin and /api/admin, and answers 404 unless it is
       // switched on with a token. Routed first so nothing below can shadow it.
@@ -1285,6 +1315,19 @@ export function startServer() {
         return;
       }
 
+      if (url.pathname === '/api/accuracy') {
+        if (!authenticate(req).ok) {
+          res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ error: 'unauthorised' }));
+          return;
+        }
+        const { accuracyReport } = await import('./services/accuracy.js');
+        const days = Number(url.searchParams.get('days')) || 7;
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(accuracyReport({ days }), null, 2));
+        return;
+      }
+
       if (url.pathname === '/api/status') {
         if (!authenticate(req).ok) {
           res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -1324,8 +1367,12 @@ export function startServer() {
 
   server.listen(config.server.port, config.server.host, () => {
     startedServer = server;
-    const guard = exposure.mode === 'private' ? 'token required' : 'local only, no token';
-    console.log(`🌐 Dashboard: http://${config.server.host}:${config.server.port} (${guard})`);
+    const guard = exposure.ok
+      ? exposure.mode === 'private'
+        ? 'token required'
+        : 'local only, no token'
+      : 'dashboard off — webhooks and /health only';
+    console.log(`🌐 Web: http://${config.server.host}:${config.server.port} (${guard})`);
   });
 
   server.on('error', (err) => console.error('Dashboard error:', err.message));

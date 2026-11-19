@@ -6,13 +6,48 @@
 // backoff, same pairing code, same QR rendering. That is deliberate. Existing
 // installations must not be able to tell that a transport layer appeared.
 
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  Browsers,
-} from '@whiskeysockets/baileys';
+// Baileys is an *optional* dependency: a Cloud-API-only box should be able to
+// `npm ci --omit=optional` and never download libsignal-node, sharp or axios.
+// So it is loaded on first use, with an error that says what to do about it.
+let baileysModule = null;
+
+/**
+ * Is the package installed at all? Synchronous, so the CLI can refuse to start
+ * with one clear sentence instead of failing halfway through a connection.
+ */
+export function baileysAvailable() {
+  try {
+    createRequire(import.meta.url).resolve('@whiskeysockets/baileys');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const BAILEYS_MISSING_HINT =
+  'Baileys is not installed, so TRANSPORT=baileys cannot start.\n' +
+  '  Install it:    npm install                  (optional dependencies included)\n' +
+  '  Or go Cloud:   TRANSPORT=cloud  with features.cloudApi and the Meta keys';
+
+export async function loadBaileys() {
+  if (baileysModule) return baileysModule;
+  try {
+    baileysModule = await import('@whiskeysockets/baileys');
+    return baileysModule;
+  } catch (err) {
+    const e = new Error(
+      [
+        'Baileys is not installed, so TRANSPORT=baileys cannot start.',
+        '  Install it:    npm install                 (optional deps included)',
+        '  Or go Cloud:   TRANSPORT=cloud  with features.cloudApi and the Meta keys',
+        `  Underlying error: ${err.message}`,
+      ].join('\n')
+    );
+    e.code = 'baileys_missing';
+    e.permanent = true;
+    throw e;
+  }
+}
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
 import pino from 'pino';
@@ -23,6 +58,7 @@ import { registerCalls } from '../services/calls.js';
 import { handleDeletedMessage } from '../services/deletedMessages.js';
 import * as media from '../services/media.js';
 import { describeMessage, downloadMedia, chatKind, resolveNumber, resolveJid } from '../services/media.js';
+import { createRequire } from 'node:module';
 import { Transport, normalizeIncoming, jidToNumber } from './base.js';
 
 const logger = pino({ level: process.env.BAILEYS_LOG === 'debug' ? 'debug' : 'silent' });
@@ -109,21 +145,22 @@ export class BaileysTransport extends Transport {
   async connect() {
     setStatus(botState.connectedAt ? 'reconnecting' : 'connecting');
 
-    const { state, saveCreds } = await useMultiFileAuthState(config.paths.sessions);
+    const baileys = await loadBaileys();
+    const { state, saveCreds } = await baileys.useMultiFileAuthState(config.paths.sessions);
 
     let version;
     try {
-      ({ version } = await fetchLatestBaileysVersion());
+      ({ version } = await baileys.fetchLatestBaileysVersion());
     } catch {
       version = [2, 3000, 1017531287];
     }
 
-    const sock = makeWASocket({
+    const sock = baileys.default({
       version,
       logger,
       printQRInTerminal: false,
-      browser: Browsers.ubuntu('Chrome'),
-      auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
+      browser: baileys.Browsers.ubuntu('Chrome'),
+      auth: { creds: state.creds, keys: baileys.makeCacheableSignalKeyStore(state.keys, logger) },
       markOnlineOnConnect: false,
       syncFullHistory: false,
       generateHighQualityLinkPreview: false,
@@ -190,13 +227,13 @@ export class BaileysTransport extends Transport {
         botState.lastError = lastDisconnect?.error?.message || String(reason);
         console.log(`🔴 Connection closed (${reason || 'unknown'})`);
 
-        if (reason === DisconnectReason.loggedOut) {
+        if (reason === baileys.DisconnectReason.loggedOut) {
           setStatus('stopped');
           this.status = 'stopped';
           console.log('❌ Logged out. Delete ./sessions and restart to scan again.');
           process.exit(0);
         }
-        if (reason === DisconnectReason.connectionReplaced) {
+        if (reason === baileys.DisconnectReason.connectionReplaced) {
           setStatus('stopped');
           this.status = 'stopped';
           console.log('❌ Session replaced by another WhatsApp Web session. Exiting to avoid a loop.');

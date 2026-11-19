@@ -289,3 +289,68 @@ test('(f) wrong method and malformed bodies are answered, not guessed', async ()
   await handle(bad.req, bad.res, new URL('http://x/webhook/unknown'));
   assert.equal(bad.res.status, 404, 'unknown slugs are refused before parsing');
 });
+
+// ── (1) the dashboard refusing must not take webhooks or /health down ─────
+// A Cloud tenant can run with no dashboard at all. Before this test the refusal
+// returned null from startServer(), which also removed /webhook/<slug> — the one
+// route Meta needs — and /health, the one route a monitor needs.
+test('(1) refused dashboard: webhooks and /health still answer, everything else is off', async () => {
+  const http = await import('node:http');
+  const env2 = await import('../src/config/env.js');
+  const server2 = await import('../src/server.js');
+
+  const before = {
+    host: env2.config.server.host,
+    port: env2.config.server.port,
+    token: env2.config.server.token,
+    enabled: env2.config.server.enabled,
+  };
+  env2.config.server.host = '0.0.0.0';
+  env2.config.server.port = 0;
+  env2.config.server.token = '';
+  env2.config.server.enabled = true;
+  delete process.env.DEMO_MODE;
+
+  let srv = null;
+  try {
+    srv = server2.startServer();
+    assert.ok(srv, 'the server still listens — webhooks are how the bot answers');
+    if (!srv.listening) await new Promise((r) => srv.once('listening', r));
+    const port = srv.address().port;
+
+    const get = (path) =>
+      new Promise((resolve, reject) => {
+        http
+          .get({ host: '127.0.0.1', port, path }, (res) => {
+            let body = '';
+            res.on('data', (c) => (body += c));
+            res.on('end', () => resolve({ status: res.statusCode, body }));
+          })
+          .on('error', reject);
+      });
+
+    const health = await get('/health');
+    assert.equal(health.status, 200, '/health stays public');
+    assert.deepEqual(Object.keys(JSON.parse(health.body)).sort(), ['ok', 'uptime'], 'and minimal');
+
+    // The webhook route is reached (it answers for its own reasons — an unknown
+    // tenant is a 404, not a dashboard lock).
+    const hook = await get('/webhook/nobody');
+    assert.equal(hook.status, 404);
+    assert.match(hook.body, /No cloud tenant|Cloud transport is not running/);
+
+    for (const path of ['/', '/index.html', '/api/status', '/api/growth', '/qr.png', '/inbox']) {
+      const res = await get(path);
+      assert.equal(res.status, 404, `${path} is off, not open`);
+      assert.match(res.body, /Dashboard disabled/);
+    }
+
+    const status = server2.webSecurityStatus();
+    assert.equal(status.dashboard, false, 'dashboard off');
+    assert.equal(status.webhooks, true, 'webhooks up');
+    assert.equal(status.health, true, 'health up');
+  } finally {
+    srv?.close();
+    Object.assign(env2.config.server, before);
+  }
+});

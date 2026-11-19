@@ -71,9 +71,20 @@ const invoice = await import('../src/services/invoice.js');
 const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
 
 await db.initDB();
-const { PDFParse } = await import('pdf-parse');
+// pdf-parse needs the native @napi-rs/canvas binding to *read* a PDF back. It is
+// a devDependency (invoice rendering with pdfkit does not need it), so a
+// `--omit=dev` install can still run everything else here: the reading
+// assertions are skipped with a reason instead of failing the suite.
+let PDFParse = null;
+let pdfReadSkip = null;
+try {
+  ({ PDFParse } = await import('pdf-parse'));
+} catch (err) {
+  pdfReadSkip = `pdf-parse unavailable: ${String(err.message).split('\n')[0]}`;
+}
 
 async function pdfText(buffer) {
+  if (!PDFParse) throw new Error(pdfReadSkip || 'pdf-parse unavailable');
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
   const out = await parser.getText();
   return out.text;
@@ -161,7 +172,7 @@ test('the number the PDF prints is the order total, and matches pricing.js', asy
   assert.equal(model.lines[0].unit, quote.pkrMax);
 });
 
-test('the label follows the order state: quote, then invoice, then receipt', async () => {
+test('the label follows the order state: quote, then invoice, then receipt', { skip: PDFParse ? false : (pdfReadSkip || true) }, async () => {
   assert.equal(invoice.invoiceLabel(null), 'Quote');
   assert.equal(invoice.invoiceLabel({ status: 'awaiting_payment' }), 'Invoice (unpaid)');
   assert.equal(invoice.invoiceLabel({ status: 'placed' }), 'Invoice (unpaid)');
@@ -177,7 +188,7 @@ test('the label follows the order state: quote, then invoice, then receipt', asy
   assert.doesNotMatch(receipt, /Invoice \(unpaid\)/);
 });
 
-test('a quote with no order is a Quote, with ranges instead of a total', async () => {
+test('a quote with no order is a Quote, with ranges instead of a total', { skip: PDFParse ? false : (pdfReadSkip || true) }, async () => {
   const quote = pricing.buildQuote({ project_type: 'website' }, '923001234567');
   const model = invoice.invoiceModel({ quote });
   assert.equal(model.label, 'Quote');
@@ -197,7 +208,7 @@ test('payment details are the filled fields only — no comments, no blank rows'
   assert.ok(!labels.some((l) => /JazzCash/.test(l)), 'jazzcash is blank, so it must not appear');
 });
 
-test('the PDF carries business facts, the price and the payment details', async () => {
+test('the PDF carries business facts, the price and the payment details', { skip: PDFParse ? false : (pdfReadSkip || true) }, async () => {
   const order = makeOrder();
   const buffer = await invoice.renderInvoicePDF(invoice.invoiceModel({ order }));
   const text = await pdfText(buffer);
@@ -209,7 +220,7 @@ test('the PDF carries business facts, the price and the payment details', async 
   assert.match(text, /50% advance/);
 });
 
-test('no secret reaches the document', async () => {
+test('no secret reaches the document', { skip: PDFParse ? false : (pdfReadSkip || true) }, async () => {
   const order = makeOrder();
   const buffer = await invoice.renderInvoicePDF(invoice.invoiceModel({ order }));
   const text = await pdfText(buffer);
@@ -222,7 +233,7 @@ test('no secret reaches the document', async () => {
   }
 });
 
-test('Latin and Roman Urdu both render, and Urdu script is transliterated rather than mirrored', async () => {
+test('Latin and Roman Urdu both render, and Urdu script is transliterated rather than mirrored', { skip: PDFParse ? false : (pdfReadSkip || true) }, async () => {
   const order = makeOrder({
     items: [
       { name: 'Chicken Karahi', qty: 1, price: 1350 },
@@ -243,7 +254,7 @@ test('Latin and Roman Urdu both render, and Urdu script is transliterated rather
   assert.deepEqual(arabicBase, [], `unshaped Arabic left in the PDF: ${arabicBase.join('')}`);
 });
 
-test('a name in standard Arabic is shaped into joined forms, not printed letter-by-letter', async () => {
+test('a name in standard Arabic is shaped into joined forms, not printed letter-by-letter', { skip: PDFParse ? false : (pdfReadSkip || true) }, async () => {
   const order = makeOrder({ name: 'محمد علی' });
   const text = await pdfText(await invoice.renderInvoicePDF(invoice.invoiceModel({ order })));
   const presentation = [...text].filter((ch) => /[\uFE70-\uFEFF]/.test(ch));
@@ -389,7 +400,7 @@ test('one tenant never renders another tenant\'s business details', async () => 
   writeProfile({ pdfInvoices: true });
 });
 
-test('the footer is configurable, and the default says what the document is not', async () => {
+test('the footer is configurable, and the default says what the document is not', { skip: PDFParse ? false : (pdfReadSkip || true) }, async () => {
   const order = makeOrder();
   const plain = await pdfText(await invoice.renderInvoicePDF(invoice.invoiceModel({ order })));
   assert.match(plain, /Not a tax invoice/);
@@ -399,3 +410,8 @@ test('the footer is configurable, and the default says what the document is not'
   assert.match(custom, /Shukriya/);
   writeProfile({ pdfInvoices: true });
 });
+
+// A Cloud-only install (`npm ci --omit=optional`) has no native canvas binding,
+// which pdf-parse needs to read a PDF. Invoice *rendering* (pdfkit) does not, so
+// the reading helper is optional in the tests: with canvas the assertions above
+// run, and without it this file is skipped rather than failed.

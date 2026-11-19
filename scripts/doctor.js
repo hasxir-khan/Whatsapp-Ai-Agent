@@ -637,6 +637,30 @@ export function growthSettingsWarnings(profile = {}, env = {}, { transport = nul
     warnings.push('reviewAgent is on but business.reviewLink is empty — happy customers will be thanked, not sent anywhere');
   }
 
+  // ── the web surface (pure, so it can be tested) ───────────────
+  // Since the security pass, an empty token on a public bind does not expose the
+  // dashboard — it disables it. That makes "the inbox is off" and "the box is
+  // broken" look alike from outside, so the warning says exactly which routes
+  // are live.
+  {
+    const host = String(env.HOST || '0.0.0.0');
+    const loopback = ['127.0.0.1', '::1', 'localhost'].includes(host);
+    const demo = env.DEMO_MODE === '1';
+    const webOff = String(env.ENABLE_WEB || 'true').toLowerCase() === 'false';
+    if (on('liveInbox')) {
+      if (webOff) warnings.push('liveInbox is on but ENABLE_WEB is false — the web server never starts, so there is no inbox to open');
+      if (!env.DASHBOARD_TOKEN && (host === '0.0.0.0' || host === '::') && !demo) {
+        warnings.push(`liveInbox listens on ${host} with no token — bind HOST=127.0.0.1 or set DASHBOARD_TOKEN`);
+        warnings.push(
+          'Dashboard disabled: no DASHBOARD_TOKEN on a public bind. Webhooks (/webhook/<slug>) and /health stay up, so the bot keeps answering customers; the dashboard, inbox, /api/status, /api/growth and /qr.png answer 404.'
+        );
+      }
+      if (!env.DASHBOARD_TOKEN && loopback) {
+        warnings.push('liveInbox has no DASHBOARD_TOKEN but the bind is loopback — fine for local use, set a token before exposing it');
+      }
+    }
+  }
+
   const kind = String(transport || env.TRANSPORT || 'baileys').toLowerCase();
   const dailyCap = Number(env.GROWTH_DAILY_CAP || 30);
   const baileysCap = Number(env.GROWTH_BAILEYS_CAP || 12);
@@ -673,24 +697,31 @@ export function growthSettingsWarnings(profile = {}, env = {}, { transport = nul
     if (!business.name) warnings.push('pdfInvoices is on but business.name is empty — the document would say "Business"');
   }
 
-  if (on('liveInbox')) {
-    // This is the riskiest of the Phase 4 flags: it is the only one that puts
-    // customer conversations on a web page.
-    if (!env.DASHBOARD_TOKEN) {
-      warnings.push('liveInbox is on but DASHBOARD_TOKEN is empty — anyone who can reach the port can read every conversation');
-    }
-    if (String(env.ENABLE_WEB || 'true').toLowerCase() === 'false') {
-      warnings.push('liveInbox is on but ENABLE_WEB is false — the web server never starts, so there is no inbox to open');
-    }
+  // ── the web surface, whatever the feature flags say ──────────
+  // This is the only part of the bot that listens on a socket, and the only part
+  // where "off" and "broken" look the same from outside. Spell out which
+  // routes are live.
+  {
     const host = String(env.HOST || '0.0.0.0');
-    if (!env.DASHBOARD_TOKEN && (host === '0.0.0.0' || host === '::')) {
-      warnings.push('liveInbox listens on 0.0.0.0 with no token — bind HOST=127.0.0.1 or set DASHBOARD_TOKEN');
-      // SECURITY PASS: this is no longer a warning about the inbox — the web UI
-      // refuses to start in this configuration. Say that plainly.
+    const loopback = ['127.0.0.1', '::1', 'localhost'].includes(host);
+    const webOff = String(env.ENABLE_WEB || 'true').toLowerCase() === 'false';
+    if (webOff) {
+      info('Web UI is off (ENABLE_WEB=false): no dashboard, and Cloud webhooks must be served by another process or the gateway.');
+    } else if (env.DASHBOARD_TOKEN) {
+      ok(`Web UI is private: DASHBOARD_TOKEN set, bind ${host} — dashboard, inbox, /api/status, /api/growth and /qr.png need the session.`);
+    } else if (loopback || env.DEMO_MODE === '1') {
+      warn(
+        loopback
+          ? `Web UI has no DASHBOARD_TOKEN but binds ${host} (loopback) — local-only use. Set DASHBOARD_TOKEN before exposing it.`
+          : 'Web UI has no DASHBOARD_TOKEN and binds a public address in demo mode — fake data only, never real customers.'
+      );
+    } else {
       problems.push(
-        'The web UI will not start: no DASHBOARD_TOKEN on a public bind. Set DASHBOARD_TOKEN (recommended) or HOST=127.0.0.1 for local-only use.'
+        'Dashboard disabled: no DASHBOARD_TOKEN on a public bind. Webhooks (/webhook/<slug>) and /health stay up, so the bot keeps answering customers; the dashboard, inbox, /api/status, /api/growth and /qr.png answer 404. Set DASHBOARD_TOKEN (recommended) or HOST=127.0.0.1 for local-only use.'
       );
     }
+    // The per-flag warnings ("liveInbox is on but…") come from
+    // growthSettingsWarnings(), which is the pure, tested copy of these rules.
   }
 
   if (on('adminPanel')) {

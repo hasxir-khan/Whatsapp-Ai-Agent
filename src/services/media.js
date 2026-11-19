@@ -6,7 +6,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { downloadMediaMessage } from '@whiskeysockets/baileys';
+// Baileys is optional (a Cloud-only install omits it), so the one function we
+// need from it is loaded on demand. `downloadMediaMessage` is only reached for
+// Baileys messages, which cannot exist without the package.
+async function baileys() {
+  try {
+    return await import('@whiskeysockets/baileys');
+  } catch (err) {
+    const e = new Error(
+      'This message needs @whiskeysockets/baileys, which is not installed.\n' +
+        '  Install it:  npm install     (optional deps included)\n' +
+        '  Cloud-only:  TRANSPORT=cloud does not download Baileys media this way\n' +
+        `  Underlying error: ${err.message}`
+    );
+    e.code = 'baileys_missing';
+    throw e;
+  }
+}
 import { config } from '../config/env.js';
 
 // ── chat type guards ────────────────────────────────────────
@@ -173,6 +189,7 @@ export async function downloadMedia(msg, info = describeMessage(msg)) {
     throw new MediaTooBigError(`media ${(declared / 1048576).toFixed(1)}MB exceeds limit`);
   }
 
+  const { downloadMediaMessage } = await baileys();
   const buffer = await downloadMediaMessage(msg, 'buffer', {});
 
   const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);

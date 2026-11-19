@@ -31,9 +31,29 @@ export async function extractText(buffer, { mimetype = '', fileName = '' } = {})
   }
 }
 
-/** Supports pdf-parse v2 (PDFParse class) and the older v1 function API. */
+/**
+ * Supports pdf-parse v2 (PDFParse class) and the older v1 function API.
+ *
+ * pdf-parse's PDF engine wants the native `@napi-rs/canvas` binding, which is an
+ * *optional* dependency. On a Cloud-only install (`npm ci --omit=optional`) it is
+ * not there, and the import throws `DOMMatrix is not defined`. That is not a
+ * reason to take the whole process down: reading a PDF is one feature, so the
+ * failure is reported as a sentence the owner can act on.
+ */
 async function pdfToText(buffer) {
-  const mod = await import('pdf-parse');
+  let mod;
+  try {
+    mod = await import('pdf-parse');
+  } catch (err) {
+    const e = new Error(
+      'PDF text extraction is unavailable in this install: pdf-parse needs the native ' +
+        '@napi-rs/canvas binding, which is an optional dependency.\n' +
+        '  Fix:  npm install @napi-rs/canvas\n' +
+        `  Underlying error: ${err.message}`
+    );
+    e.code = 'pdf_canvas_missing';
+    throw e;
+  }
 
   if (mod?.PDFParse) {
     const parser = new mod.PDFParse({ data: new Uint8Array(buffer) });

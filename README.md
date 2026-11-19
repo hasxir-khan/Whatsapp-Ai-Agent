@@ -2133,6 +2133,8 @@ Type in your own WhatsApp chat (message yourself):
 | `.rules` | FAQ rules learned from your replies, waiting for a yes or no |
 | `.approve-rule <id>` / `.reject-rule <id>` | decide one |
 | `.inbox` | the live inbox link, with what is waiting |
+| `.accuracy [days]` | what the safety nets caught — price/number claims, wrong language, cuts, blocked doubles, hand-offs, honest bot answers, per provider and by week. Anything not measured says "not instrumented yet" instead of showing 0 |
+| `.review [n]` | the last n bot replies, then `.review up 1`, `.review down 1 [note]`, `.review drafts`, `.review approve <id>` — a thumbs-down becomes a draft golden scenario (numbers anonymised) under `data/golden-drafts/`, never inside `test/golden/` |
 | `.link instagram [text]` | make (or show) a tracked wa.me link with a hidden source marker |
 | `.links` | chats, leads, paid orders and revenue per tracked link |
 | `.qr instagram` | the QR as a PNG (phone screen) and as an SVG (the printer) |
@@ -3182,6 +3184,99 @@ tweak is cheap to make and cheap to check, so there is no reason to guess.
 
 ---
 
+## First-time QR pairing on a server
+
+The QR is the login: whoever scans it owns the WhatsApp account the bot runs on.
+So this is the one flow to do on a machine you control, not in a browser tab on
+a shared network.
+
+**1. Set a token first.**
+
+```bash
+openssl rand -base64 32          # copy the output
+echo "DASHBOARD_TOKEN=<paste it>" >> .env
+```
+
+**2. Start the bot and keep it private.**
+
+```bash
+HOST=127.0.0.1 npm start          # or: npm start, then use an SSH tunnel
+```
+
+With no `DASHBOARD_TOKEN` and a public bind the dashboard is **off** (webhooks
+and `/health` still work, so the bot answers Cloud customers either way) — you
+would have nowhere to see the QR.
+
+**3. Open the dashboard once, with the token in the URL.**
+
+```
+http://127.0.0.1:3000/?token=<the token>
+```
+
+That request is exchanged for a signed `HttpOnly` cookie and redirected to `/`
+without the token, so the secret never sits in your history for longer than that
+one redirect. If you are on a remote box, tunnel instead of exposing the port:
+
+```bash
+ssh -L 3000:127.0.0.1:3000 you@your-server    # then open http://127.0.0.1:3000/
+```
+
+**4. Scan the QR.**
+
+WhatsApp → **Settings → Linked devices → Link a device** → scan `/qr.png` from
+the dashboard page. It is served only while the account is unpaired, needs the
+session cookie, and is sent `no-store`. Once the phone says "linked", the QR
+disappears and the session lives in `sessions/` (0600, inside a 0700 folder).
+
+**5. Confirm.**
+
+```bash
+curl -s localhost:3000/health          # {"ok":true,"uptime":N} — public and minimal
+npm run doctor                          # says whether the web UI is private, local
+```
+
+Never post a screenshot that contains the QR, and never run pairing with
+`HOST=0.0.0.0` and no token: in that configuration `/qr.png` is one of the
+routes that answer 404, which is deliberate.
+
+## Deploying (Railway, a VPS, anything with a public port)
+
+Cloud API deployments need exactly two things from the outside world: an HTTPS
+URL Meta can POST to, and a process that survives a restart. The dashboard is
+not part of that contract.
+
+**Railway**
+
+1. New project → deploy from this repository (Nixpacks detects Node; `npm start`
+   is the start command).
+2. Variables → add, at minimum:
+   - `TRANSPORT=cloud` (if you are not using Baileys on the box)
+   - `DASHBOARD_TOKEN=<openssl rand -base64 32>` — **required**: Railway gives
+     you a public hostname, so without it the dashboard would be off anyway and
+     you would have no way in.
+   - your provider keys (`GROQ_API_KEY`, `GEMINI_API_KEY`, …) as needed
+   - `PUBLIC_URL=https://<your-app>.up.railway.app` so `.inbox` prints a link
+     that works
+3. Set the webhook URL in Meta to
+   `https://<your-app>.up.railway.app/webhook/<slug>` and put the same
+   `appSecret`/`verifyToken` in the environment.
+4. Healthcheck path: `/health` (public, minimal, always up — even when the
+   dashboard is disabled).
+
+**A VPS (systemd − nginx/caddy − cloudflared)**
+
+1. `HOST=127.0.0.1`, `DASHBOARD_TOKEN=…`, and a reverse proxy that terminates
+   TLS in front. Send `X-Forwarded-Proto: https` so the session cookie is
+   `Secure`.
+2. Expose only what Meta needs: `/webhook/<slug>`. Keep `/`, `/qr.png`,
+   `/inbox`, `/api/status` and `/api/growth` on the private side of the proxy —
+   they require the session anyway, but a route nobody can reach is a route
+   nobody can brute-force.
+3. Pair the device **before** putting the box on the internet (see above), then
+   leave `sessions/` alone: it is the credential.
+4. `docker`/systemd restart policy: `always`. The bot reconnects on its own; the
+   webhook id ledger in `cloud_messages` means a restart does not double-reply.
+
 ## Security model
 
 What is public, what is private, and how a browser proves itself.
@@ -3263,7 +3358,28 @@ notice.
    whoever received them. A new licence applies from the commit where you change
    it. Nothing about that is reversible, which is the reason for the private
    default above.
-5. One dependency is **GPL-3.0**, not MIT: `libsignal` (pulled in by Baileys
+5. **Baileys is an optional dependency.** `npm ci --omit=optional` gives you a
+   Cloud-API-only install: no `@whiskeysockets/baileys`, and none of the
+   tree it drags in (`libsignal`, `sharp`, `axios`, `protobufjs`,
+   `music-metadata`) — which is also how you avoid most of `npm audit`'s
+   findings without touching a version. Run with `TRANSPORT=cloud`. If you ask
+   for Baileys and it is missing you get one sentence, not a stack trace:
+
+   ```
+   Baileys is not installed, so TRANSPORT=baileys cannot start.
+     Install it:    npm install                  (optional dependencies included)
+     Or go Cloud:   TRANSPORT=cloud  with features.cloudApi and the Meta keys
+   ```
+
+   Verified here: `npm ci --omit=optional` installs 101 packages, the suite runs
+   961 tests (954 pass, 7 PDF-reading tests skipped with a reason, 0 fail) and
+   the transport factory boots. Reading PDFs needs the native `@napi-rs/canvas`
+   binding, which is a devDependency; the runtime reports a clear error instead
+   of crashing when it is absent. Not legal advice: whether *your* use of a
+   GPL-3.0 library conflicts with a proprietary licence is a question for a
+   lawyer, and the answer depends on how you distribute it.
+
+6. One dependency is **GPL-3.0**, not MIT: `libsignal` (pulled in by Baileys
    from `github.com/whiskeysockets/libsignal-node`, pinned in
    `package-lock.json` to commit `bcea72d`). A proprietary licence on *your*
    code does not relicense that library, and GPL-3.0 has obligations that a
@@ -3272,7 +3388,7 @@ notice.
    you ship. `npm audit` reports 8 high and 1 moderate advisories in the tree,
    most of them through the local-embedding and image libraries — see the
    security report, no automatic upgrades were applied.
-6. If you later sell or host this for other businesses, have a lawyer read the
+7. If you later sell or host this for other businesses, have a lawyer read the
    notice — a five-line file is a reasonable start, not legal advice.
 
 Built by Hashir Khan / HasDevs, and now for anyone who needs it.

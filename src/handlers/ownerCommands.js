@@ -692,6 +692,55 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       return { handled: true, reply: lines.join('\n') };
     }
 
+    case 'accuracy': {
+      // Metrics from the event log only; anything we do not measure says so.
+      const { accuracyReport, accuracyText } = await import('../services/accuracy.js');
+      const days = /^\d+$/.test(String(args[0] || '')) ? Number(args[0]) : 7;
+      return { handled: true, reply: accuracyText(accuracyReport({ days })) };
+    }
+
+    case 'review': {
+      const R = await import('../services/reviewQueue.js');
+      const sub = String(args[0] || '').toLowerCase();
+      const list = R.recentReplies({ limit: /^\d+$/.test(sub) ? Number(sub) : 5 });
+
+      if (sub === 'up' || sub === 'down') {
+        const n = Number(args[1]);
+        if (!Number.isInteger(n) || n < 1 || n > list.length) {
+          return { handled: true, reply: `Pick a number between 1 and ${list.length} after .review.` };
+        }
+        const target = list[n - 1];
+        const note = args.slice(2).join(' ').trim() || null;
+        const res = R.recordVote({ messageId: target.id, vote: sub, note });
+        if (!res.ok) return { handled: true, reply: `Could not record that: ${res.error}` };
+        if (sub === 'up') return { handled: true, reply: `👍 Reply #${n} marked good.` };
+        return {
+          handled: true,
+          reply: [
+            `👎 Reply #${n} marked wrong.`,
+            `Draft scenario: ${res.draft.id} (${res.draft.file})`,
+            'It is a draft, not a golden: `.review approve` moves it to test/golden-drafts/, and it still needs recorded model turns.',
+          ].join('\n'),
+        };
+      }
+
+      if (sub === 'drafts') {
+        const drafts = R.listDrafts();
+        if (!drafts.length) return { handled: true, reply: 'No drafts yet. A thumbs-down (`.review down <n>`) makes one.' };
+        return { handled: true, reply: ['*Draft scenarios*', ...drafts.map((d) => `• ${d.id}`), '', '`.review approve <id>` to keep one.'].join('\n') };
+      }
+
+      if (sub === 'approve') {
+        const id = args[1];
+        if (!id) return { handled: true, reply: 'Usage: `.review approve review-<number>`' };
+        const res = R.approveDraft(id);
+        if (!res.ok) return { handled: true, reply: `No draft called ${id}. Known: ${(res.known || []).join(', ') || 'none'}` };
+        return { handled: true, reply: [`✅ Approved → ${res.file}`, res.next].join('\n') };
+      }
+
+      return { handled: true, reply: R.reviewText({ limit: 5 }) };
+    }
+
     case 'usage': {
       const u = getUsage();
       return {

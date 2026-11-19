@@ -1,0 +1,53 @@
+version: 2
+
+# Dependency triage, automated.
+#
+# Everything below is a *proposal*, never an auto-merge: this repository has one
+# person reviewing it, and a bot that quietly changes libsignal or sharp is a
+# bigger risk than the advisory it is chasing.
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    versioning-strategy: increase-if-necessary
+    labels:
+      - dependencies
+    commit-message:
+      prefix: deps
+    groups:
+      # Patch and minor updates ride together so review is one diff, not twenty.
+      runtime-safe:
+        applies-to: version-updates
+        update-types:
+          - patch
+          - minor
+        exclude-patterns:
+          - '@whiskeysockets/baileys'
+          - '@xenova/transformers'
+      # These two decide whether the transport works at all; a human looks at
+      # every bump, including patches.
+      transport:
+        patterns:
+          - '@whiskeysockets/baileys'
+          - 'ws'
+          - 'pino'
+      embeddings:
+        patterns:
+          - '@xenova/transformers'
+    ignore:
+      # Not a dependency problem: npm's only "fix" is a semver-major *downgrade*
+      # (@xenova/transformers 1.4.2). Tracked in SECURITY-TRIAGE.md instead.
+      - dependency-name: '@xenova/transformers'
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci

@@ -591,7 +591,7 @@ export function describeConfig() {
     `Transport    : ${config.transport === 'cloud' ? `Cloud API (webhook /webhook/${config.cloud.slug})` : 'Baileys (QR / pairing code)'}`,
     `Missed calls: ${config.calls.enabled ? `answered in chat after ${config.calls.delayMinSeconds}–${config.calls.delayMaxSeconds}s` : 'off'}`,
     `Team         : ${(config.owner.profile?.owner?.team || []).length} teammate(s) + owner`,
-    `Dashboard    : ${config.server.enabled ? `http://0.0.0.0:${config.server.port}` : 'disabled'}`,
+    `Web          : ${config.server.enabled ? `http://${config.server.host}:${config.server.port}${config.server.token ? ' (token required)' : ' (no token)'}` : 'disabled'}`,
   ].join('\n');
 }
 

@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_number ON messages(number, id);
 
+-- .review: one vote per bot reply, so a thumbs-down survives a restart and can
+-- become a draft golden scenario. No message text is copied here.
+CREATE TABLE IF NOT EXISTS reply_reviews (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id  INTEGER,
+  number      TEXT,
+  vote        TEXT,          -- up | down
+  note        TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reply_reviews_message ON reply_reviews(message_id);
+
 CREATE TABLE IF NOT EXISTS seen_messages (
   msg_id      TEXT PRIMARY KEY,
   number      TEXT,
