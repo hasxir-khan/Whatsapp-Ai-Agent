@@ -262,7 +262,8 @@ export async function provisionTenant({
           const stored = storeSecret(slug, key, value, now);
           if (!stored) continue;
           (await admin()).writeTenantEnvValue(slug, key, stored);
-          if (key !== 'PLATFORM_TENANT_TOKEN') secretsShown.push({ name: key, value: stored });
+          // Only real credentials are handed back, and only once.
+          if (key === 'DASHBOARD_TOKEN') secretsShown.push({ name: key, value: stored });
         }
         setProgress(slug, { status: 'provisioning', step: index + 1 });
       } else if (step === 'profile') {

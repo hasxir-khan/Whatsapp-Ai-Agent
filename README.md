@@ -3259,8 +3259,9 @@ PLATFORM_ENABLED=1 \
 PLATFORM_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")" \
 PLATFORM_DEV_SHOW_CODES=1 \
 npm run platform
-# → http://localhost:3200/platform  (sign up, the code appears in the answer
-#   and in platform/data/outbox.jsonl)
+# → http://localhost:3200/platform  (sign up; with dev codes on, the code is
+#   returned by the API, pre-filled on the verify page and written to
+#   platform/data/outbox.jsonl)
 
 # 2. or mounted inside the bot's own server: same env vars, then
 npm start

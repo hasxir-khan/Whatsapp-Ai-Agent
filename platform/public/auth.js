@@ -93,6 +93,9 @@
       busy(signup, false);
       if (res.status === 200) {
         sessionStorage.setItem('platform_email', email);
+        // Dev only: the server only sends a code back when PLATFORM_DEV_SHOW_CODES
+        // is on, which is never the case in a real deployment.
+        if (res.data && res.data.devCode) sessionStorage.setItem('platform_dev_code', res.data.devCode);
         return (location.href = '/platform/verify');
       }
       fail(message(res.data, 'Could not send a code.'));
@@ -103,6 +106,9 @@
     var stored = sessionStorage.getItem('platform_email');
     var field = document.getElementById('email');
     if (stored && field && !field.value) field.value = stored;
+    var devCode = sessionStorage.getItem('platform_dev_code');
+    var codeField = document.getElementById('code');
+    if (devCode && codeField && !codeField.value) codeField.value = devCode;
     signup.addEventListener('submit', async function (event) {
       event.preventDefault();
       busy(signup, true);
