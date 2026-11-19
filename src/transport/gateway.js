@@ -42,22 +42,42 @@ export function createGateway({ routes = [], onRequest = null } = {}) {
       return;
     }
 
+    // The target comes from trusted tenant config and nothing in the request may
+    // move it. Only the path and query are carried across, and only after
+    // proving the result is still on the configured origin: a request for
+    // `//evil.example/x` resolves to another host entirely if the raw path is
+    // handed to `new URL`.
     let targetUrl;
     try {
-      targetUrl = new URL(url.pathname + url.search, target);
+      const base = new URL(target);
+      const path = String(url.pathname || '/').startsWith('//') ? `/${url.pathname.replace(/^\/+/, '')}` : url.pathname || '/';
+      targetUrl = new URL(path + url.search, base);
+      if (targetUrl.origin !== base.origin) throw new Error('path escapes the target origin');
     } catch {
-      send(res, 500, `Bad target for "${slug}": ${target}`);
+      send(res, 400, `Bad path for "${slug}"`);
       return;
     }
 
     onRequest?.({ slug, path: url.pathname });
+
+    // Headers a tenant needs (signature, content type) travel; headers that only
+    // describe the proxy's hop, or that belong to a browser session, do not.
+    const DROP = new Set([
+      'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-real-ip', 'forwarded',
+      'cookie', 'authorization', 'proxy-authorization', 'cf-connecting-ip', 'cdn-loop',
+    ]);
+    const headers = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (!DROP.has(k.toLowerCase())) headers[k] = v;
+    }
+    headers.host = targetUrl.host;
 
     const lib = targetUrl.protocol === 'https:' ? https : http;
     const upstream = lib.request(
       targetUrl,
       {
         method: req.method,
-        headers: { ...req.headers, host: targetUrl.host },
+        headers,
       },
       (up) => {
         res.writeHead(up.statusCode || 502, up.headers);

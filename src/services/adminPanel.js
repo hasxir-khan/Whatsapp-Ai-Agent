@@ -21,10 +21,12 @@ import path from 'node:path';
 import { config, reloadProfile } from '../config/env.js';
 import { featureOn, validateProfile } from './profile.js';
 import { run, all, get } from '../utils/db.js';
+import { SLUG_RE as SHARED_SLUG_RE, validSlug as sharedValidSlug, validPort } from './validation.js';
 
 export const COOKIE = 'wa_admin';
 export const CSRF_COOKIE = 'wa_admin_csrf';
-export const SLUG_RE = /^[a-z0-9-]{2,40}$/;
+export const SLUG_RE = SHARED_SLUG_RE;
+export { validPort };
 
 const UPLOAD_TYPES = {
   pdf: 'application/pdf',
@@ -64,22 +66,41 @@ export function safeEqual(a, b) {
 }
 
 function hmac(payload) {
-  return crypto.createHmac('sha256', adminToken()).update(payload).digest('base64url');
+  return hmacWith(adminToken(), payload);
+}
+
+/**
+ * The signing primitive, parameterised by secret so the dashboard can reuse it
+ * instead of growing a second cookie format. `label` keeps a session issued for
+ * one surface from being accepted by the other even if the secrets matched.
+ */
+export function hmacWith(secret, payload) {
+  return crypto.createHmac('sha256', String(secret || '')).update(payload).digest('base64url');
+}
+
+/** A signed, expiring session value: `<expiry>.<signature>`. */
+export function issueSessionFor(secret, { label = 'admin', minutes = 720, now = Date.now() } = {}) {
+  const ttl = Math.max(5, Number(minutes) || 720);
+  const expiry = now + ttl * 60000;
+  return { value: `${expiry}.${hmacWith(secret, `${label}.${expiry}`)}`, expiresAt: expiry };
+}
+
+export function sessionValidFor(secret, value, { label = 'admin', now = Date.now() } = {}) {
+  const [rawExpiry, signature] = String(value || '').split('.');
+  const expiry = Number(rawExpiry);
+  if (!Number.isFinite(expiry) || expiry < now) return false;
+  if (!signature || !secret) return false;
+  return safeEqual(signature, hmacWith(secret, `${label}.${expiry}`));
 }
 
 /** A signed, expiring session value: `<expiry>.<signature>`. */
 export function issueSession(now = Date.now()) {
   const minutes = Math.max(5, Number(config.admin?.sessionMinutes) || 720);
-  const expiry = now + minutes * 60000;
-  return { value: `${expiry}.${hmac(`admin.${expiry}`)}`, expiresAt: expiry };
+  return issueSessionFor(adminToken(), { label: 'admin', minutes, now });
 }
 
 export function sessionValid(value, now = Date.now()) {
-  const [rawExpiry, signature] = String(value || '').split('.');
-  const expiry = Number(rawExpiry);
-  if (!Number.isFinite(expiry) || expiry < now) return false;
-  if (!signature) return false;
-  return safeEqual(signature, hmac(`admin.${expiry}`));
+  return sessionValidFor(adminToken(), value, { label: 'admin', now });
 }
 
 export function parseCookies(req) {
@@ -210,7 +231,7 @@ export function tenantsRoot() {
 }
 
 export function validSlug(slug) {
-  return SLUG_RE.test(String(slug || ''));
+  return sharedValidSlug(slug);
 }
 
 /** Resolve a tenant folder, refusing anything that could escape the root. */

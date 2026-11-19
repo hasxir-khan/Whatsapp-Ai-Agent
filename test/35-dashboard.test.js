@@ -180,25 +180,59 @@ test('the snapshot carries no keys, tokens or full phone numbers', () => {
 const fakeReq = (headers = {}) => ({ headers });
 const fakeUrl = (search = '') => new URL(`http://localhost/${search}`);
 
+// UPDATED in the security pass (was: `?token=` and a plain cookie both counted).
+// A token in the URL is a one-time ticket now — the server exchanges it for a
+// signed cookie and redirects, so `authorised()` must never accept it, and a
+// cookie must be a signed session rather than the raw token.
 test('DASHBOARD_TOKEN keeps the growth data private', async () => {
   const { authorised } = await import('../src/server.js');
+  const { sessionCookieHeader } = await import('../src/services/webAuth.js');
+  const cookie = sessionCookieHeader('secret-token-123').split(';')[0]; // wa_dash=<signed>
   env.server.token = 'secret-token-123';
   try {
     assert.equal(authorised(fakeReq(), fakeUrl('api/growth')), false, 'no token, no data');
     assert.equal(authorised(fakeReq({ authorization: 'Bearer wrong' }), fakeUrl('api/growth')), false);
-    assert.equal(authorised(fakeReq(), fakeUrl('api/growth?token=secret-token-123')), true);
     assert.equal(authorised(fakeReq({ authorization: 'Bearer secret-token-123' }), fakeUrl('api/growth')), true);
-    assert.equal(authorised(fakeReq({ cookie: 'wa_dash=secret-token-123' }), fakeUrl('/')), true);
+    assert.equal(
+      authorised(fakeReq(), fakeUrl('api/growth?token=secret-token-123')),
+      false,
+      'the URL token is exchanged for a cookie by the server, never used as a credential'
+    );
+    assert.equal(authorised(fakeReq({ cookie }), fakeUrl('/')), true, 'the signed session cookie works');
+    assert.equal(
+      authorised(fakeReq({ cookie: 'wa_dash=secret-token-123' }), fakeUrl('/')),
+      false,
+      'a raw token in a cookie is not a session'
+    );
     assert.equal(authorised(fakeReq({ cookie: 'wa_dash=nope' }), fakeUrl('/')), false);
   } finally {
     env.server.token = '';
   }
 });
 
-test('with no token configured the dashboard behaves as before', async () => {
+// UPDATED in the security pass (was: "with no token configured the dashboard
+// behaves as before" — i.e. wide open). No token now means: closed, unless the
+// bind address is loopback (or an explicit demo mode is on).
+test('with no token configured, the dashboard is closed unless the bind is loopback', async () => {
   const { authorised, growthSection } = await import('../src/server.js');
-  env.server.token = '';
-  assert.equal(authorised(fakeReq(), fakeUrl('api/growth')), true);
+  const host = env.server.host;
+  try {
+    env.server.token = '';
+    env.server.host = '0.0.0.0';
+    delete process.env.DEMO_MODE;
+    assert.equal(authorised(fakeReq(), fakeUrl('api/growth')), false, 'public bind + no token = closed');
+
+    env.server.host = '127.0.0.1';
+    assert.equal(authorised(fakeReq(), fakeUrl('api/growth')), true, 'loopback is the local case that stays open');
+
+    env.server.host = '0.0.0.0';
+    process.env.DEMO_MODE = '1';
+    assert.equal(authorised(fakeReq(), fakeUrl('api/growth')), true, 'npm run demo keeps working');
+  } finally {
+    env.server.token = '';
+    env.server.host = host;
+    delete process.env.DEMO_MODE;
+  }
 
   const html = growthSection(G.growthSnapshot());
   assert.match(html, /Growth funnel/, 'the funnel is rendered');

@@ -1936,6 +1936,30 @@ export function cloudTrack({ waId, tenant = null, number = null, kind = 'text', 
   return get('SELECT * FROM cloud_messages WHERE wa_id = ?', [waId]);
 }
 
+/**
+ * Has this inbound Meta message already been handled?
+ *
+ * `cloud_messages` already exists with `wa_id` as its primary key, so the
+ * ledger Meta's retries need is the one we already keep — no second table.
+ */
+export function cloudInboundSeen(waId) {
+  if (!waId) return false;
+  const row = get('SELECT kind FROM cloud_messages WHERE wa_id = ?', [waId]);
+  return !!row && row.kind === 'inbound';
+}
+
+/** Record an inbound message id before it is acted on, so a retry is a no-op. */
+export function cloudInboundMark(waId, { tenant = null, number = null, now = new Date().toISOString() } = {}) {
+  if (!waId) return null;
+  run(
+    `INSERT INTO cloud_messages (wa_id, tenant, number, kind, status, created_at, updated_at)
+     VALUES (?, ?, ?, 'inbound', 'received', ?, ?)
+     ON CONFLICT(wa_id) DO NOTHING`,
+    [waId, tenant, number, now, now]
+  );
+  return get('SELECT * FROM cloud_messages WHERE wa_id = ?', [waId]);
+}
+
 export function cloudMarkStatus(waId, status, { error = null } = {}) {
   if (!waId) return null;
   const row = get('SELECT * FROM cloud_messages WHERE wa_id = ?', [waId]);

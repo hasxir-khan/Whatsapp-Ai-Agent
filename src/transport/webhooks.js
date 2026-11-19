@@ -13,18 +13,35 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 export function readRawBody(req, { limit = MAX_BODY_BYTES } = {}) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let done = false;
     const chunks = [];
+    const fail = (err) => {
+      if (done) return;
+      done = true;
+      // Do NOT destroy the socket here: the caller still has to write the 413.
+      // Draining instead of killing keeps the response deliverable and stops the
+      // client from filling memory.
+      req.removeAllListeners('data');
+      req.resume();
+      reject(err);
+    };
     req.on('data', (chunk) => {
+      if (done) return;
       size += chunk.length;
       if (size > limit) {
-        reject(new Error('webhook body too large'));
-        req.destroy();
+        const err = new Error(`webhook body too large (limit ${limit} bytes)`);
+        err.code = 'too_large';
+        fail(err);
         return;
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    req.on('end', () => {
+      if (done) return;
+      done = true;
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('error', (err) => fail(err));
   });
 }
 
@@ -80,7 +97,11 @@ export async function handleWebhookRequest(req, res, url) {
     try {
       rawBody = await readRawBody(req);
     } catch (err) {
-      send(res, 413, err.message);
+      if (err.code === 'too_large') {
+        send(res, 413, err.message);
+      } else {
+        send(res, 400, `Could not read the body: ${err.message}`);
+      }
       return true;
     }
 

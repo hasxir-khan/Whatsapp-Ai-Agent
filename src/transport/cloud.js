@@ -250,12 +250,32 @@ export class CloudTransport extends Transport {
     const { messages, statuses } = this.parseWebhook(body);
 
     for (const status of statuses) this.applyStatus(status);
-    for (const message of messages) await this.emit(message);
+
+    // Meta retries a webhook until it gets a 2xx, and a restart between "handled"
+    // and "answered" used to mean the same customer got two replies. The id is
+    // written to cloud_messages *before* the message is acted on, so the ledger
+    // survives a restart and a retry is a no-op.
+    let duplicates = 0;
+    for (const message of messages) {
+      if (message.id && db.cloudInboundSeen(message.id)) {
+        duplicates += 1;
+        db.logEvent('cloud_webhook_duplicate', message.number, { wa_id: message.id, slug: this.slug });
+        continue;
+      }
+      if (message.id) db.cloudInboundMark(message.id, { tenant: this.slug, number: message.number });
+      await this.emit(message);
+    }
 
     if (!messages.length && !statuses.length) {
       db.logEvent('cloud_webhook_empty', null, { slug: this.slug });
     }
-    return { status: 200, body: 'ok', messages: messages.length, statuses: statuses.length };
+    return {
+      status: 200,
+      body: 'ok',
+      messages: messages.length - duplicates,
+      duplicates,
+      statuses: statuses.length,
+    };
   }
 
   /** Pull messages and statuses out of a Meta webhook body. */

@@ -44,6 +44,12 @@ function writeProfile(features = {}) {
 }
 
 const env = await import('../src/config/env.js');
+
+// SECURITY PASS: the web surfaces are private by default. These tests are about
+// the inbox view, so the bind is pinned to loopback — the one configuration
+// where "no token" is still allowed. The 401/403 rules themselves are tested
+// below and in test/59-security.test.js.
+env.config.server.host = '127.0.0.1';
 writeProfile();
 
 const db = await import('../src/utils/db.js');
@@ -194,7 +200,16 @@ test('with DASHBOARD_TOKEN set, every inbox route needs it', async () => {
   assert.equal(denied.status, 401);
   assert.equal(denied.body.error, 'unauthorised');
 
-  const allowed = await call({ url: '/api/inbox?token=sekrit' });
+  // SECURITY PASS: was `call({ url: '/api/inbox?token=sekrit' })` returning 200.
+  // A token in the URL is a one-time ticket the server exchanges for the signed
+  // cookie; reaching a route with it in the URL must not authenticate.
+  const urlToken = await call({ url: '/api/inbox?token=sekrit' });
+  assert.equal(urlToken.status, 401, 'a URL token is not a session');
+
+  const { sessionCookieHeader } = await import('../src/services/webAuth.js');
+  const cookie = sessionCookieHeader('sekrit').split(';')[0]; // wa_dash=<signed>
+
+  const allowed = await call({ url: '/api/inbox', headers: { cookie } });
   assert.equal(allowed.status, 200);
   assert.ok(Array.isArray(allowed.body.chats));
 
@@ -205,10 +220,21 @@ test('with DASHBOARD_TOKEN set, every inbox route needs it', async () => {
   assert.equal(pageDenied.status, 401);
   assert.match(pageDenied.raw, /token=/);
 
-  const pageOk = await call({ url: '/inbox?token=sekrit' });
+  const pageOk = await call({ url: '/inbox', headers: { cookie } });
   assert.equal(pageOk.status, 200);
   assert.match(pageOk.headers['Content-Security-Policy'], /default-src 'self'/);
   assert.equal(pageOk.headers['X-Frame-Options'], 'DENY');
+
+  // SECURITY PASS: a cookie-authenticated mutation now needs same-origin proof
+  // (the admin panel's csrfOk), which a cross-site form post cannot fake.
+  const csrfBlocked = await call({
+    method: 'POST',
+    url: `/api/inbox/${CLIENT}/reply`,
+    headers: { cookie },
+    body: { text: 'hi' },
+  });
+  assert.equal(csrfBlocked.status, 403, 'cross-site cookie post is refused');
+  assert.equal(csrfBlocked.body.error, 'csrf');
 
   env.config.server.token = before;
 });
@@ -408,9 +434,16 @@ test('in demo mode it needs a body, a POST and — when set — the token', asyn
     const denied = await callDemo({ method: 'POST', body: { text: 'hi' } });
     assert.equal(denied.status, 401);
 
+    // SECURITY PASS: was `?token=sekrit` in the URL. The demo route now uses the
+    // shared session too, so the proof is a signed cookie (or a Bearer header).
+    const { sessionCookieHeader } = await import('../src/services/webAuth.js');
+    const cookie = sessionCookieHeader('sekrit').split(';')[0];
+    const urlToken = await callDemo({ method: 'POST', url: '/api/demo/message?token=sekrit', body: { text: 'hi' } });
+    assert.equal(urlToken.status, 401, 'a URL token is not a session here either');
+
     // No transport registered in this test process → honest 503, not a 500.
     clearTransports();
-    const noTransport = await callDemo({ method: 'POST', url: '/api/demo/message?token=sekrit', body: { text: 'hi' } });
+    const noTransport = await callDemo({ method: 'POST', headers: { cookie }, body: { text: 'hi' } });
     assert.equal(noTransport.status, 503);
     assert.equal(noTransport.body.error, 'no_transport');
   } finally {

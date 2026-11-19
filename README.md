@@ -3182,8 +3182,97 @@ tweak is cheap to make and cheap to check, so there is no reason to guess.
 
 ---
 
+## Security model
+
+What is public, what is private, and how a browser proves itself.
+
+**Public, by design.** `GET /health` returns `{ ok, uptime }` and nothing else —
+no number, no tenant, no provider, no pairing state. It exists so a monitor can
+tell the process is alive. `GET/POST /webhook/<slug>` is public because Meta has
+to reach it; it is authenticated by Meta's HMAC signature (`X-Hub-Signature-256`)
+over the raw bytes, and an unknown slug answers 404 instead of pretending.
+
+**Private, always.** `/`, `/index.html`, `/api/status`, `/api/growth`, `/qr.png`,
+`/inbox`, `/api/inbox/*`, `/admin` and `/api/admin/*`. The QR is the sharpest
+edge of the whole project: whoever scans it owns the WhatsApp account, so it
+needs the session, is served only while the account is unpaired, is rate
+limited, and is sent with `Cache-Control: no-store`.
+
+**How auth works (one implementation).** `src/services/webAuth.js` decides who
+needs a session and reuses the admin panel's primitives — the same signed,
+expiring cookie (`issueSessionFor`/`sessionValidFor`), the same `csrfOk`, the
+same `rateLimit`. There is no second auth stack.
+
+- `DASHBOARD_TOKEN` is the root of trust. A script sends it as
+  `Authorization: Bearer …`. A browser sends it **once** as `/?token=…`: the
+  server exchanges it for an `HttpOnly; SameSite=Strict` cookie (`Secure` behind
+  HTTPS), redirects to the same URL without the query string, and never puts the
+  token in HTML or a log line. Every response carries `Referrer-Policy:
+  no-referrer`.
+- Cookie-authenticated mutations need same-origin proof (the admin panel's
+  `csrfOk`: `X-Admin-CSRF`, or an `Origin`/`Referer` that matches the host). A
+  Bearer header cannot be replayed by a browser, so it does not.
+- **No token means the web UI does not start** unless the bind is loopback
+  (`HOST=127.0.0.1`) or `DEMO_MODE=1` (the fake-data demo). `doctor` reports
+  which case applies; a public bind with no token is a refusal with a clear
+  error, not a warning.
+
+**Deploying safely.**
+
+1. Set `DASHBOARD_TOKEN` to a long random string (`openssl rand -base64 32`) and
+   keep the bind private (`HOST=127.0.0.1`) behind a tunnel or proxy that
+   terminates TLS — with `X-Forwarded-Proto: https` so the cookie is `Secure`.
+2. Never expose `/qr.png` to the internet: pairing is done on your own machine,
+   once, and the session folder afterwards is the credential.
+3. Tenants live under `tenants/` with `0700` folders and `0600` files; backups
+   are `0600` archives in a `0700` folder. Treat `.env`, `tenants/` and
+   `backups/` as secrets, because they are.
+4. Run `npm run scan` before pushing. The tree scan is a gate; the history walk
+   is informational and still reports one legacy commit on `main`.
+5. The repo should stay **private** until you decide otherwise (see License).
+
+What this cannot verify without a real deployment: TLS termination, cloudflared
+or nginx behaviour, and multi-tenant traffic under load. Those are documented
+risks, not tested guarantees.
+
 ## License
 
-MIT. Use it for your own business or for other people's — but the people talking to it should know a bot may be answering.
+MIT, today — which means anyone who gets this repository may use, change and
+redistribute it, including commercially, as long as they keep the copyright
+notice.
+
+**If you decide to keep the code private, do that before anything else:**
+
+1. On GitHub: **Settings → General → Danger Zone → Change repository
+   visibility → Private**. Keep it private until you have decided; a public
+   commit is hard to un-publish (forks and caches survive).
+2. To make the *licence* proprietary as well, replace the `LICENSE` file with a
+   short proprietary notice. The usual shape:
+
+   ```
+   Copyright (c) 2026 Hashir Khan. All rights reserved.
+
+   This source code is proprietary and confidential. No permission is granted
+   to use, copy, modify, merge, publish, distribute, sublicense or sell any
+   part of it without prior written consent from the copyright holder.
+   ```
+
+3. Update the line in this section that says "MIT" so the two do not disagree,
+   and mention the change in your next commit message.
+4. If you already published under MIT: existing releases stay MIT-licensed for
+   whoever received them. A new licence applies from the commit where you change
+   it. Nothing about that is reversible, which is the reason for the private
+   default above.
+5. One dependency is **GPL-3.0**, not MIT: `libsignal` (pulled in by Baileys
+   from `github.com/whiskeysockets/libsignal-node`, pinned in
+   `package-lock.json` to commit `bcea72d`). A proprietary licence on *your*
+   code does not relicense that library, and GPL-3.0 has obligations that a
+   closed distribution can conflict with. If you go proprietary, read that
+   licence (or use the official Cloud API transport instead of Baileys) before
+   you ship. `npm audit` reports 8 high and 1 moderate advisories in the tree,
+   most of them through the local-embedding and image libraries — see the
+   security report, no automatic upgrades were applied.
+6. If you later sell or host this for other businesses, have a lawyer read the
+   notice — a five-line file is a reasonable start, not legal advice.
 
 Built by Hashir Khan / HasDevs, and now for anyone who needs it.

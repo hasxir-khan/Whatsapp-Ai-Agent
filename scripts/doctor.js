@@ -685,6 +685,11 @@ export function growthSettingsWarnings(profile = {}, env = {}, { transport = nul
     const host = String(env.HOST || '0.0.0.0');
     if (!env.DASHBOARD_TOKEN && (host === '0.0.0.0' || host === '::')) {
       warnings.push('liveInbox listens on 0.0.0.0 with no token — bind HOST=127.0.0.1 or set DASHBOARD_TOKEN');
+      // SECURITY PASS: this is no longer a warning about the inbox — the web UI
+      // refuses to start in this configuration. Say that plainly.
+      problems.push(
+        'The web UI will not start: no DASHBOARD_TOKEN on a public bind. Set DASHBOARD_TOKEN (recommended) or HOST=127.0.0.1 for local-only use.'
+      );
     }
   }
 

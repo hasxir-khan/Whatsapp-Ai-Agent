@@ -27,6 +27,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { buildProfileFromTemplate, isTemplate, listTemplates, TEMPLATE_IDS } from '../src/services/templates.js';
 import { runSetup } from './wizard.js';
 import { templateAgents, MAX_AGENTS, validateAgent } from '../src/services/agents.js';
+import { validSlug as sharedValidSlug, validPort, resolveInside, ensurePrivateDir, writePrivateFile, tightenFile } from '../src/services/validation.js';
 
 // Where the users live: whatever folder you ran the command from.
 const ROOT = process.cwd();
@@ -57,7 +58,11 @@ const slugify = (s) =>
     .replace(/^-+|-+$/g, '')
     .slice(0, 32);
 
-const validSlug = (s) => /^[a-z0-9][a-z0-9-]{1,31}$/.test(s);
+// SECURITY PASS: the admin panel's rules, not a second copy of them. The old
+// regex here allowed one extra character class and one fewer rule than the
+// panel, so a slug could pass the CLI and fail (or behave differently) in the
+// panel.
+const validSlug = (s) => sharedValidSlug(s);
 
 const normalizePhone = (input) => {
   let d = String(input || '').replace(/[^\d]/g, '');
@@ -114,7 +119,9 @@ function writeEnvValue(slug, key, value) {
     return line;
   });
   if (!found) next.push(`${key}=${value}`);
-  fs.writeFileSync(file, next.join('\n'));
+  // SECURITY PASS: .env holds API keys. Rewriting it must not widen its mode,
+  // and a file created here starts at 0600.
+  writePrivateFile(file, next.join('\n'));
 }
 
 const mask = (v) => {
@@ -154,11 +161,17 @@ export function createTenant(opts = {}) {
   }
 
   const dir = tenantDir(slug);
+  // SECURITY PASS: one private tree per tenant — 0700 dirs, and every path
+  // proved to be inside it (the admin panel's rules, not a second copy).
+  ensurePrivateDir(dir);
   for (const sub of ['config', 'data', 'sessions', 'tmp']) {
-    fs.mkdirSync(path.join(dir, sub), { recursive: true });
+    ensurePrivateDir(resolveInside(dir, sub));
   }
 
   const port = Number(opts.port) || nextPort();
+  if (!validPort(port)) {
+    throw new Error(`Port ${port} is not usable: pick a number between 1024 and 65535.`);
+  }
   const brand = opts.brand || name;
   const timezone = opts.timezone || 'Asia/Karachi';
   const template = opts.template || null;
@@ -173,9 +186,9 @@ export function createTenant(opts = {}) {
     enabled: true,
     createdAt: new Date().toISOString(),
   };
-  fs.writeFileSync(path.join(dir, 'tenant.json'), `${JSON.stringify(tenant, null, 2)}\n`);
+  writePrivateFile(path.join(dir, 'tenant.json'), `${JSON.stringify(tenant, null, 2)}\n`);
 
-  fs.writeFileSync(
+  writePrivateFile(
     path.join(dir, '.env'),
     `# ${name} — secrets for this WhatsApp assistant.
 # This file is private: it is gitignored, and only this tenant reads it.
@@ -271,7 +284,7 @@ PORT=${port}
       })
     : starterProfile({ name, brand, number, timezone });
 
-  fs.writeFileSync(path.join(dir, 'config', 'owner.json'), `${JSON.stringify(profile, null, 2)}\n`);
+  writePrivateFile(resolveInside(dir, 'config', 'owner.json'), `${JSON.stringify(profile, null, 2)}\n`);
 
   return { slug, name, number, port, dir, template };
 }

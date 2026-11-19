@@ -24,6 +24,11 @@ import { videoCapabilities } from './services/video.js';
 import { sttEnabled } from './services/transcription.js';
 import { hasFfmpeg } from './services/ffmpeg.js';
 import { handleWebhookRequest } from './transport/webhooks.js';
+import {
+  authenticate, authRequired, clearCookieHeader, dashboardToken, mutationAllowed,
+  rateLimit as webRateLimit, SECURITY_HEADERS, sessionCookieHeader, tokenExchange,
+  webSecurityState,
+} from './services/webAuth.js';
 import { getTransport } from './transport/index.js';
 import { growthSnapshot, SOURCE_LABELS } from './services/growthDashboard.js';
 import {
@@ -369,21 +374,21 @@ function page(data) {
 const AUTH_COOKIE = 'wa_dash';
 
 /**
- * The dashboard is business data. If DASHBOARD_TOKEN is set, every page and
- * API route needs it (bearer header, ?token=, or the cookie set by a first
- * successful visit). No token configured = old behaviour, for localhost use.
+ * The dashboard is business data. Every private page and API route needs the
+ * shared session (src/services/webAuth.js): a Bearer token for scripts, or the
+ * signed HttpOnly cookie a browser gets by exchanging a `?token=` once.
+ *
+ * A `?token=` is *not* accepted here — by the time a route is reached it has
+ * already been turned into a cookie and redirected away (see tokenExchange).
+ * With no token configured this is only true on a loopback (or explicit demo)
+ * bind; anywhere else the server refuses to start.
  */
 export function authorised(req, url) {
-  const token = config.server.token;
-  if (!token) return true;
-
-  const header = req.headers.authorization || '';
-  if (header.startsWith('Bearer ') && header.slice(7) === token) return true;
-  if (url.searchParams.get('token') === token) return true;
-
-  const cookies = String(req.headers.cookie || '');
-  const m = new RegExp(`${AUTH_COOKIE}=([^;]+)`).exec(cookies);
-  return !!m && decodeURIComponent(m[1]) === token;
+  if (url && url.searchParams?.get('token') !== null && url.searchParams?.get('token') !== undefined) {
+    // Never authenticate on the URL itself, even before the exchange runs.
+    return false;
+  }
+  return authenticate(req).ok;
 }
 
 /**
@@ -993,7 +998,7 @@ export async function handleDemoRoute(req, res, url) {
     sendJson(res, 404, { error: 'not_a_demo' });
     return true;
   }
-  if (!authorised(req, url)) {
+  if (!authenticate(req).ok) {
     sendJson(res, 401, { error: 'unauthorised' });
     return true;
   }
@@ -1051,7 +1056,8 @@ async function handleInboxRoute(req, res, url) {
     return true;
   }
 
-  if (!authorised(req, url)) {
+  const auth = authenticate(req);
+  if (!auth.ok) {
     if (pathname === '/inbox') {
       res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end('<!doctype html><title>Locked</title><p>The inbox needs <code>?token=…</code> (DASHBOARD_TOKEN).</p>');
@@ -1124,6 +1130,12 @@ async function handleInboxRoute(req, res, url) {
       sendJson(res, 400, { error: 'bad_json' });
       return true;
     }
+    // A cookie can be sent by another site; a Bearer header cannot. Same rule
+    // as the admin panel: one implementation, two surfaces.
+    if (!mutationAllowed(req, auth, body)) {
+      sendJson(res, 403, { error: 'csrf', hint: 'Send X-Admin-CSRF, or call from the same origin.' });
+      return true;
+    }
     const result = await inboxReply({
       number,
       text: body.text,
@@ -1137,6 +1149,10 @@ async function handleInboxRoute(req, res, url) {
 
   if ((action === 'takeover' || action === 'release') && req.method === 'POST') {
     const body = (await readJsonBody(req)) || {};
+    if (!mutationAllowed(req, auth, body)) {
+      sendJson(res, 403, { error: 'csrf', hint: 'Send X-Admin-CSRF, or call from the same origin.' });
+      return true;
+    }
     const result = action === 'takeover' ? inboxTakeover(number, { minutes: body.minutes }) : inboxRelease(number);
     sendJson(res, result.ok ? 200 : 400, result);
     return true;
@@ -1146,16 +1162,67 @@ async function handleInboxRoute(req, res, url) {
   return true;
 }
 
+// What startServer() decided about exposure, for doctor to report as a fact.
+let webRefusal = null;
+
+export function webSecurityStatus() {
+  return {
+    ...webSecurityState(),
+    listening: !!startedServer,
+    refused: webRefusal,
+  };
+}
+
+let startedServer = null;
+
 export function startServer() {
   if (!config.server.enabled) {
     console.log('🌐 Dashboard disabled (ENABLE_WEB=false)');
     return null;
   }
 
+  // No token + a reachable bind address = the dashboard, the growth figures and
+  // the QR code on the open internet. Refuse, and say exactly what to do.
+  const exposure = webSecurityState();
+  if (!exposure.ok) {
+    webRefusal = { reason: exposure.reason, message: exposure.message, host: config.server.host, at: new Date().toISOString() };
+    console.error(`🔒 ${exposure.message}`);
+    return null;
+  }
+  if (exposure.mode === 'local' && !exposure.loopback) {
+    console.warn('🔒 No DASHBOARD_TOKEN and a public bind: demo mode is serving fake data to anyone who asks. Never put real customers here.');
+  }
+  webRefusal = null;
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
     try {
+      // Every browser-facing answer says the same thing about referrers.
+      for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
+        if (!res.hasHeader?.(k)) res.setHeader(k, v);
+      }
+
+      // `?token=` is a one-time ticket: exchange it for the signed HttpOnly
+      // cookie and send the browser to the same URL without it. The token never
+      // reaches HTML, a log line, or anybody's Referer.
+      const exchange = tokenExchange(req, url);
+      if (exchange) {
+        if (!exchange.ok) {
+          res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end('That token is not valid.');
+          return;
+        }
+        res.writeHead(302, {
+          Location: exchange.location || '/',
+          'Set-Cookie': exchange.value,
+          'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer',
+        });
+        res.end();
+        return;
+      }
+
       // Cloud API webhooks: /webhook/<slug> (GET verification, POST messages).
       // Unknown slugs answer honestly instead of pretending to be Meta's friend.
       if (await handleWebhookRequest(req, res, url)) return;
@@ -1169,25 +1236,46 @@ export function startServer() {
       if (await handleInboxRoute(req, res, url)) return;
 
       if (url.pathname === '/qr.png') {
-        if (!botState.qr) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
+        // The QR *is* the login: whoever scans it owns the WhatsApp account.
+        // So: auth first, then a rate limit, then only while unpaired.
+        if (!authenticate(req).ok) {
+          res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end('Unauthorised');
+          return;
+        }
+        const limited = webRateLimit('qr', { max: 20, windowMs: 60000 });
+        if (!limited.ok) {
+          res.writeHead(429, { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': String(limited.retryAfter), 'Cache-Control': 'no-store' });
+          res.end('Too many QR requests');
+          return;
+        }
+        if (!botState.qr || botState.status === 'online') {
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
           res.end('No QR right now');
           return;
         }
         const png = await QRCode.toBuffer(botState.qr, { width: 420, margin: 1 });
-        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+        res.writeHead(200, {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+          Pragma: 'no-cache',
+          Expires: '0',
+        });
         res.end(png);
         return;
       }
 
       if (url.pathname === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, status: botState.status, uptime: uptimeMinutes() }));
+        // Public on purpose, and useless on purpose: a monitor needs to know the
+        // process is up. No number, tenant, provider or pairing state — that is
+        // business information and it lives behind the session.
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, uptime: uptimeMinutes() }));
         return;
       }
 
       if (url.pathname === '/api/growth') {
-        if (!authorised(req, url)) {
+        if (!authenticate(req).ok) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'unauthorised' }));
           return;
@@ -1198,6 +1286,11 @@ export function startServer() {
       }
 
       if (url.pathname === '/api/status') {
+        if (!authenticate(req).ok) {
+          res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ error: 'unauthorised' }));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(buildStatus(), null, 2));
         return;
@@ -1210,9 +1303,9 @@ export function startServer() {
       }
 
       if (url.pathname === '/' || url.pathname === '/index.html') {
-        if (!authorised(req, url)) {
-          res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end('<!doctype html><title>Locked</title><p>This dashboard needs ?token=… (set DASHBOARD_TOKEN).</p>');
+        if (!authenticate(req).ok) {
+          res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end('<!doctype html><title>Locked</title><p>This dashboard needs DASHBOARD_TOKEN. Open it once as <code>/?token=…</code> and the browser will keep a signed cookie.</p>');
           return;
         }
         const html = page(buildStatus());
@@ -1230,7 +1323,9 @@ export function startServer() {
   });
 
   server.listen(config.server.port, config.server.host, () => {
-    console.log(`🌐 Dashboard: http://${config.server.host}:${config.server.port}`);
+    startedServer = server;
+    const guard = exposure.mode === 'private' ? 'token required' : 'local only, no token';
+    console.log(`🌐 Dashboard: http://${config.server.host}:${config.server.port} (${guard})`);
   });
 
   server.on('error', (err) => console.error('Dashboard error:', err.message));
