@@ -3186,4 +3186,4 @@ tweak is cheap to make and cheap to check, so there is no reason to guess.
 
 MIT. Use it for your own business or for other people's — but the people talking to it should know a bot may be answering.
 
-Built for real businesses, and for anyone who needs it.
+Built by Hashir Khan / HasDevs, and now for anyone who needs it.
