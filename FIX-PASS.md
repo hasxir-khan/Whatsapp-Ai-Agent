@@ -4,10 +4,14 @@ No new features. Every fix has a failing golden scenario (and a live-mode
 variant where it makes sense) that was written before the fix, plus unit tests.
 
 ```
-npm test          # 911 pass, 3 pre-existing failures (see "Known failures")
-npm run eval      # 79 scenarios · 79 pass · score 100%
+npm test          # 939 pass, 0 failures
+npm run eval      # 87 scenarios · 87 pass · score 100%
 npm run eval -- --live    # same scenarios against a real provider (needs a key)
 ```
+
+The counts are today's. When this pass shipped it was 911 pass with three
+pre-existing failures, and 79 scenarios; the failures were fixed and eight
+goldens added afterwards — see "Formerly known failures" at the end.
 
 ---
 
@@ -262,13 +266,19 @@ model's phrasing.
 * **Voice notes / vision** are unchanged by this pass and were not re-tested
   live.
 
-## Known failures in `npm test` (all pre-existing, none caused by this pass)
+## Formerly known failures — all three fixed since
 
-| test | why |
-|---|---|
-| `.status <id> <state> … notifies the customer` | the sandbox clock is inside the Karachi quiet-hours window, so the customer message is deferred instead of sent |
-| `the demo folder and the owner profile stay out of git` | `config/owner.json` is tracked in git (committed before this branch) even though it is in `.gitignore`; `git check-ignore` does not report tracked files. Worth fixing separately — a private profile should not be in the repo. |
-| `this repository is clean, and its own scanner …` | the working tree is intentionally dirty: this whole phase is uncommitted, per instruction |
+These were red when this pass shipped. None was caused by the work here, and
+none was fixed by loosening a test: each one was fixed where the problem
+actually was.
+
+| test | why it was red | how it was fixed |
+|---|---|---|
+| `.status <id> <state> … notifies the customer` | it read the wall clock, so it went red whenever the suite ran inside the profile's Karachi quiet-hours window (21:00 → 09:00) and the customer message was correctly deferred | `handleOwnerCommand` takes an optional clock (`{ now }`), the test passes a fixed 13:00 Karachi, and a second test pins the 23:00 case: the order still moves, nothing is sent, and the reply says `quiet_hours` |
+| `the demo folder and the owner profile stay out of git` | `config/owner.json` was tracked even though it is in `.gitignore` (`git check-ignore` says nothing about tracked files) — a private profile inside a public repo | untracked (`git rm --cached`); the index and the tree are clean, the file stays ignored, and the app falls back to `config/owner.example.json` |
+| `this repository is clean, and its own scanner …` | the same tracked `config/owner.json`: the scanner treats it as a private owner profile and refuses the tree (`node scripts/scan-secrets.js --all` → `config/owner.json  owner profile`) | untracking it fixed this one too, and the work was committed so the tree matches the index |
+
+`npm test` today: **939 pass, 0 failures**.
 
 ## Files changed in this pass
 

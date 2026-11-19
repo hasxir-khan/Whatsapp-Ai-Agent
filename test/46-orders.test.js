@@ -471,12 +471,31 @@ test('.status <id> <state> moves an order and notifies the customer', async () =
   const order = makeOrder({ status: 'ready' });
   const transport = fakeTransport();
 
-  const res = await handleOwnerCommand(transport, OWNER_JID, `.status ${order.id} out_for_delivery`);
+  // A fixed clock, never the wall clock: quiet hours (default 21:00 → 09:00 in
+  // the profile's timezone) decide whether the customer is messaged, so the
+  // hour this suite happens to run at must not change the answer. NOON is 13:00
+  // in Karachi.
+  const res = await handleOwnerCommand(transport, OWNER_JID, `.status ${order.id} out_for_delivery`, OWNER, { now: NOON });
   assert.equal(res.handled, true);
   assert.match(res.reply, /Out for delivery/);
   assert.match(res.reply, /Customer notified/);
   assert.equal(db.getOrder(order.id).status, 'out_for_delivery');
   assert.equal(transport.sent.filter((m) => m.jid === jidFor(CUSTOMER)).length, 1);
+});
+
+test('.status during quiet hours moves the order and holds the message', async () => {
+  reset();
+  db.upsertContact(CUSTOMER, { jid: jidFor(CUSTOMER), name: 'Ayesha' });
+  const order = makeOrder({ status: 'ready' });
+  const transport = fakeTransport();
+
+  // Same command, same fake clock, moved to 23:00 in Karachi — the move still
+  // happens, the customer is not woken up, and the owner is told why.
+  const res = await handleOwnerCommand(transport, OWNER_JID, `.status ${order.id} out_for_delivery`, OWNER, { now: NIGHT });
+  assert.equal(res.handled, true);
+  assert.equal(db.getOrder(order.id).status, 'out_for_delivery');
+  assert.equal(transport.sent.filter((m) => m.jid === jidFor(CUSTOMER)).length, 0);
+  assert.match(res.reply, /quiet_hours/);
 });
 
 test('.status refuses a backwards move without --force', async () => {

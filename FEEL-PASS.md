@@ -7,11 +7,11 @@ scenarios and stays at 100 %.*
 | | |
 |---|---|
 | Branch | `arena/e323af96-whatsapp-ai-agent` (from `376b8ee`) |
-| Unit tests | **935 pass · 3 known failures** (the same three as part 3 — see “Known failures”) |
+| Unit tests | **939 pass · 0 failures** (935 + 3 red when this pass shipped; all three fixed later — see “Formerly known failures”) |
 | Eval | **87 scenarios · 87 pass · 0 warn · 0 fail · 100 %**, ~17 s, deterministic, no network |
 | New unit tests | `test/58-human-feel.test.js` — 24 tests |
 | New goldens | 8 (`feel-*.json`), Roman Urdu, English and Urdu |
-| Existing tests | **untouched** — no baseline was edited to make anything pass |
+| Existing tests | **untouched by this pass** — no baseline was edited to make anything pass; the flaky `.status` test was later given a fixed clock (§5) |
 
 ---
 
@@ -21,10 +21,13 @@ scenarios and stays at 100 %.*
 
 ```
 ⏱️ Reply timeline (newest first)
-• +447700910005 · 7.9s total · read +2.8s · debounce 2.2s · pipeline 0.0s · model 0.0s · hold 5.7s · groq/openai/gpt-oss-120b
-• +447700910004 · 7.7s total · read +1.2s · debounce 2.2s · pipeline 0.0s · model 0.0s · hold 5.5s · groq/openai/gpt-oss-120b
+• +44 7700 900xxx · 7.9s total · read +2.8s · debounce 2.2s · pipeline 0.0s · model 0.0s · hold 5.7s · groq/openai/gpt-oss-120b
+• +44 7700 900xxx · 7.7s total · read +1.2s · debounce 2.2s · pipeline 0.0s · model 0.0s · hold 5.5s · groq/openai/gpt-oss-120b
   where the time goes (avg of last 3): debounce 2.2s · model+pipeline 0.0s · hold 5.4s
 ```
+
+The chat numbers are the fixture range the tests use (UK 07700 900xxx, reserved
+for fiction), shown here with the last digits masked.
 
 The stages are `received → read → batch (debounce) → typing → provider_done →
 sent`, in seconds. `.debug 92300…` shows the same breakdown per chat, and
@@ -273,13 +276,19 @@ and nothing else” is checkable rather than inferred from events.
 
 ---
 
-## 5. Known failures (unchanged, not caused by this pass)
+## 5. Formerly known failures — all three fixed since
 
-| Test | Why |
-|---|---|
-| `.status <id> <state> moves an order and notifies the customer` | the sandbox clock is inside the profile’s Karachi quiet hours; the notification is correctly deferred |
-| `the demo folder and the owner profile stay out of git` | `config/owner.json` is tracked in git history despite `.gitignore` |
-| `this repository is clean, and its own scanner is allowed to contain patterns` | the working tree is intentionally dirty and uncommitted |
+These three were red when this pass shipped. None was caused by the work here,
+and none was fixed by making the assertion weaker: the fix went into the thing
+the test was exercising.
+
+| Test | Why it was red | Fix |
+|---|---|---|
+| `.status <id> <state> moves an order and notifies the customer` | it read the wall clock, so it went red whenever the suite ran inside the profile’s Karachi quiet hours (21:00 → 09:00) and the customer message was correctly deferred | `handleOwnerCommand` takes an optional clock (`{ now }`); the test passes a fixed 13:00 Karachi, and a new test pins 23:00: the order moves, nothing is sent, the reply says `quiet_hours`. The eval harness passes the scenario clock too. |
+| `the demo folder and the owner profile stay out of git` | `config/owner.json` was tracked despite `.gitignore` — a private profile in a public repo | untracked (`git rm --cached`); index and tree clean, the file stays ignored |
+| `this repository is clean, and its own scanner is allowed to contain patterns` | the same tracked `config/owner.json` — the scanner treats that file as a private owner profile and fails the tree | untracking it fixed this one as well; the work is committed, so tree and index agree |
+
+`npm test` today: **939 pass, 0 failures**.
 
 ---
 

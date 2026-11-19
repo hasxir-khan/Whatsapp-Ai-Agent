@@ -243,7 +243,18 @@ function strategistOn() {
   return featureOn('businessBrain');
 }
 
-export async function handleOwnerCommand(sock, chatJid, text, from = config.owner.number) {
+/**
+ * @param {object|null} sock
+ * @param {string} chatJid
+ * @param {string} text
+ * @param {string} [from]
+ * @param {{now?: Date}} [options] the clock to use for anything time-dependent
+ *   (quiet hours, order timestamps). Real time by default; tests and the eval
+ *   harness pass a fixed one so the answer does not depend on the hour the
+ *   suite happens to run at.
+ */
+export async function handleOwnerCommand(sock, chatJid, text, from = config.owner.number, { now = null } = {}) {
+  const nowDate = now instanceof Date ? now : new Date();
   const input = String(text).trim();
   const [rawCmd, ...args] = input.slice(1).split(/\s+/);
   const cmd = (rawCmd || '').toLowerCase();
@@ -640,7 +651,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         const id = Number(args[0]);
         const state = String(args[1] || '').toLowerCase();
         const override = args.includes('--force') || args.includes('override');
-        const res = await transitionOrder(id, state, { actor: 'owner', override, note: noteOrNull(args) });
+        const res = await transitionOrder(id, state, { actor: 'owner', override, note: noteOrNull(args), now: nowDate });
         if (!res.ok) {
           return { handled: true, reply: `${res.reply}\nStates: ${[...ORDER_STATES, 'cancelled', 'refunded'].join(' · ')}` };
         }
@@ -649,7 +660,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         if (res.review) lines.push('Review ask scheduled for this customer.');
         const { notifyCustomer } = await import('../services/orders.js');
         const transport = getTransport() || sock;
-        const told = await notifyCustomer(transport, res.order, res.to);
+        const told = await notifyCustomer(transport, res.order, res.to, { now: nowDate });
         if (told.sent) lines.push('Customer notified.');
         else if (told.reason && !['not_notifiable', 'no_transport'].includes(told.reason)) {
           lines.push(`Customer not messaged: ${told.reason}${told.detail ? ` (${told.detail})` : ''} — .growth explains.`);

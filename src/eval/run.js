@@ -518,7 +518,10 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
         }
         await handleIncoming(transport, messageFor({ scenario, turn, number, index, nonce, tag }));
       } else if (turn.owner !== undefined) {
-        const res = await handleOwnerCommand(transport, `${ownerNumber}@s.whatsapp.net`, turn.owner, ownerNumber);
+        // The scenario's clock, not the wall clock: an owner command that
+        // messages a customer must not change its answer with the hour the eval
+        // happens to run at.
+        const res = await handleOwnerCommand(transport, `${ownerNumber}@s.whatsapp.net`, turn.owner, ownerNumber, { now: fixedDate(turn) });
         if (res?.reply) transport.sent.push({ jid: `${ownerNumber}@s.whatsapp.net`, payload: { text: res.reply }, at: FIXED_NOW });
       } else if (turn.action) {
         await runAction({ turn, transport, m, scenario, number });
