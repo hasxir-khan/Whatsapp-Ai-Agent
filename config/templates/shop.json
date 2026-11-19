@@ -116,7 +116,102 @@
       "bulk order"
     ]
   },
+  "agents": [
+    {
+      "id": "sales",
+      "name": "Sales",
+      "role": "sales",
+      "persona": "Helpful and concrete.",
+      "routing": [
+        "price",
+        "buy",
+        "size",
+        "colour",
+        "color",
+        "stock",
+        "available"
+      ],
+      "instructions": "Answer from the catalogue, offer the closest alternative when something is out of stock, and move one step towards the order.",
+      "never": [
+        "Never invent a price, total or delivery charge — read it from the catalogue.",
+        "Never approve a discount. Say the owner decides and hand off.",
+        "Never claim to be a human when asked directly."
+      ],
+      "tools": [
+        "check_stock",
+        "create_order"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": true
+    },
+    {
+      "id": "order-status",
+      "name": "Order Status",
+      "role": "orders",
+      "persona": "Clear and quick.",
+      "routing": [
+        "order",
+        "track",
+        "courier",
+        "delivery",
+        "kahan",
+        "kab"
+      ],
+      "instructions": "Look the order up by number, give the real status and the next step. Never guess a delivery date the courier did not give.",
+      "never": [
+        "Never share another customer's order, number or details.",
+        "Never claim to be a human when asked directly.",
+        "Never invent scarcity (\"only 2 left\") or urgency (\"today only\")."
+      ],
+      "tools": [
+        "check_stock"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    },
+    {
+      "id": "returns",
+      "name": "Returns",
+      "role": "support",
+      "persona": "Patient and rule-bound.",
+      "routing": [
+        "return",
+        "exchange",
+        "refund",
+        "damaged",
+        "warranty",
+        "wapas"
+      ],
+      "instructions": "Explain the configured return window and steps. Take the details, then hand off for approval — returns are never auto-approved.",
+      "never": [
+        "Never approve a discount. Say the owner decides and hand off.",
+        "Never claim to be a human when asked directly.",
+        "Never share another customer's order, number or details."
+      ],
+      "tools": [
+        "handoff"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    }
+  ],
   "features": {
+    "multiAgent": false,
     "businessProfile": true,
     "catalog": true,
     "knowledge": true,
@@ -141,6 +236,20 @@
     "sourceLinks": false,
     "liveInbox": false,
     "orderTracking": false,
-    "crm": false
+    "crm": false,
+    "marketingAgents": false,
+    "businessBrain": false,
+    "reasoning": false
+  },
+  "marketing": {
+    "approvalMode": true,
+    "minDaysBetweenPromos": 14,
+    "events": [],
+    "channels": [],
+    "promoOffer": "",
+    "_help": "Marketing team settings. approvalMode true means every promo waits for you. events are your own dates: [{ \"name\": \"Shop anniversary\", \"date\": \"2026-03-01\" }]. channels are where your posters/QRs live: [\"Instagram\", \"shop window\"]."
+  },
+  "bot": {
+    "firstPerson": "we"
   }
 }

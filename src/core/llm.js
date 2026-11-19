@@ -9,6 +9,7 @@
 import { config } from '../config/env.js';
 import { bumpUsage, getUsage, todayKey, logEvent, tenantUsage, bumpTenantUsage } from '../utils/db.js';
 import { GEMINI_BASE, geminiHeaders, isKeyError, explainGeminiError } from '../utils/gemini.js';
+import * as providerTrace from '../services/providerTrace.js';
 
 let fetchImpl = globalThis.fetch;
 
@@ -27,7 +28,61 @@ export class QuotaError extends Error {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Sticky choice: once a provider+model answers, keep using it.
+// Phase 6 Part 3 fix: stickiness is per conversation, not per process. Two
+// customers on two providers is fine; one customer flipping provider mid-chat
+// is not, and it is what produced two differently-worded replies.
 const sticky = { chat: null, small: null };
+const conversationSticky = new Map(); // chatKey -> { chat:|small: {provider, model} }
+const flightSeq = new Map(); // chatKey -> newest request id
+
+export class StaleResponseError extends Error {
+  constructor(message = 'a newer reply superseded this one') {
+    super(message);
+    this.name = 'StaleResponseError';
+    this.stale = true;
+  }
+}
+
+function pickSticky(chatKey, mode) {
+  // Per conversation: a fresh chat starts at the top of the chain, even if the
+  // last one ended up on a fallback. The process-wide value only helps calls
+  // that have no conversation (a summary, a batch job).
+  if (chatKey) {
+    const entry = conversationSticky.get(chatKey);
+    return entry?.[mode] || null;
+  }
+  return sticky[mode] || null;
+}
+
+function setSticky(chatKey, mode, value) {
+  sticky[mode] = value;
+  if (!chatKey) return;
+  const entry = conversationSticky.get(chatKey) || {};
+  entry[mode] = value;
+  conversationSticky.set(chatKey, entry);
+  // Keep the map small on a long-running box.
+  if (conversationSticky.size > 2000) {
+    const first = conversationSticky.keys().next().value;
+    conversationSticky.delete(first);
+  }
+}
+
+export function stickyFor(chatKey, mode = 'chat') {
+  return pickSticky(chatKey, mode);
+}
+
+export function _resetProviderState() {
+  sticky.chat = null;
+  sticky.small = null;
+  conversationSticky.clear();
+  flightSeq.clear();
+}
+
+/** OpenRouter may only answer with a model named in the config allowlist. */
+export function openrouterModels() {
+  const allow = config.llm.openrouterAllowlist || config.llm.openrouterTextModels || [];
+  return allow.map((m) => String(m).trim()).filter(Boolean);
+}
 
 export function providerModels(provider) {
   return candidatesFor(provider, false);
@@ -48,14 +103,26 @@ export function hasLLM() {
 function candidatesFor(provider, small) {
   if (provider === 'groq') return small ? config.llm.groqSmallModels : config.llm.groqModels;
   if (provider === 'gemini') return config.llm.geminiModels;
-  return config.llm.openrouterTextModels;
+  return openrouterModels();
 }
 
-function orderedProviders() {
+function orderedProviders(chatKey = null, mode = 'chat') {
   const available = providersAvailable();
   const wanted = config.llm.providers.filter((p) => available.includes(p));
   for (const p of available) if (!wanted.includes(p)) wanted.push(p);
-  return wanted;
+
+  // OpenRouter is last by policy: it is the most variable of the three, so it
+  // only answers when the two direct providers could not. It is also dropped
+  // entirely when no model is on the allowlist — an unnamed model is not a
+  // fallback, it is a surprise.
+  let chain = wanted.filter((p) => p !== 'openrouter');
+  if (wanted.includes('openrouter') && openrouterModels().length) chain.push('openrouter');
+
+  const s = pickSticky(chatKey, mode);
+  if (s?.provider && chain.includes(s.provider)) {
+    chain = [s.provider, ...chain.filter((p) => p !== s.provider)];
+  }
+  return chain;
 }
 
 export function tenantSlug() {
@@ -272,49 +339,105 @@ export async function chat({
   small = false,
   tools = null,
   toolChoice = null,
-  timeoutMs = 45000,
+  timeoutMs = config.llm.providerTimeoutMs || 45000,
+  // Phase 6 Part 3: a specialised caller (the reasoning brain) may pin the
+  // provider and model. Both are optional, and both fall back to the normal
+  // preference list when the pinned pair is unavailable.
+  provider: pinnedProvider = null,
+  model: pinnedModel = null,
+  // Which conversation this call belongs to — used for stickiness, for the
+  // trace, and for the late-response guard. Optional: batch jobs pass nothing.
+  chatKey = null,
+  // When true, a reply that arrives after a newer request for the same chat
+  // started is discarded instead of being sent: the timed-out primary cannot
+  // answer over the top of the fallback that already replied.
+  singleFlight = false,
+  kind = null,
 } = {}) {
   checkQuota();
 
   const mode = small ? 'small' : 'chat';
-  const providers = orderedProviders();
-  if (!providers.length) throw new Error('No AI provider configured');
+  const started = Date.now();
+  let seq = null;
+  if (chatKey && singleFlight) {
+    seq = (flightSeq.get(chatKey) || 0) + 1;
+    flightSeq.set(chatKey, seq);
+  }
 
-  // put the sticky provider first
-  const stickyProvider = sticky[mode]?.provider;
-  if (stickyProvider && providers.includes(stickyProvider)) {
-    providers.splice(providers.indexOf(stickyProvider), 1);
-    providers.unshift(stickyProvider);
+  let providers = orderedProviders(chatKey, mode);
+  if (pinnedProvider) providers = providers.filter((p) => p === pinnedProvider);
+  if (!providers.length) {
+    providerTrace.record({ chat: chatKey, kind: kind || mode, ok: false, reason: 'no provider configured', ms: Date.now() - started });
+    throw new Error('No AI provider configured');
   }
 
   let lastError = null;
+  const failures = []; // {provider, model, reason}
 
   for (const provider of providers) {
     let models = candidatesFor(provider, small);
-    const stickyModel = sticky[mode]?.provider === provider ? sticky[mode]?.model : null;
+    if (pinnedModel) models = [pinnedModel, ...models.filter((m) => m !== pinnedModel)];
+    const stickyChoice = pickSticky(chatKey, mode);
+    const stickyModel = stickyChoice?.provider === provider ? stickyChoice?.model : null;
     if (stickyModel && models.includes(stickyModel)) {
       models = [stickyModel, ...models.filter((m) => m !== stickyModel)];
     }
 
     for (const model of models) {
+      // Explicit output budget: every provider gets the same one, so a longer
+      // answer is never the accident of which model happened to answer.
+      const budget = Math.max(64, Math.min(Number(maxTokens) || config.llm.maxTokens, 4000));
       const signal = AbortSignal.timeout(timeoutMs);
       try {
         const result = await callProvider(provider, {
-          model, system, messages, temperature, maxTokens, json, tools, toolChoice, signal,
+          model, system, messages, temperature, maxTokens: budget, json, tools, toolChoice, signal,
         });
         // An empty text is fine when the model asked for a tool instead.
         if (!result.text && !result.toolCalls?.length) {
           throw new Error(`${provider}/${model}: empty response`);
         }
 
-        sticky[mode] = { provider, model };
+        // Late-response guard: if a newer request for this conversation exists,
+        // this answer belongs to a message that was already answered.
+        if (seq !== null && flightSeq.get(chatKey) !== seq) {
+          throw new StaleResponseError(`${provider}/${model} answered after a newer request had started`);
+        }
+
+        setSticky(chatKey, mode, { provider, model });
         bumpUsage('llm_calls', 1);
         bumpTenantUsage(tenantSlug(), 1);
         if (result.tokens) bumpUsage('llm_tokens', result.tokens);
-        return { ...result, provider };
+
+        const ms = Date.now() - started;
+        providerTrace.record({
+          chat: chatKey,
+          kind: kind || mode,
+          provider,
+          model,
+          ms,
+          tokens: result.tokens || 0,
+          fallback: failures.length ? `${failures[0].provider}/${failures[0].model}` : null,
+          reason: failures.length ? failures[0].reason : null,
+          ok: true,
+        });
+        return { ...result, provider, model, latencyMs: ms, stale: false };
       } catch (err) {
+        if (err?.stale) {
+          providerTrace.record({
+            chat: chatKey,
+            kind: kind || mode,
+            provider,
+            model,
+            ms: Date.now() - started,
+            ok: false,
+            reason: 'late response discarded',
+          });
+          throw err;
+        }
         lastError = err;
         const status = err.status || 0;
+        const reason = status ? `HTTP ${status}` : err.name === 'TimeoutError' || /aborted|timeout/i.test(err.message) ? 'timeout' : err.message.slice(0, 80);
+        failures.push({ provider, model, reason });
 
         if (err.keyInvalid) {
           // Wrong/expired key: every other model on this provider fails too.
@@ -340,6 +463,13 @@ export async function chat({
     }
   }
 
+  providerTrace.record({
+    chat: chatKey,
+    kind: kind || mode,
+    ms: Date.now() - started,
+    ok: false,
+    reason: failures.length ? `all providers failed — ${failures.map((f) => `${f.provider}:${f.reason}`).join(', ').slice(0, 140)}` : 'no provider answered',
+  });
   throw lastError || new Error('All AI providers failed');
 }
 
@@ -392,5 +522,6 @@ export function llmStatus() {
 
 export default {
   chat, chatJson, extractJson, hasLLM, providersAvailable, llmStatus, QuotaError,
-  tenantBudget, assertTenantBudget, tenantSlug,
+  tenantBudget, assertTenantBudget, tenantSlug, stickyFor, openrouterModels,
+  StaleResponseError, _resetProviderState,
 };

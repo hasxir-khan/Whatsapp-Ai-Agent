@@ -1,0 +1,46 @@
+{
+  "id": "fix-price-invented-en",
+  "title": "An invented price range is caught, replaced and the owner is told",
+  "template": "agency",
+  "category": "price-integrity",
+  "language": "en",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    }
+  },
+  "turns": [
+    {
+      "user": "What does an e-commerce store with payments cost?",
+      "expect": "the catalogue range, not a made-up one",
+      "model": [
+        {
+          "text": "For an e-commerce store it is 90000 – 150000 PKR. Shall I send the full quote?"
+        },
+        {
+          "text": "An e-commerce store starts at 120,000 and goes up to 350,000 PKR depending on the catalogue, checkout and admin. Shall I send the full quote?"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "forbid": [
+      "90000",
+      "150000"
+    ],
+    "require": [
+      {
+        "match": "120",
+        "why": "the real catalogue floor is quoted"
+      }
+    ],
+    "events": [
+      "reply_guard_rejected",
+      "reply_guard_repaired"
+    ],
+    "samePrice": true,
+    "oneReplyPerTurn": true,
+    "expectGuardRepair": true
+  }
+}

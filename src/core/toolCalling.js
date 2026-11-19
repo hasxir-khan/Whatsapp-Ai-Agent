@@ -67,11 +67,14 @@ function resultsNote(results) {
   return lines.join('\n');
 }
 
-async function modelTurn({ system, messages, native, allowed = null, tenant = null }) {
-  if (native) {
-    return chat({ system, messages, tools: providerTools(allowed, tenant) });
-  }
-  return chat({ system: `${system}\n\n${toolJsonProtocol(allowed, tenant)}`, messages });
+async function modelTurn({ system, messages, native, allowed = null, tenant = null, chatKey = null, maxTokens = null }) {
+  // Every provider sees the same system prompt, the same output budget and the
+  // same conversation key: the tool loop cannot become a second, differently
+  // configured brain.
+  const shared = { system, messages, chatKey, singleFlight: !!chatKey, kind: 'reply' };
+  if (maxTokens) shared.maxTokens = maxTokens;
+  if (native) return chat({ ...shared, tools: providerTools(allowed, tenant) });
+  return chat({ ...shared, system: `${system}\n\n${toolJsonProtocol(allowed, tenant)}` });
 }
 
 /**
@@ -110,6 +113,8 @@ export async function generateWithTools({ system, messages, ctx = {}, onToolResu
         native: native && !finalRound,
         allowed,
         tenant,
+        chatKey: ctx.chatKey || null,
+        maxTokens: ctx.maxTokens || null,
       });
     } catch (err) {
       if (native && looksUnsupported(err)) {
@@ -140,6 +145,25 @@ export async function generateWithTools({ system, messages, ctx = {}, onToolResu
 
       const outcome = await executeTool(call.name, call.args, { ...ctx, tainted });
       calls.push({ name: call.name, status: outcome.status, ...outcome });
+
+      // Phase 6: an order or a booking made while an agent was answering is
+      // that agent's result. Off unless multiAgent is on, and it never changes
+      // what the tool returned.
+      if (outcome.status === 'ok' && (call.name === 'create_order' || call.name === 'book_slot') && ctx.chat) {
+        try {
+          const { agentsEnabled, logAgentEvent, currentAgent } = await import('../services/agents.js');
+          if (agentsEnabled()) {
+            const active = currentAgent(ctx.chat)?.agent || null;
+            const detail =
+              call.name === 'create_order'
+                ? { total: Number(outcome.result?.total ?? outcome.result?.order?.total ?? 0) || 0 }
+                : { slot: outcome.result?.slot || null };
+            logAgentEvent(ctx.chat, active, call.name === 'create_order' ? 'order' : 'booking', detail);
+          }
+        } catch {
+          /* analytics only */
+        }
+      }
 
       const payload =
         outcome.status === 'ok'

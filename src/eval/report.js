@@ -55,6 +55,8 @@ export function buildReport({ mode, results, meta = {} }) {
       reasons: r.reasons || [],
       checks: (r.checks || []).map((c) => ({ id: c.id, status: c.status, detail: c.detail })),
       modelCalls: r.modelCalls || 0,
+      // provider/model · latency · tokens · fallback reason, per reply
+      providers: r.providers || [],
       replies: (r.replies || []).map((x) => x.text),
     })),
   };
@@ -96,6 +98,23 @@ export function printReport(report, { colour = true } = {}) {
       `  ${cat.name.padEnd(12)} ${String(cat.score).padStart(3)}%  ${c(C.dim, `${cat.pass} pass · ${cat.warn} warn · ${cat.fail} fail`)}`
     );
   }
+  // Live runs print where each answer came from: provider, model, latency and
+  // tokens. Deterministic runs show the scripted provider, which is the point.
+  if (report.mode === 'live') {
+    const rows = report.scenarios
+      .filter((s) => (s.providers || []).length)
+      .flatMap((s) => s.providers.map((p) => ({ id: s.id, ...p })));
+    if (rows.length) {
+      lines.push(c(C.dim, '  provider / model · latency · tokens'));
+      for (const r of rows.slice(0, 40)) {
+        lines.push(
+          c(C.dim, `   • ${r.id}: ${r.provider}/${r.model} · ${r.ms} ms · ${r.tokens} tok${r.fallback ? ` · fell back from ${r.fallback} (${r.reason || 'n/a'})` : ''}`)
+        );
+      }
+      lines.push('');
+    }
+  }
+
   const { pass, warn, fail, total, score } = report.summary;
   const verdict = fail ? c(C.red, `${fail} FAIL`) : warn ? c(C.yellow, `${warn} WARN`) : c(C.green, 'all clear');
   lines.push(c(C.dim, '─'.repeat(78)));

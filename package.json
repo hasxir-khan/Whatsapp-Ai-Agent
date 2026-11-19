@@ -21,6 +21,7 @@
     "scan": "node scripts/scan-secrets.js --all --history",
     "prepare": "node scripts/install-hooks.js",
     "demo": "node scripts/demo.js",
+    "brain": "node scripts/brain-demo.js",
     "seed": "node scripts/seed-demo.js",
     "tenant": "node scripts/tenant.js",
     "all": "node scripts/run-all.js",

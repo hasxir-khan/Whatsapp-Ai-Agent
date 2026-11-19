@@ -9,6 +9,7 @@
 
 import { config } from '../config/env.js';
 import { business, featureOn, analystSchedule, effectiveCatalog } from './profile.js';
+import { agentStats as agentReport } from './agents.js';
 import { partsInTz } from './hours.js';
 import { sendToOwner } from './growth.js';
 import { formatMoney } from './geo.js';
@@ -358,6 +359,25 @@ export async function buildWeeklyReport({ now = new Date(), withSuggestions = tr
   );
   lines.push(`✍️ follow-ups ${numbers.followUpsSent} sent, ${numbers.followUpsAnswered} answered`);
   lines.push(`🚫 ${numbers.optOuts} opt-outs · 😠 ${numbers.complaints} complaints`);
+
+  // Custom agents (phase 6): who answered, who handed off, who closed.
+  if (featureOn('multiAgent')) {
+    const rows = agentReport({ days: 7, now });
+    if (rows.length) {
+      lines.push('');
+      lines.push('🧑‍💼 *By assistant*');
+      for (const r of rows.slice(0, 6)) {
+        const bits = [`${r.conversations} chat${r.conversations === 1 ? '' : 's'}`];
+        if (r.avgFirstReplySec !== null) bits.push(`first reply ${r.avgFirstReplySec}s`);
+        if (r.handoffs) bits.push(`${r.handoffs} hand-off${r.handoffs === 1 ? '' : 's'}`);
+        if (r.orders || r.bookings) {
+          bits.push(`${r.orders} order${r.orders === 1 ? '' : 's'} · ${r.bookings} booking${r.bookings === 1 ? '' : 's'}`);
+        }
+        if (r.revenue) bits.push(`PKR ${Math.round(r.revenue).toLocaleString()}`);
+        lines.push(`  • ${r.name} — ${bits.join(' · ')}`);
+      }
+    }
+  }
   if (numbers.reviewsAsked) {
     lines.push(`⭐ ${numbers.reviewsAsked} reviews asked, ${numbers.reviewsRated} rated${numbers.avgRating ? ` (avg ${numbers.avgRating}/5)` : ''}`);
   }
@@ -401,10 +421,25 @@ export async function buildWeeklyReport({ now = new Date(), withSuggestions = tr
     for (const tip of tips) lines.push(tip.startsWith('- ') ? tip : `- ${tip}`);
   }
 
+  // Phase 6: the marketing team's brief rides along with the report. It is
+  // null unless features.marketingAgents is on, so nothing changes for anyone
+  // else — and it adds no new send, so quiet hours and opt-outs are unchanged.
+  let marketing = null;
+  try {
+    const M = await import('./marketing.js');
+    marketing = M.marketingBrief({ now });
+    if (marketing?.text) {
+      lines.push('');
+      lines.push(marketing.text);
+    }
+  } catch (err) {
+    logEvent('marketing_brief_error', null, err.message);
+  }
+
   lines.push('');
   lines.push(numbers.low ? 'A week like this is normal. Nothing is broken.' : 'Reply .report week any time for this again.');
 
-  return { numbers, previous, delta, suggestions: tips, text: lines.join('\n'), low: numbers.low };
+  return { numbers, previous, delta, suggestions: tips, text: lines.join('\n'), low: numbers.low, marketing };
 }
 
 /** Plain text for `.report week`. Never throws. */

@@ -109,7 +109,101 @@
       "result"
     ]
   },
+  "agents": [
+    {
+      "id": "admissions",
+      "name": "Admissions",
+      "role": "sales",
+      "persona": "Encouraging and precise about dates.",
+      "routing": [
+        "admission",
+        "apply",
+        "form",
+        "class",
+        "programme",
+        "program",
+        "enrol"
+      ],
+      "instructions": "Explain the programmes and the real admission dates, then book a visit. Never promise a seat or a scholarship.",
+      "never": [
+        "Never promise admission, a scholarship or a fee waiver.",
+        "Never invent a price, total or delivery charge — read it from the catalogue.",
+        "Never claim to be a human when asked directly."
+      ],
+      "tools": [
+        "book_slot"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": true
+    },
+    {
+      "id": "fees",
+      "name": "Fees & Enquiries",
+      "role": "orders",
+      "persona": "Clear about money, never guesses.",
+      "routing": [
+        "fee",
+        "challan",
+        "dues",
+        "paid",
+        "receipt",
+        "discount"
+      ],
+      "instructions": "Read the fee structure and the payment status from the configured records. Waivers and discounts are the owner's decision.",
+      "never": [
+        "Never approve a discount. Say the owner decides and hand off.",
+        "Never promise admission, a scholarship or a fee waiver.",
+        "Never claim to be a human when asked directly."
+      ],
+      "tools": [
+        "send_quote"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    },
+    {
+      "id": "parents",
+      "name": "Parent Support",
+      "role": "support",
+      "persona": "Warm, patient, protective of student privacy.",
+      "routing": [
+        "absent",
+        "leave",
+        "complaint",
+        "teacher",
+        "bus",
+        "transport"
+      ],
+      "instructions": "Handle attendance, transport and teacher-meeting requests from policy. Never discuss another student, and never share internal notes.",
+      "never": [
+        "Never share another customer's order, number or details.",
+        "Never claim to be a human when asked directly.",
+        "Never diagnose, never name a medicine, never give a dosage or a treatment plan."
+      ],
+      "tools": [
+        "handoff"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    }
+  ],
   "features": {
+    "multiAgent": false,
     "businessProfile": true,
     "catalog": true,
     "knowledge": true,
@@ -134,6 +228,20 @@
     "sourceLinks": false,
     "liveInbox": false,
     "orderTracking": false,
-    "crm": false
+    "crm": false,
+    "marketingAgents": false,
+    "businessBrain": false,
+    "reasoning": false
+  },
+  "marketing": {
+    "approvalMode": true,
+    "minDaysBetweenPromos": 14,
+    "events": [],
+    "channels": [],
+    "promoOffer": "",
+    "_help": "Marketing team settings. approvalMode true means every promo waits for you. events are your own dates: [{ \"name\": \"Shop anniversary\", \"date\": \"2026-03-01\" }]. channels are where your posters/QRs live: [\"Instagram\", \"shop window\"]."
+  },
+  "bot": {
+    "firstPerson": "we"
   }
 }

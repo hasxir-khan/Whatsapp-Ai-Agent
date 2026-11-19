@@ -1,0 +1,55 @@
+{
+  "id": "fix-price-two-ranges-en",
+  "title": "The same project is never quoted a different range later in the chat",
+  "template": "agency",
+  "category": "price-integrity",
+  "language": "en",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true,
+      "quoteEngine": false
+    }
+  },
+  "turns": [
+    {
+      "user": "What is the price range for an e-commerce store?",
+      "expect": "the catalogue range",
+      "model": [
+        {
+          "text": "An e-commerce store runs from 120000 to 350000 PKR depending on the scope."
+        }
+      ]
+    },
+    {
+      "user": "Same project, but I also want a loyalty programme inside it. Give me the range again.",
+      "expect": "the same range, or the owner — never a second, different one",
+      "model": [
+        {
+          "text": "With the loyalty programme it would be 120000 – 180000 PKR."
+        },
+        {
+          "text": "It is still the same range I gave you: 120000 to 350000 PKR, and the loyalty programme fits inside it. Shall I put the details in a quote?"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "samePrice": true,
+    "forbid": [
+      "180000 PKR. Shall",
+      "the loyalty programme it would be"
+    ],
+    "require": [
+      {
+        "match": "120000|120,000",
+        "why": "the first range is repeated, not replaced"
+      }
+    ],
+    "events": [
+      "reply_guard_rejected"
+    ],
+    "oneReplyPerTurn": true,
+    "expectGuardRepair": true
+  }
+}

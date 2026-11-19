@@ -39,6 +39,7 @@ export const NO_CAPABILITIES = {
   mediaDownload: false,
   markRead: false,
   presence: false,
+  typingIndicator: false,
   deleteMessage: false,
   deliveryReceipts: false,
   templates: false,

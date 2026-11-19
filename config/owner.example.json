@@ -494,7 +494,8 @@
         "fa": "fa-IR-DilaraNeural",
         "sw": "sw-KE-ZuriNeural"
       }
-    }
+    },
+    "firstPerson": "we"
   },
   "currency": {
     "base": "PKR",
@@ -697,6 +698,10 @@
       "//": "Hours an unpaid order waits before each polite reminder. Env ORDER_REMINDER_HOURS / ORDER_REMINDER_SECOND_HOURS win over these.",
       "firstHours": 12,
       "secondHours": 36
+    },
+    "emergency": {
+      "label": "emergency services",
+      "number": ""
     }
   },
   "catalog": {
@@ -709,7 +714,24 @@
     "style": "",
     "emoji": "",
     "address": "",
-    "avoid": []
+    "avoid": [],
+    "//maxSentences": "How long a normal reply may be (quotes and lists are exempt). Default 2.",
+    "maxSentences": 2,
+    "//humanTouch": "Reactions for ok/thanks, no self-descriptions, an honest answer to 'am I a bot?'. Default on; the honest answer cannot be switched off.",
+    "humanTouch": true,
+    "//replyTiming": "How long a reply may take and how it feels while it is written. Env vars override these.",
+    "replyTiming": {
+      "//": "Milliseconds. 5-15 s from the customer message to the reply.",
+      "targetMinMs": 5000,
+      "targetMaxMs": 15000,
+      "readMinMs": 1000,
+      "readMaxMs": 3000,
+      "typingMinMs": 3000,
+      "typingMaxMs": 10000,
+      "refreshMs": 8000,
+      "hardCapMs": 30000,
+      "holdingAfterMs": 30000
+    }
   },
   "goals": {
     "//": "What the bot should push these chats toward.",
@@ -717,6 +739,37 @@
     "secondary": [],
     "target": ""
   },
+  "_agentsHelp": "EXAMPLE SECTION — custom named assistants. Empty means the built-in assistant answers everything. Each agent needs an id, a name and a role (sales, support, booking, orders or custom); instructions are capped at 400 characters and are checked for prompt injection when you save them. tools may only narrow what the tenant already allows — an agent can never gain a tool you have not switched on. hours is free text, e.g. 09:00-18:00; outside them the next suitable agent answers. handoff is a team member name or \"owner\". Switch the feature on with features.multiAgent, then use .agents in WhatsApp.",
+  "agents": [
+    {
+      "id": "sales",
+      "name": "Sales Assistant",
+      "role": "sales",
+      "persona": "Warm, direct, no pressure.",
+      "instructions": "Answer price questions from the catalogue, qualify the goal and the budget, then offer a quote. Never invent a price.",
+      "languages": [
+        "en",
+        "ur"
+      ],
+      "tools": [
+        "check_stock",
+        "send_quote"
+      ],
+      "knowledge": [],
+      "routing": [
+        "price",
+        "quote",
+        "budget"
+      ],
+      "escalate": [
+        "refund"
+      ],
+      "hours": "09:00-21:00",
+      "handoff": "owner",
+      "enabled": false,
+      "default": true
+    }
+  ],
   "escalation": {
     "//": "When and how to hand over to a human.",
     "when": "",
@@ -726,6 +779,7 @@
     "topics": []
   },
   "features": {
+    "multiAgent": false,
     "_help": "EXAMPLE SECTION — optional capabilities. true switches one on, false leaves it off, and anything omitted keeps its default. Nothing here needs a value beyond true or false.",
     "//": "Every new capability is opt-in and false by default. See README > Feature flags.",
     "businessProfile": false,
@@ -760,6 +814,31 @@
     "liveInbox": false,
     "orderTracking": false,
     "crm": false,
-    "//orders": "order lifecycle and the mini CRM are opt-in too: .set features.orderTracking true"
+    "//orders": "order lifecycle and the mini CRM are opt-in too: .set features.orderTracking true",
+    "marketingAgents": false,
+    "businessBrain": false,
+    "reasoning": false,
+    "//marketing": "the marketing team is owner-facing drafts: .marketing to see it",
+    "//brain": "the business brain reads your own numbers and proposes; it never sends on its own: .brain to see it"
+  },
+  "_brainHelp": "EXAMPLE SECTION — the business brain reads this. minutesPerConversation feeds the 'time saved' figure. thinDataConversations is the point below which it says 'not enough data'. dailyReasoningCalls caps how many reasoning-model calls one tenant may make per day. autoRun lists action types the brain may run without asking (leave empty unless you mean it).",
+  "brain": {
+    "minutesPerConversation": 6,
+    "thinDataConversations": 20,
+    "dailyReasoningCalls": 200,
+    "reasoningProvider": "auto",
+    "reasoningModel": "",
+    "autoRun": [],
+    "_autoRunHelp": "Possible values: followup, quote_reminder, offer, upsell, review_ask, reactivate. Anything listed still respects caps, opt-outs and quiet hours."
+  },
+  "_marketingHelp": "EXAMPLE SECTION — the marketing team reads this. approvalMode true means every promo waits for you. events are your own dates: [{\"name\": \"Shop anniversary\", \"date\": \"2026-03-01\"}]. channels are where your posters/QRs live: [\"Instagram\", \"shop window\"].",
+  "marketing": {
+    "approvalMode": true,
+    "minDaysBetweenPromos": 14,
+    "events": [],
+    "channels": [],
+    "promoOffer": "",
+    "templateName": "",
+    "_maxDiscountHelp": "Add policies.maxDiscountPercent to your owner.json (e.g. 15) to let the offer checker approve small discounts. Without it, every discount is your decision."
   }
 }

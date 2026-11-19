@@ -15,10 +15,12 @@
 
 import { config } from '../config/env.js';
 import { featureOn, business } from './profile.js';
+import { agentsEnabled, listAgents } from './agents.js';
 import {
   all, get, getContact, setContactPaused, logEvent, saveMessage,
 } from '../utils/db.js';
 import { crmEnabled, crmProfile, tagsFor, notesFor } from './crm.js';
+import * as nextBestActionModule from './nextBestAction.js';
 
 export function liveInboxEnabled() {
   return featureOn('liveInbox');
@@ -61,6 +63,21 @@ export function inboxChats({ limit = 40, now = new Date() } = {}) {
     [Math.max(1, Math.min(200, Number(limit) || 40))]
   );
 
+  // Phase 6: which custom agent holds each conversation. Off by default, so
+  // the payload is unchanged for every existing install.
+  const agentNames = new Map();
+  if (agentsEnabled()) {
+    for (const a of listAgents()) agentNames.set(a.id, { id: a.id, name: a.name, role: a.role });
+  }
+  const agentOf = new Map();
+  if (agentsEnabled()) {
+    try {
+      for (const row of all('SELECT chat, agent FROM agent_chats')) agentOf.set(row.chat, row.agent);
+    } catch {
+      /* table missing on an older database */
+    }
+  }
+
   return rows.map((r) => ({
     number: r.number,
     name: r.name || r.push_name || null,
@@ -78,6 +95,9 @@ export function inboxChats({ limit = 40, now = new Date() } = {}) {
     preview: previewOf(r.last_role, r.last_kind, r.last_text),
     unread: Number(r.unread) || 0,
     awaitingUs: r.last_role === 'user',
+    ...(agentsEnabled()
+      ? { agent: agentNames.get(agentOf.get(r.number) || agentOf.get(`${r.number}@s.whatsapp.net`)) || null }
+      : {}),
   }));
 }
 
@@ -160,7 +180,47 @@ export function inboxThread(number, { limit = 60, before = null, after = null } 
     // Read-only CRM strip for the side panel. The owner edits tags and notes
     // from WhatsApp (or the authenticated action route) — the page only shows.
     crm: crmPanelFor(num),
+    // Phase 6 Part 3: one suggestion with its reason, only when the brain is on.
+    // It is advice; the page never sends it for you.
+    suggestion: suggestionFor(num),
   };
+}
+
+const NBA_LABELS = {
+  followup: 'Follow up',
+  quote_reminder: 'Remind about the quote',
+  offer: 'Offer inside your caps',
+  upsell: 'Suggest something from the catalogue',
+  review_ask: 'Ask for a review',
+  reactivate: 'Win back',
+  ask_owner: 'Ask the owner',
+};
+
+/** The next-best-action line for the side panel, or null when it is off. */
+export function suggestionFor(number) {
+  try {
+    if (!featureOn('businessBrain')) return null;
+    const { nextBestAction } = nextBestActionModule;
+    const nba = nextBestAction(number, { now: new Date() });
+    if (!nba || !nba.action) return null;
+    if (nba.action !== 'wait') {
+      return { action: nba.action, label: nba.label, reason: String(nba.reason || '').slice(0, 200), draft: nba.draft || null };
+    }
+    // Held (quiet hours, an opt-out, caps). Showing the advice with the reason
+    // it is waiting is more useful than showing nothing.
+    const held = (nba.alternatives || [])[0];
+    if (!held) return null;
+    const label = NBA_LABELS[held.action] || held.action;
+    return {
+      action: held.action,
+      label,
+      reason: `${held.reason} (held: ${String(held.blockedBy || 'caps').replace(/_/g, ' ')})`.slice(0, 200),
+      draft: null,
+      held: true,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Tags, notes and auto-tag profile for one chat, or null when CRM is off. */

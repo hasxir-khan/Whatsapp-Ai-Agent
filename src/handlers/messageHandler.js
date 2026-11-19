@@ -17,6 +17,9 @@ import * as media from '../services/media.js';
 import { detectLanguage, detectTone, fromWhisperLanguage } from '../services/language.js';
 import { generateReply, detectMood, needsOwner } from '../core/brain.js';
 import { routeMessage, managerEnabled } from '../core/manager.js';
+import * as reasoningModule from '../services/reasoning.js';
+import { agentsEnabled, routeToAgent, logAgentEvent, noteAgentSuccess, noteAgentFailure, noteAgentTokens } from '../services/agents.js';
+import { emergencyGuardEnabled, detectEmergency, emergencyReply, emergencyContact } from '../services/agentPacks.js';
 import { detectOptOut, detectOptIn, recordOptOut, recordOptIn, optOutConfirmation } from '../services/growth.js';
 import {
   privacyEnabled as privacyToolsEnabled,
@@ -37,13 +40,27 @@ import {
 } from '../core/tools.js';
 import { ingest, markAsked, markQuoted, getState, mergeExternalFields } from '../core/projectIntake.js';
 import { buildQuote, formatQuote } from '../core/pricing.js';
+import { createReplyChannel, beginBatch, batchIdOf } from '../core/replyChannel.js';
+import { guardReply, safeLine, rememberClaims, voiceOf } from '../core/replyGuard.js';
+import { scopeGuard } from '../core/scope.js';
+import { replyLanguage } from '../services/languageStick.js';
 import * as memory from '../services/memory.js';
-import { sendHuman, sendTyping, markRead, isQuietNow, quietEndsAt } from '../core/humanizer.js';
+import { sendHuman, sendTyping, sendReaction, markRead, scheduleRead, isQuietNow, quietEndsAt } from '../core/humanizer.js';
+import {
+  asksIfBot,
+  honestBotAnswer,
+  shouldReactOnly,
+  ackReaction,
+  humanTouchEnabled,
+  ownerIsActive,
+} from '../core/humanTouch.js';
+import { replyTiming, createTypingSession } from '../core/timing.js';
+import * as timeline from '../services/timeline.js';
 import { transcribe, sttEnabled, looksMeaningful } from '../services/transcription.js';
 import { visionEnabled, analyzeImage } from '../services/vision.js';
 import { understandVideo, videoCapabilities } from '../services/video.js';
-import { ttsEnabled, buildVoiceNote, shouldSpeak } from '../services/tts.js';
-import { extractText, summarizeDocument, extractProjectBrief, looksLikeBrief } from '../services/documents.js';
+import { ttsEnabled, buildVoiceNote, shouldSpeak, speechTextFor } from '../services/tts.js';
+import { extractText, summarizeDocument, extractProjectBrief, looksLikeBrief, understoodReply } from '../services/documents.js';
 import { scheduleFollowUp, cancelFor } from '../services/followUps.js';
 import { analyze as spamAnalyze, applyAction, WARN_MESSAGE } from '../services/spamGuard.js';
 import { rememberMessage } from '../services/deletedMessages.js';
@@ -297,7 +314,10 @@ export async function handleIncoming(transport, rawIncoming) {
       return;
     }
 
-    await markRead(transport, [{ id: incoming.id }]);
+    // Read receipt after a beat (1–3 s), not on arrival: the customer sees a
+    // person pick the phone up, not a webhook firing.
+    const receipt = scheduleRead(transport, [{ id: incoming.id }], { chat: number });
+    if (receipt?.done?.catch) receipt.done.catch(() => {});
 
     // ── quiet hours: hold the reply for the morning ────────
     if (config.behavior.deferQuietHours && isQuietNow()) {
@@ -327,7 +347,7 @@ export async function handleIncoming(transport, rawIncoming) {
       db.logEvent('new_contact', number, { country: geo.country });
     }
 
-    enqueue(transport, jid, number, { incoming });
+    enqueue(transport, jid, number, { incoming, receivedAt: timeline.received(number).receivedAt });
   } catch (err) {
     console.error('❌ handleIncoming:', err.message);
     db.logEvent('handler_error', null, err.message);
@@ -597,6 +617,32 @@ export function startPendingFlusher(sock) {
 // The batch pipeline
 // ════════════════════════════════════════════════════════════
 async function processBatch(sock, jid, number, items) {
+  // The indicator is owned here, so it is cleared on every exit path: a reply,
+  // a guard refusal, an error, a handoff. Nothing can leave "typing…" behind.
+  const receivedAt = items[0]?.receivedAt || timeline.received(number).receivedAt || Date.now();
+  const timing = replyTiming();
+  const ctx = {
+    receivedAt,
+    lang: 'en',
+    // The newest inbound id: on the Cloud API the typing indicator *is* the
+    // read receipt for that message.
+    session: timing.enabled
+      ? createTypingSession(sock, jid, { timing, messageId: items[items.length - 1]?.incoming?.id || null })
+      : null,
+    // The pause that existed when the batch started is the pipeline's own
+    // business; a pause that appears *during* the batch is the owner taking
+    // over, and the reply must not go out.
+    pauseAtStart: db.getContact(number)?.bot_paused_until || null,
+  };
+  if (ctx.session) timeline.mark(number, 'typing', { at: ctx.session.startedAt });
+  try {
+    return await runBatch(sock, jid, number, items, ctx);
+  } finally {
+    await ctx.session?.stop({ paused: true });
+  }
+}
+
+async function runBatch(sock, jid, number, items, ctx) {
   const contact = db.getContact(number);
   if (!contact || contact.is_blocked) return;
   if (isPaused(contact) || db.getSetting('bot_enabled', true) !== true) return;
@@ -605,6 +651,48 @@ async function processBatch(sock, jid, number, items) {
   // growth agent was waiting to send. Silence means silence.
   cancelFor(number);
   cancelFollowUpDrafts(number, 'replied');
+  // A missed-call rescue must not land on top of a customer who has just
+  // written to us themselves.
+  try {
+    const { cancelCallRescue } = await import('../services/calls.js');
+    cancelCallRescue(number, 'customer wrote first');
+  } catch {
+    /* the calls service is optional */
+  }
+
+  // ── one message in, one reply out ──────────────────────
+  // A batch that was already answered (a redelivery, a double-enqueue, two
+  // pipelines racing) stops here rather than sending a second message.
+  const batchId = batchIdOf(items);
+  if (beginBatch(number, batchId).skip) {
+    db.logEvent('batch_skipped_duplicate', number, { batch: batchId });
+    return;
+  }
+  // One indicator for the whole batch: the customer sees "typing…" while the
+  // model works, however long that takes (refreshed, capped), and the send path
+  // reuses it instead of blinking a fresh one on.
+  timeline.mark(number, 'batch', { at: Date.now() });
+  const receivedAt = ctx.receivedAt;
+
+  // Every send from this batch is stamped with when the batch arrived and the
+  // chat's language, so the send path can plan the wait and the holding line.
+  const pacedSend = (transport, to, text, opts = {}) =>
+    sendHuman(transport, to, text, {
+      chat: number,
+      receivedAt: ctx.receivedAt,
+      session: ctx.session,
+      lang: ctx.lang,
+      // Never talk over the owner: if they took the chat over (or sent
+      // something) while we were composing, this reply is dropped.
+      // The owner replied in this chat while we were composing: stay out.
+      // (A pause set during the batch is usually our own handoff tool, whose
+      // "the owner will reply" line must still go out — so the pause itself is
+      // checked when the batch starts, not here.)
+      shouldSend: () => !ownerIsActive(number, { since: ctx.receivedAt }),
+      ...opts,
+    });
+
+  const channel = createReplyChannel({ chat: number, batch: batchId, transport: sock, jid, sendTyping, sendHuman: pacedSend });
 
   const parts = [];
   const problems = [];
@@ -636,21 +724,86 @@ async function processBatch(sock, jid, number, items) {
     .trim();
 
   const modelText = renderForModel(parts);
-  const detected = detectLanguage(humanText || 'voice');
-  let langInfo = detected;
-  if (detected.code === 'unknown') {
+  // The conversation's language, not this message's: a short "Yes" or a
+  // forwarded PDF must not move the chat into another language.
+  const primaryKind = parts[0]?.kind || 'text';
+  let langInfo = replyLanguage(number, humanText || '', { kind: primaryKind, contact });
+  if (!langInfo || langInfo.code === 'unknown') {
     // A voice note carries its own language tag from Whisper — trust it
     const voicePart = parts.find((p) => p.kind === 'voice' && p.lang);
     const fromVoice = voicePart ? fromWhisperLanguage(voicePart.lang) : null;
     if (fromVoice) langInfo = fromVoice;
     else if (contact.language) langInfo = detectLanguage(contact.language);
+    else langInfo = detectLanguage(humanText || 'voice');
   }
+  db.logEvent('language_choice', number, { code: langInfo.code, source: langInfo.source || 'detected', sticky: !!langInfo.sticky });
+  ctx.lang = langInfo.code;
   const mood = detectMood(humanText);
   const toneInfo = detectTone(humanText, langInfo.code);
   const tone = toneInfo.tone !== 'neutral' ? toneInfo.tone : 'neutral';
 
   // Long-term context BEFORE this turn is stored, so it isn't duplicated
   const dossier = { ...memory.getDossier(number), mood };
+
+  // ── "is this a bot?" — answered honestly, always ────────
+  // No flag disables this. Someone who asks deserves a straight answer, and the
+  // answer is written here rather than by a model that might deny it.
+  if (asksIfBot(humanText)) {
+    const answer = honestBotAnswer(langInfo.code);
+    try {
+      memory.saveUserTurn(number, humanText, 'text', { lang: langInfo.code, askedBot: true });
+      const sentHonest = await channel.say(answer, { incomingText: humanText });
+      memory.saveAssistantTurn(number, answer, 'text');
+      noteSent(Array.isArray(sentHonest) ? sentHonest.map((m) => m?.key?.id) : [sentHonest?.key?.id]);
+      db.logEvent('bot_disclosure', number, { lang: langInfo.code });
+      await notifyOwner(sock, `🤖 +${number} asked whether they are talking to a bot. I answered honestly.`);
+    } catch (err) {
+      db.logEvent('bot_disclosure_error', number, err.message);
+    }
+    return;
+  }
+
+  // ── acknowledgements: a reaction, not a paragraph ───────
+  if (humanTouchEnabled() && shouldReactOnly(number, humanText)) {
+    const emoji = ackReaction(humanText);
+    const incomingKey = items[0]?.incoming?.id || null;
+    const reacted = incomingKey ? await sendReaction(sock, jid, { remoteJid: jid, id: incomingKey, fromMe: false }, emoji) : false;
+    memory.saveUserTurn(number, humanText, 'text', { lang: langInfo.code, ack: true });
+    if (reacted) {
+      channel.claim();
+      // A reaction is not a reply: nothing else goes out for this batch.
+      noteSent([incomingKey]);
+      db.logEvent('ack_reaction', number, { emoji });
+      memory.saveAssistantTurn(number, `[reaction ${emoji}]`, 'reaction');
+    } else {
+      // No reactions on this transport (Cloud API): silence is better than
+      // "You're welcome! 😊". Claim the batch so no other pipeline answers it.
+      channel.claim();
+      db.logEvent('ack_silent', number, null);
+    }
+    return;
+  }
+
+  // ── off-topic guard ────────────────────────────────────
+  // "Say 1 to 100", a joke, homework, code: a short friendly refusal and a
+  // redirect, in the conversation's language, from a fixed line — no model
+  // call, so the reply can never drift into doing it anyway.
+  const textOnly = parts.every((p) => !p.visual && !['image', 'document', 'voice', 'video'].includes(p.kind));
+  if (textOnly && contact.category !== 'friend') {
+    const scope = scopeGuard(humanText, langInfo);
+    if (scope.handled) {
+      try {
+        memory.saveUserTurn(number, humanText, 'text', { lang: langInfo.code, mood, offTopic: scope.kind });
+        const sentScope = await channel.say(scope.reply, { incomingText: humanText });
+        memory.saveAssistantTurn(number, scope.reply, 'text');
+        noteSent([sentScope?.key?.id]);
+        db.logEvent('scope_refused', number, { kind: scope.kind, lang: langInfo.code });
+      } catch (err) {
+        db.logEvent('scope_refusal_error', number, err.message);
+      }
+      return;
+    }
+  }
 
   // ── visual catalogue match ─────────────────────────────
   // The model found a matching product photo, so the answer is written from the
@@ -665,7 +818,7 @@ async function processBatch(sock, jid, number, items) {
     });
     try {
       memory.saveUserTurn(number, humanText || '[photo]', 'image', { lang: langInfo.code, visual: visual.decision });
-      const sentV = await sendTyping(sock, jid, reply, { delay: 600 });
+      const sentV = await channel.say(reply, { delay: 600 });
       memory.saveAssistantTurn(number, reply, 'text');
       noteSent([sentV?.key?.id]);
       db.logEvent('visual_reply', number, { decision: visual.decision, score: Number(visual.score.toFixed(3)) });
@@ -704,7 +857,7 @@ async function processBatch(sock, jid, number, items) {
                 : "Thanks — I've passed that to the owner, they'll confirm it.";
           memory.saveUserTurn(number, humanText, 'image', { lang: langInfo.code, receipt: true });
           memory.saveAssistantTurn(number, ack, 'text');
-          noteSent([(await sendTyping(sock, jid, ack, { delay: 500 }))?.key?.id]);
+          noteSent([(await channel.say(ack, { delay: 500 }))?.key?.id]);
           return;
         }
       } catch (err) {
@@ -721,7 +874,7 @@ async function processBatch(sock, jid, number, items) {
       const turn = await handleBookingTurn({ number, text: humanText, lang: langInfo.code, now: new Date() });
       if (turn.handled) {
         memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, booking: true });
-        const sentB = await sendTyping(sock, jid, turn.reply, { delay: 500 });
+        const sentB = await channel.say(turn.reply, { delay: 500 });
         memory.saveAssistantTurn(number, turn.reply, 'text');
         noteSent([sentB?.key?.id]);
         db.logEvent('booking_turn', number, { booked: !!turn.booking, id: turn.booking?.id || null });
@@ -744,7 +897,7 @@ async function processBatch(sock, jid, number, items) {
       if (out) {
         memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, closer: true });
         memory.saveAssistantTurn(number, out.reply, 'text');
-        noteSent([(await sendTyping(sock, jid, out.reply, { delay: 500 }))?.key?.id]);
+        noteSent([(await channel.say(out.reply, { delay: 500 }))?.key?.id]);
         db.logEvent('closer_turn', number, { kind: out.kind || (ready ? 'ready' : null), order: out.order?.id || null });
         // The text quote has already gone out. This is the same quote as a PDF,
         // and if it fails the customer still has the message above.
@@ -775,9 +928,33 @@ async function processBatch(sock, jid, number, items) {
 
   const quote = intake.readyToQuote ? intake.quote || buildQuote(intake.state.fields, number) : null;
 
-  let extraNote = quote
-    ? 'A price estimate is being sent automatically as the next message based on the collected scope. Write only a 1–2 line lead-in (do not restate the numbers).'
-    : '';
+  // A document, a photo or a long brief is not a price request. The estimate is
+  // only sent when the customer asks for a price or confirms the scope.
+  const PRICE_ASK =
+    /\b(price|prices|pricing|cost|costs|charge|charges|rate|rates|quote|quotation|estimate|budget|how much|total)\b|kitn[ae]|kya rate|qemat|قیمت|کتنا|ریٹ/i;
+  const priceAsk = PRICE_ASK.test(humanText);
+
+  let extraNote = '';
+  if (quote && !priceAsk) {
+    // Held back on purpose: quoting here is how an unrequested price range ended
+    // up in a chat that never asked for one.
+    extraNote =
+      'A price estimate is ready but has NOT been sent — the customer has not asked for a price. Do not state any numbers. Ask one short question about their goal or the next step so the scope is right.';
+    db.logEvent('quote_held', number, { reason: 'no price ask' });
+  }
+
+  // A document is answered with what we understood, verbatim, then one
+  // question: the summary is the model's own words about the file, so it is
+  // never re-worded a second time (and never replaced by a price).
+  const understoodPart = parts.find((p) => p.understoodText);
+
+  if (parts.some((p) => p.kind === 'document')) {
+    // The customer gets what we understood, then one question. A document is
+    // not a request for a price.
+    extraNote +=
+      (extraNote ? ' ' : '') +
+      'They sent a document and have been shown what we understood from it. Ask ONE short question about what they want done next. Do not quote a price until they ask for one.';
+  }
 
   const unreadable = parts.filter((p) => p.unreadable).map((p) => p.kind);
   if (unreadable.length) {
@@ -789,10 +966,62 @@ async function processBatch(sock, jid, number, items) {
   // new message — only confirmed or cancelled.
   const confirmationReply = await handleToolConfirmation(sock, jid, number, humanText, langInfo);
   if (confirmationReply) {
-    await sendHuman(sock, jid, confirmationReply, { incomingText: humanText });
+    await channel.say(confirmationReply, { incomingText: humanText });
     memory.saveUserTurn(number, humanText, 'text', { lang: langInfo.code, mood });
     memory.saveAssistantTurn(number, confirmationReply, 'text');
     return;
+  }
+
+  // ── clinic emergencies (phase 6, opt-in) ────────────────
+  // A clinic's assistants are forbidden from giving medical advice, so the one
+  // case that must never be answered by a model is checked first, answered with
+  // the configured emergency number, and handed to a human immediately.
+  if (emergencyGuardEnabled()) {
+    const hit = detectEmergency(humanText);
+    if (hit) {
+      const lang = langInfo?.code === 'ur' ? 'ur' : langInfo?.code === 'roman-ur' ? 'roman-ur' : 'en';
+      try {
+        await channel.say(emergencyReply(lang), { incomingText: humanText });
+        memory.saveUserTurn(number, humanText, 'text', { lang: langInfo?.code, mood });
+        memory.saveAssistantTurn(number, emergencyReply(lang), 'text');
+      } catch (err) {
+        db.logEvent('agent_emergency_error', number, err.message);
+      }
+      const contact = emergencyContact();
+      logAgentEvent(jid, 'clinic', 'emergency', { keyword: hit, contact: contact.configured ? 'configured' : 'missing' });
+      try {
+        await notifyOwner(
+          sock,
+          `🚨 Emergency words from +${number}: "${hit}"\n` +
+            `They were told to call ${contact.number || 'their local emergency number'}. Please check on them.`
+        );
+      } catch {
+        /* the customer's reply already went out */
+      }
+      return;
+    }
+  }
+
+  // ── a price was asked for, and the scope is ready ──────
+  // One deterministic reply, straight from the pricing code: no model, no
+  // second bubble, no chance of a range that differs from the last one.
+  if (quote && priceAsk) {
+    // Stored before it is sent, like every other path: the turn is part of the
+    // conversation even if the send itself fails.
+    memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, mood, quote: true });
+    const sentQuote = await deliverQuote(sock, jid, number, intake, quote, { channel });
+    if (sentQuote) {
+      memory.saveAssistantTurn(number, sentQuote, 'text');
+      db.upsertContact(number, {
+        language: langInfo.code,
+        locale: langInfo.locale,
+        category: 'lead',
+        stage: 'quoted',
+      });
+      db.logEvent('message_in', number, { lang: langInfo.code, mood, kinds: parts.map((p) => p.kind), quote: true });
+      rememberClaims(number, sentQuote);
+      return;
+    }
   }
 
   // ── who should answer this one? ─────────────────────────
@@ -817,23 +1046,215 @@ async function processBatch(sock, jid, number, items) {
     }
   }
 
-  const reply = await generateReply({
+  // ── which custom agent answers? (phase 6, opt-in) ───────
+  // With features.multiAgent off this block does nothing and nothing below
+  // changes: the built-in manager and specialists behave exactly as before.
+  const agentStartedAt = Date.now();
+  let agentRoute = null;
+  if (agentsEnabled()) {
+    try {
+      agentRoute = await routeToAgent({ text: humanText, chatId: jid, number, langInfo });
+      db.logEvent('agent_route', number, { agent: agentRoute.agent?.id || null, source: agentRoute.source });
+    } catch (err) {
+      db.logEvent('agent_route_error', number, err.message);
+      noteAgentFailure("unknown");
+      agentRoute = null;
+    }
+  }
+
+  // ── the reasoning path (phase 6 part 3, opt-in) ─────────
+  // Off by default. When on, a complex turn gets a short plan before the reply
+  // is written, and the reply is checked before it is sent. The plan is never
+  // stored or shown; only a ≤300-character rationale reaches the audit table.
+  let reasoning = null;
+  let reasoningNote = '';
+  if (reasoningModule.reasoningEnabled()) {
+    try {
+      const R = reasoningModule;
+      const { reasonAboutTurn, planAddendum, reasoningConfig, holdingReply } = R;
+      const cfgR = reasoningConfig();
+      const history = (dossier?.recent || []).map((m) => ({ role: m.role, content: m.content }));
+      const pass = reasonAboutTurn({ text: humanText, langInfo, history, now: new Date(), chat: number });
+      const raced = await Promise.race([
+        pass.then((v) => ({ done: true, value: v })).catch(() => ({ done: true, value: null })),
+        new Promise((resolve) => setTimeout(() => resolve({ done: false }), cfgR.turnLatencyMs)),
+      ]);
+      if (raced.done) {
+        reasoning = raced.value;
+        if (reasoning?.plan) {
+          reasoningNote = planAddendum(reasoning.plan);
+          // The decision record was written by reasonAboutTurn itself.
+        }
+      } else {
+        // Out of time. The plan is skipped and the reply is written without it:
+        // a holding message followed by the real answer would be two replies
+        // for one message, which is exactly what must not happen.
+        pass.catch(() => {});
+        reasoning = { used: false, timedOut: true };
+        db.logEvent('reasoning_timeout_no_holding_reply', number, { limit: cfgR.turnLatencyMs });
+      }
+    } catch (err) {
+      db.logEvent('reasoning_error', number, err.message);
+      reasoning = null;
+    }
+  }
+  const replyNote = [extraNote, reasoningNote].filter(Boolean).join('\n\n');
+
+  const replyArgs = {
     number,
     text: modelText,
     agent: route?.agent || null,
+    agentConfig: agentRoute?.agent || null,
     kind: parts[0]?.kind || 'text',
     langInfo,
     dossier,
     intakeState: intake.state,
     features,
-    extraNote,
+    extraNote: replyNote,
     tone: toneInfo.tone !== 'neutral' ? toneInfo.tone : contact.tone || 'neutral',
     chatId: jid,
-    send: (t) => sendHuman(sock, jid, t, { incomingText: humanText }),
+    chatKey: number,
+    send: (t) => channel.say(t, { incomingText: humanText }),
     notifyOwner: (t) => notifyOwner(sock, t),
-  });
+  };
 
-  const replyText = (reply?.text || '').trim();
+  const reply = await generateReply(replyArgs);
+
+  // Every provider failed. The customer gets the short "we will reply soon"
+  // line that the brain produces, and the owner is told why — a silent chain
+  // failure is how a chat goes quiet for hours.
+  if (reply?.provider === 'error') {
+    db.logEvent('brain_no_provider', number, null);
+    try {
+      await notifyOwner(
+        sock,
+        `⚠️ +${number}: no AI provider answered (${reply.model || 'unknown'}). They got the holding line — check the keys and quotas.`
+      );
+    } catch {
+      /* the owner notification must not cost the reply */
+    }
+  }
+
+  let replyText = (reply?.text || '').trim();
+
+  // ── the gate (phase 6 part 3) ───────────────────────────
+  // A reasoned reply is checked for invented numbers, the wrong language and
+  // leaked internals. One quiet retry, then the owner takes over — a wrong
+  // price is worse than a slow answer.
+  if (reasoning?.used && replyText) {
+    try {
+      const R = reasoningModule;
+      const { verifyAnswer, allowedDigits, verifyHandoff, recordDecision } = R;
+      const digits = allowedDigits();
+      let verdict = verifyAnswer({ reply: replyText, langInfo, digits });
+      if (!verdict.ok) {
+        recordDecision({
+          chat: number,
+          kind: 'verify',
+          action: 'rejected',
+          rationale: `Rejected a draft: ${verdict.problems.join('; ')}`,
+          outcome: 'retry',
+        });
+        const retry = await generateReply({
+          ...replyArgs,
+          extraNote: `${replyNote}\n\nYour previous draft was rejected because: ${verdict.problems.join('; ')}. Rewrite it. Use only numbers that appear in the business facts, catalogue or the customer's own orders. Keep the customer's language.`,
+        });
+        const retryText = (retry?.text || '').trim();
+        if (retryText) {
+          verdict = verifyAnswer({ reply: retryText, langInfo, digits });
+          if (verdict.ok) {
+            replyText = retryText;
+            recordDecision({ chat: number, kind: 'verify', action: 'repaired', rationale: 'The retry passed every check', outcome: 'sent' });
+          }
+        }
+        if (!verdict.ok) {
+          recordDecision({
+            chat: number,
+            kind: 'verify',
+            action: 'handoff',
+            rationale: `Handed to the owner after two failed checks: ${verdict.problems.join('; ')}`,
+            outcome: 'handoff',
+          });
+          await notifyOwner(sock, `⚠️ +${number}: I could not answer safely (${verdict.problems.join('; ')}). Your turn.`);
+          replyText = verifyHandoff(langInfo.code);
+        }
+      }
+    } catch (err) {
+      db.logEvent('verify_error', number, err.message);
+    }
+  }
+
+  // ── the last gate before a customer sees a word ─────────
+  // Independent of the reasoning path, of the pipeline that produced the text
+  // and of the provider that wrote it: numbers must exist in the business
+  // facts, the language must be the conversation's, the voice must be one
+  // voice, and the reply must be a finished sentence. One repair attempt, then
+  // a safe line and the owner.
+  if (replyText) {
+    const guardCtx = {
+      chat: number,
+      extra: quote ? [quote.local?.min, quote.local?.max, quote.pkrMin, quote.pkrMax] : [],
+      voice: voiceOf(),
+    };
+    let verdictG = guardReply({ text: replyText, langInfo, ...guardCtx });
+    if (!verdictG.ok) {
+      // The draft is kept in the event so the eval harness can report what the
+      // model actually wrote, even when the customer only saw the repair.
+      db.logEvent('reply_guard_rejected', number, {
+        problems: verdictG.problems,
+        draft: replyText.slice(0, 400),
+        provider: reply?.provider || null,
+        model: reply?.model || null,
+      });
+      let repaired = false;
+      try {
+        const retry = await generateReply({
+          ...replyArgs,
+          extraNote: `${replyNote}\n\nYour previous draft was rejected because: ${verdictG.problems.join('; ')}. Rewrite it so it breaks none of those rules, and finish the last sentence.`,
+        });
+        const retryText = (retry?.text || '').trim();
+        if (retryText) {
+          const second = guardReply({ text: retryText, langInfo, ...guardCtx });
+          if (second.ok) {
+            replyText = retryText;
+            verdictG = second;
+            repaired = true;
+            if (retry?.provider) reply.provider = retry.provider;
+            if (retry?.model) reply.model = retry.model;
+            db.logEvent('reply_guard_repaired', number, null);
+          }
+        }
+      } catch (err) {
+        db.logEvent('reply_guard_retry_failed', number, err.message);
+      }
+      if (!repaired) {
+        replyText = safeLine(langInfo.code);
+        db.logEvent('reply_guard_safe_line', number, { problems: verdictG.problems });
+        try {
+          await notifyOwner(
+            sock,
+            `⚠️ +${number}: I could not send a safe reply (${verdictG.problems.join('; ')}). They got a holding line — please answer them yourself.`
+          );
+        } catch {
+          /* the customer already has an answer */
+        }
+      }
+    }
+  }
+
+  // ── "Here is what I understood" ─────────────────────────
+  if (replyText && understoodPart) {
+    const opening = understoodPart.understoodText;
+    if (opening && !replyText.includes(opening.slice(0, 40))) {
+      replyText = `${opening}\n\n${replyText}`;
+      db.logEvent('document_understanding_sent', number, { file: understoodPart.fileName || null });
+    }
+  }
+
+  if (!replyText && understoodPart?.understoodText) {
+    replyText = understoodPart.understoodText;
+  }
+
   if (!replyText) {
     memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, {
       lang: langInfo.code,
@@ -841,23 +1262,57 @@ async function processBatch(sock, jid, number, items) {
       note: 'no_reply_generated',
     });
     memory.saveAssistantTurn(number, "[no reply generated]", 'system');
-    await sendTyping(sock, jid, "Sorry — that one didn't come through. Can you say it again?", { delay: 700 });
+    await channel.say("Sorry — that one didn't come through. Can you say it again?", { delay: 700 });
     return;
+  }
+
+  // ── agent bookkeeping (phase 6) ─────────────────────────
+  if (agentRoute?.agent) {
+    logAgentEvent(jid, agentRoute.agent.id, 'first_reply', { ms: Date.now() - agentStartedAt });
+    noteAgentSuccess(agentRoute.agent.id);
+    noteAgentTokens(agentRoute.agent.id, Math.ceil((replyText.length + humanText.length) / 4));
+  }
+
+  // ── brevity: the fewest sentences that work ─────────────
+  // A local trim, not another model call: the reply is already written, and
+  // asking again costs seconds the customer can count. Numbers, links and a
+  // closing question survive; lists and quoted prices are exempt.
+  if (replyText && !understoodPart) {
+    try {
+      const { trimReply } = await import('../core/brevity.js');
+      const trimmed = trimReply(replyText, { userText: humanText, lang: langInfo.code });
+      if (trimmed.changed) {
+        db.logEvent('reply_trimmed', number, { dropped: trimmed.dropped.length, from: replyText.length, to: trimmed.text.length });
+        replyText = trimmed.text;
+      }
+    } catch (err) {
+      db.logEvent('trim_error', number, err.message);
+    }
   }
 
   // ── voice reply decision ────────────────────────────────
   const voiceMode = db.getSetting('tts_mode', config.tts.mode);
+  const firstMessage = (contact?.message_count || 0) <= 1;
   let voice = null;
-  if (shouldSpeak({ mode: voiceMode, clientSentVoice, text: humanText })) {
+  if (shouldSpeak({ mode: voiceMode, clientSentVoice, text: humanText, firstMessage })) {
     try {
-      voice = await buildVoiceNote(replyText, { langInfo });
+      // Only the part that fits in ~20 s is spoken; the text is sent either way,
+      // and a quote is never voice-only (see sendHuman).
+      const spoken = speechTextFor(replyText, { langInfo });
+      voice = await buildVoiceNote(spoken, { langInfo });
+      if (voice && spoken.trim() !== replyText.trim()) {
+        db.logEvent('tts_shortened', number, { from: replyText.length, to: spoken.length });
+      }
     } catch (err) {
+      // A failed voice note is not a failed reply: the text goes out alone.
       db.logEvent('tts_failed', number, err.message);
+      voice = null;
     }
   }
 
-  const sent = await sendHuman(sock, jid, replyText, { incomingText: humanText, voice });
-  noteSent((sent || []).map((m) => m?.key?.id));
+  const sent = await channel.say(replyText, { incomingText: humanText, voice });
+  noteSent(Array.isArray(sent) ? sent.map((m) => m?.key?.id) : sent?.key?.id ? [sent.key.id] : []);
+  rememberClaims(number, replyText);
 
   // ── persist the turn ────────────────────────────────────
   memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, {
@@ -876,12 +1331,28 @@ async function processBatch(sock, jid, number, items) {
     voice_pref: voice ? 'yes' : clientSentVoice ? (contact.voice_pref || 'unknown') : contact.voice_pref,
   });
 
-  db.logEvent('message_in', number, { lang: langInfo.code, mood, kinds: parts.map((p) => p.kind), voiceOut: !!voice });
+  db.logEvent('message_in', number, {
+    lang: langInfo.code,
+    mood,
+    kinds: parts.map((p) => p.kind),
+    voiceOut: !!voice,
+    provider: reply?.provider || null,
+    model: reply?.model || null,
+    langSource: langInfo.source || null,
+  });
+
+  // Phase 6 Part 3 — a reply is the only honest signal a proactive message
+  // worked. Off unless the brain is on; it never sends anything.
+  try {
+    const { learningEnabled, noteReplyOutcome } = await import('../services/learning.js');
+    if (learningEnabled()) noteReplyOutcome(number);
+  } catch {
+    /* the weights are not worth a failed turn */
+  }
 
   // ── quote, lead and follow-up ───────────────────────────
-  if (quote) {
-    await deliverQuote(sock, jid, number, intake, quote);
-  }
+  // (A quote is never sent as a second message here: it either was the reply
+  // above, or it is held until the customer asks for a price.)
 
   // ── the "ask one question" bookkeeping ──────────────────
   if (intake.nextField && /\?/.test(replyText)) {
@@ -1036,15 +1507,23 @@ async function interpretItem({ transport, incoming, number }) {
         }
       }
 
-      const summary = (await summarizeDocument(text, {
+      // The whole file is read (in chunks when it is long), and the customer
+      // is shown what we understood — then asked what they want done, before
+      // any price is mentioned.
+      const summary = await summarizeDocument(text, {
         context: describeContext(memory.getDossier(number)),
-      })) || text.slice(0, 700);
+      });
+      const understanding = summary ? understoodReply(summary, detectLanguage(text).code) : null;
+      db.logEvent('document_read', number, { file: info.fileName, chars: text.length, understood: !!summary });
 
       return {
         kind: 'document',
-        text: summary,
+        text: understanding || text.slice(0, 700),
         fileName: info.fileName,
         isBrief: brief,
+        understood: !!summary,
+        // Shown to the customer verbatim, ahead of the model's question.
+        understoodText: understanding || null,
       };
     }
 
@@ -1125,10 +1604,18 @@ async function maybeSendInvoice(sock, jid, { order = null, quote = null, number 
 }
 
 // ── quote delivery ──────────────────────────────────────────
-async function deliverQuote(sock, jid, number, intake, quote) {
+async function deliverQuote(sock, jid, number, intake, quote, { channel = null } = {}) {
   try {
     const quoteText = formatQuote(quote, intake.state.fields);
-    const sent = await sendHuman(sock, jid, quoteText, { incomingText: 'quote' });
+    // Through the batch channel when there is one: the quote is the reply, not
+    // an extra bubble after it.
+    const sent = channel
+      ? await channel.say(quoteText, { incomingText: 'quote' })
+      : await sendHuman(sock, jid, quoteText, { incomingText: 'quote' });
+    if (channel && !sent) {
+      db.logEvent('quote_not_sent_duplicate', number, null);
+      return null;
+    }
     noteSent((sent || []).map((m) => m?.key?.id));
     await maybeSendInvoice(sock, jid, { quote, number });
 
@@ -1169,6 +1656,7 @@ async function deliverQuote(sock, jid, number, intake, quote) {
         `${intake.state.fields.goal ? `Goal: ${String(intake.state.fields.goal).slice(0, 160)}\n` : ''}` +
         `Follow-up scheduled in ${config.behavior.followUpHours}h.`
     );
+    return quoteText;
   } catch (err) {
     db.logEvent('quote_error', number, err.message);
     console.error('Quote delivery failed:', err.message);

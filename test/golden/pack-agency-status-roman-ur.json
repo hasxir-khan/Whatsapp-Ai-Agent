@@ -1,0 +1,68 @@
+{
+  "id": "pack-agency-status-roman-ur",
+  "title": "A project-status question is answered from the record or handed off — never estimated",
+  "template": "agency",
+  "category": "status",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "discovery",
+        "name": "Discovery & Quote",
+        "role": "sales",
+        "routing": [
+          "website",
+          "quote",
+          "budget"
+        ],
+        "instructions": "Qualify goal and scope.",
+        "never": "Never invent a price.",
+        "tools": [
+          "send_quote"
+        ],
+        "enabled": true,
+        "default": true
+      },
+      {
+        "id": "project-status",
+        "name": "Project Status",
+        "role": "orders",
+        "routing": [
+          "status",
+          "timeline",
+          "milestone",
+          "progress"
+        ],
+        "instructions": "Report the milestone in the project record, else hand off.",
+        "never": "Never estimate a deadline.",
+        "tools": [
+          "handoff"
+        ],
+        "enabled": true,
+        "default": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "user": "hamare project ka status kya hai?",
+      "model": [
+        {
+          "text": "Is number ke liye koi project record nahi mila — main owner ko bata raha hoon, wohi timeline confirm karein ge."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agent": "project-status",
+    "minReplies": 1,
+    "language": "roman-ur",
+    "forbid": [
+      "2 weeks|next week tak|guaranteed"
+    ],
+    "numbers": "hard"
+  }
+}

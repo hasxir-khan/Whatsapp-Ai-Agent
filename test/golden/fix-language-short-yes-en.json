@@ -1,0 +1,65 @@
+{
+  "id": "fix-language-short-yes-en",
+  "title": "A short \"Yes\" in an English chat stays English",
+  "template": "agency",
+  "category": "language",
+  "language": "en",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    }
+  },
+  "seed": {
+    "messages": [
+      {
+        "role": "user",
+        "text": "Hi, I need a website for my bakery with online ordering please.",
+        "minutesAgo": 30
+      },
+      {
+        "role": "assistant",
+        "text": "Happy to help — a business website with ordering starts at 60,000 PKR. Shall I put the scope together?",
+        "minutesAgo": 29
+      },
+      {
+        "role": "user",
+        "text": "Yes please, and I want the online ordering part included in the scope.",
+        "minutesAgo": 20
+      },
+      {
+        "role": "assistant",
+        "text": "Noted: business website with online ordering. What is the deadline you have in mind?",
+        "minutesAgo": 19
+      }
+    ]
+  },
+  "turns": [
+    {
+      "user": "Yes",
+      "expect": "a two-word acknowledgement must not change the conversation's language",
+      "model": [
+        {
+          "text": "Great — what deadline are you working towards? That is the last thing I need for the scope."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "language": "en",
+    "forbid": [
+      "Theek",
+      "theek",
+      "zaroor",
+      "bhai",
+      "karta hoon"
+    ],
+    "oneReplyPerTurn": true,
+    "require": [
+      {
+        "match": "deadline|scope|website",
+        "why": "the same English conversation continues"
+      }
+    ]
+  }
+}

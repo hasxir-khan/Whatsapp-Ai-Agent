@@ -1,0 +1,31 @@
+{
+  "id": "brain-realestate-viewing-roman-ur",
+  "title": "A viewing request plus a commission question, answered without inventing terms",
+  "template": "real-estate",
+  "category": "booking",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "toolCalling": true
+    }
+  },
+  "turns": [
+    {
+      "user": "is hafte site visit ho sakti hai? aur commission buyer deta hai ya seller?",
+      "model": [
+        {
+          "text": "Site visit is hafte ho sakti hai — din aur area bata dein to main time hold kar leta hoon. Commission sirf seller se hota hai, aur deal se pehle likh kar diya jata hai; buyer se kuch nahi."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "minReplies": 1,
+    "language": "roman-ur",
+    "sideEffects": "none",
+    "forbid": [
+      "token money|advance from buyer"
+    ]
+  }
+}

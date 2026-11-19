@@ -119,6 +119,38 @@ export async function synthesize(text, { langInfo } = {}) {
  * Build the Baileys payload for a voice note.
  * @returns {Promise<{payload:object, provider:string}|null>}
  */
+/**
+ * The spoken version of a reply: whole sentences, cut so the note stays under
+ * ~20 seconds. What does not fit is not lost — the caller sends it as text.
+ * Numbers and prices are kept in the spoken part; they are what people listen
+ * for twice.
+ */
+export function speechTextFor(text, { maxSeconds = config.tts.maxSeconds, langInfo = null } = {}) {
+  const clean = forSpeech(text);
+  const limit = Math.max(5, Number(maxSeconds) || 20);
+  if (estimateSeconds(clean) <= limit) return clean;
+  const parts = clean.split(/(?<=[.!?۔])\s+/);
+  let out = '';
+  for (const p of parts) {
+    const next = out ? `${out} ${p}` : p;
+    if (estimateSeconds(next) > limit) break;
+    out = next;
+  }
+  if (!out) {
+    // A single monster sentence: cut on a word boundary rather than send
+    // nothing.
+    const words = clean.split(/\s+/);
+    out = '';
+    for (const w of words) {
+      const next = out ? `${out} ${w}` : w;
+      if (estimateSeconds(next) > limit) break;
+      out = next;
+    }
+  }
+  return out.trim() || clean.slice(0, 180);
+}
+
+/** Estimate for a language, if the caller has one. */
 export async function buildVoiceNote(text, { langInfo } = {}) {
   const audio = await synthesize(text, { langInfo });
   if (!audio) return null;
@@ -162,7 +194,7 @@ export async function buildVoiceNote(text, { langInfo } = {}) {
   };
 }
 
-function estimateSeconds(text) {
+export function estimateSeconds(text) {
   const words = String(text || '').split(/\s+/).filter(Boolean).length;
   return Math.max(2, Math.round(words / 2.6));
 }
@@ -180,14 +212,23 @@ export function wantsVoice(text = '') {
  * @param {boolean} [opts.clientSentVoice] client sent a voice note
  * @param {string} [opts.text] what the client wrote
  */
-export function shouldSpeak({ mode, clientSentVoice = false, text = '' }) {
+export function shouldSpeak({ mode, clientSentVoice = false, text = '', firstMessage = false }) {
   if (!ttsEnabled()) return false;
-  const m = String(mode || config.tts.mode).toLowerCase();
+  const m = normalizeMode(mode || config.tts.mode);
   const asked = wantsVoice(text);
   if (m === 'always') return true;
-  if (m === 'match_voice') return clientSentVoice || asked;
+  if (m === 'match_voice') return clientSentVoice || asked || (firstMessage && config.tts.greetVoice);
   if (m === 'on_request') return asked;
   return false;
+}
+
+/** `match` / `match-voice` / `match_voice` all mean the same thing. */
+export function normalizeMode(mode) {
+  const m = String(mode || '').toLowerCase().trim();
+  if (m === 'match' || m === 'match-voice') return 'match_voice';
+  if (m === 'request' || m === 'on-request') return 'on_request';
+  if (m === 'never' || m === 'none' || m === 'no') return 'off';
+  return m;
 }
 
 export function ttsStatus() {
@@ -201,4 +242,4 @@ export function ttsStatus() {
   };
 }
 
-export default { synthesize, buildVoiceNote, ttsEnabled, shouldSpeak, wantsVoice, ttsStatus };
+export default { synthesize, buildVoiceNote, ttsEnabled, shouldSpeak, wantsVoice, ttsStatus, speechTextFor, normalizeMode };

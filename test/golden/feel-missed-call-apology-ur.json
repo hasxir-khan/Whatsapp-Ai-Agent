@@ -1,0 +1,44 @@
+{
+  "id": "feel-missed-call-apology-ur",
+  "title": "An unanswered call gets one short Urdu apology, with the call timeline recorded",
+  "template": "clinic",
+  "category": "missed-call",
+  "language": "ur",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    }
+  },
+  "seed": {
+    "messages": [
+      {
+        "role": "user",
+        "text": "مجھے آج شام کی اپائنٹمنٹ چاہیے۔",
+        "minutesAgo": 90
+      }
+    ]
+  },
+  "turns": [
+    {
+      "action": "call_offer",
+      "delaySeconds": 1,
+      "expect": "the apology is short, in Urdu, and only one goes out",
+      "model": [
+        {
+          "text": "معذرت، ابھی کال نہیں اٹھا سکے۔ یہیں لکھ دیں، فوراً جواب دیتے ہیں۔"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "language": "ur",
+    "maxSentences": 2,
+    "maxReplies": 1,
+    "oneReplyPerTurn": true,
+    "events": [
+      "call_fallback"
+    ],
+    "noErrorEvents": true
+  }
+}

@@ -25,6 +25,10 @@ import { sttEnabled } from '../services/transcription.js';
 import { hasFfmpeg } from '../services/ffmpeg.js';
 import { pendingFollowUps, intentStatsForDay } from '../utils/db.js';
 import { intentSummary, managerEnabled, AGENTS } from '../core/manager.js';
+import { handleAgentCommand } from './agentCommands.js';
+import { handleMarketingCommand } from './marketingCommands.js';
+import { handleBrainCommand } from './brainCommands.js';
+import { agentsEnabled, agentBadge, listAgents } from '../services/agents.js';
 import { getTransport } from '../transport/index.js';
 import { growthSummary, optOutList, recordOptOut, recordOptIn, quietWindow } from '../services/growth.js';
 import { orderTrackingEnabled, reminderStats, recentOrderSkips } from '../services/orders.js';
@@ -57,7 +61,9 @@ const HELP = `*Bot commands*
 .takeover 92300… – I'm handling this one (bot steps back)
 .release 92300… – give it back to the bot
 .assign 92300… Name – hand a chat to a teammate
-.calls – recent incoming calls
+.calls – recent incoming calls, with the rescue timeline
+.debug last – which model answered, and where the seconds went (reply timeline)
+.debug timing – the reply-timing settings in force
 .report – today's brief
 .usage – free-tier usage
 .status – system health
@@ -93,11 +99,26 @@ const HELP = `*Bot commands*
 .report week – last seven days vs the week before
 .referrals – who has a code, and who arrived with one
 .content now – this week's posts, statuses and a reel idea
+.marketing – the marketing team (plan, content, offers, promos, reviews, ads)
+.plan – this month: theme, dates, offers, channels
+.offer 10% off – check a discount against your own rules
+.promo preview all "message" / .promo send / .promo stop
+.reply-review 4 "what they wrote" – a draft reply in the right tone
+.channels – chats, orders and revenue per source
+.adcopy [topic] – click-to-WhatsApp variants
 .campaign preview – who would get a win-back message, and a sample
 .campaign send / .campaign stop – start or halt it
 .invoice <id> – the PDF for an order/quote (.invoice <id> send → to the client)
 .link <source> [text] – a tracked wa.me link (instagram, poster, flyer…)
 .links – every source with chats → leads → paid, and what looks dead
+.agents – your custom assistants: who is on, what each one did today
+.agent add|set|on|off|test|rm – manage one assistant
+.brain – the business brain: today, the week, what to do next
+.impact – automation, response time, leads, revenue and hours saved
+.strategy – the weekly review and five ranked actions
+.do <n> / .why <n> – prepare one action as a draft / the reason it is there
+.goal add 20 orders by 2026-12-31 – goals, progress and a projection
+.experiment – two wordings, a stable split, honest verdicts
 .qr <source> – the tracked link as a QR image
 .poster <source> – an A4 poster with the QR, ready to print
 .rules – FAQ rules learned from your own replies, waiting for a yes/no
@@ -171,6 +192,7 @@ const COMMAND_PERMISSION = {
   takeover: 'pause',
   release: 'pause',
   calls: 'calls',
+  debug: 'debug',
   leads: 'leads',
   lead: 'leads',
   intakes: 'intakes',
@@ -179,6 +201,23 @@ const COMMAND_PERMISSION = {
   ai: 'owner',
   voice: 'owner',
   team: 'chats',
+  agents: 'owner',
+  agent: 'owner',
+  marketing: 'owner',
+  plan: 'owner',
+  offer: 'owner',
+  promo: 'owner',
+  channels: 'owner',
+  adcopy: 'owner',
+  'reply-review': 'owner',
+  brain: 'owner',
+  impact: 'owner',
+  strategy: 'owner',
+  do: 'owner',
+  why: 'owner',
+  goal: 'owner',
+  experiment: 'owner',
+  proposals: 'owner',
 };
 
 const OWNER_ONLY = new Set([
@@ -186,6 +225,9 @@ const OWNER_ONLY = new Set([
   'features', 'knowledge', 'tools', 'intents', 'growth', 'optouts', 'bookings', 'cancel', 'approve', 'skip',
   'done', 'paid', 'referrals', 'content', 'campaign', 'invoice', 'rules', 'approve-rule', 'reject-rule',
   'inbox', 'link', 'links', 'qr', 'poster',
+  'agents', 'agent',
+  'marketing', 'plan', 'offer', 'promo', 'channels', 'adcopy', 'reply-review',
+  'brain', 'impact', 'strategy', 'do', 'why', 'goal', 'experiment', 'proposals',
 ]);
 
 /**
@@ -195,6 +237,10 @@ const OWNER_ONLY = new Set([
 function noteOrNull(args = []) {
   const rest = args.slice(2).filter((word) => word !== '--force' && word !== 'override');
   return rest.length ? rest.join(' ') : null;
+}
+
+function strategistOn() {
+  return featureOn('businessBrain');
 }
 
 export async function handleOwnerCommand(sock, chatJid, text, from = config.owner.number) {
@@ -438,6 +484,17 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       }
       lines.push('');
       lines.push(`${summary.optOuts} opt-out${summary.optOuts === 1 ? '' : 's'} on file (.optouts)`);
+      // Phase 6 Part 3 — the same dashboard gains the impact numbers, but only
+      // when the brain is on, so the text is byte-identical when it is off.
+      if (strategistOn()) {
+        const { impactNumbers, weekWindow } = await import('../services/impact.js');
+        const w = weekWindow(new Date());
+        const nums = impactNumbers({ from: w.from, to: w.to });
+        lines.push('');
+        lines.push(`*Impact this week* — ${nums.automationRate}% of ${nums.conversations} chats had no reply from you`);
+        lines.push(`Time saved: ~${nums.hoursSaved} h · revenue attributable: ${nums.botRevenue} ${business()?.currency || 'PKR'}`);
+        lines.push('Full detail: .impact · definitions in the README.');
+      }
       return { handled: true, reply: lines.join('\n') };
     }
 
@@ -618,6 +675,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         `Outbox: ${outboxStatus().pending} queued · ${outboxStatus().failed} failed`,
         `Bot globally: ${getSetting('bot_enabled', true) ? 'ON' : 'OFF'}`,
         `Routing: ${managerEnabled() ? 'manager agent on' : 'single brain (managerAgent off)'}`,
+        ...(agentsEnabled() ? [`Agents: ${listAgents().filter((x) => x.enabled).length}/${listAgents().length} on · this chat: ${agentBadge(chatJid)?.name || 'default assistant'}`] : []),
         ...transportLines(),
       ];
       return { handled: true, reply: lines.join('\n') };
@@ -686,6 +744,24 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       if (lead.budget) lines.push(`🗒️ Their budget: ${lead.budget}`);
       const followups = pendingFollowUps(target);
       if (followups.length) lines.push(`⏰ Follow-up: ${new Date(followups[0].due_at).toLocaleString('en-GB', { timeZone: config.timezone })}`);
+      // Phase 6 Part 3 — one line of advice, deterministic, capped by the same
+      // growth rules. Off by default; nothing changes when the flag is off.
+      if (strategistOn()) {
+        try {
+          const { nextBestAction } = await import('../services/nextBestAction.js');
+          const nba = nextBestAction(target, { now: new Date() });
+          if (nba && nba.action && nba.action !== 'wait') {
+            lines.push(`🧠 Suggested: ${nba.label} — ${String(nba.reason).slice(0, 160)}`);
+          } else if (nba?.alternatives?.length) {
+            // Held by quiet hours, caps or an opt-out: say what it would be and
+            // why it is waiting, rather than nothing.
+            const held = nba.alternatives[0];
+            lines.push(`🧠 Suggested (held: ${String(held.blockedBy || 'caps').replace(/_/g, ' ')}): ${String(held.reason).slice(0, 150)}`);
+          }
+        } catch {
+          /* a suggestion must never break the dossier */
+        }
+      }
       return { handled: true, reply: lines.join('\n') };
     }
 
@@ -741,7 +817,14 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     case 'report': {
       if (['week', 'weekly', '7d'].includes(String(args[0] || '').toLowerCase())) {
         const { weeklyReportText } = await import('../services/analystAgent.js');
-        return { handled: true, reply: await weeklyReportText(new Date()) };
+        const base = await weeklyReportText(new Date());
+        if (!strategistOn()) return { handled: true, reply: base };
+        // Part 3: the strategist review is appended, never merged into the
+        // analyst's text, so the analyst report is unchanged for every install
+        // that leaves the flag off.
+        const { weeklyStrategyAddendum } = await import('../services/strategist.js');
+        const addendum = await weeklyStrategyAddendum(new Date());
+        return { handled: true, reply: `${base}\n\n${addendum}` };
       }
       return { handled: true, reply: buildReport() };
     }
@@ -765,6 +848,13 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
 
     case 'content': {
       const { contentPackText } = await import('../services/contentAgent.js');
+      // Phase 6: ad copy, reel scripts, a Status series and bilingual versions
+      // belong to the marketing writer; the weekly pack stays where it was.
+      const kinds = ['ad', 'reel', 'status', 'bilingual'];
+      const first = String(args[0] || '').toLowerCase();
+      if (kinds.includes(first)) {
+        return handleMarketingCommand({ sub: 'content', args, raw: input });
+      }
       if (args[0] && !['now', 'week', 'pack'].includes(String(args[0]).toLowerCase())) {
         return { handled: true, reply: 'Usage: .content now  (a fresh pack; the weekly one arrives on its own)' };
       }
@@ -1428,14 +1518,106 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     case 'calls': {
       const calls = recentCalls(10);
       if (!calls.length) return { handled: true, reply: 'No calls yet.' };
+      const clock = (iso) => new Date(iso).toLocaleTimeString('en-GB', { timeZone: config.timezone });
       const lines = ['*Recent calls*'];
       for (const c of calls) {
         const when = new Date(c.created_at).toLocaleString('en-GB', { timeZone: config.timezone });
+        // The timeline is the point: when the call came in, when the chat
+        // rescue went out, and how long the gap was.
+        const gapSec = c.handled_at ? Math.max(0, Math.round((new Date(c.handled_at) - new Date(c.created_at)) / 1000)) : null;
+        // Ring start → when it stopped ringing → when the apology went out.
+        const ended = c.ended_at ? ` · ended ${clock(c.ended_at)}` : '';
+        const apologized = c.apologized_at ? ` · apology ${clock(c.apologized_at)}` : '';
+        const timeline = c.handled_at ? `\n  ${clock(c.created_at)} → ${clock(c.handled_at)} (${gapSec}s)${ended}${apologized}` : '';
+        const timelineAny = timeline || (c.ended_at ? `\n  ring ${clock(c.created_at)}${ended}${apologized}` : '');
         lines.push(
-          `• ${c.name || `+${c.number}`} — ${c.video ? 'video' : 'voice'} · ${c.status}${c.outcome ? ` · ${c.outcome}` : ''}\n  ${when}`
+          `• ${c.name || `+${c.number}`} — ${c.video ? 'video' : 'voice'} · ${c.status}${c.outcome ? ` · ${c.outcome}` : ''}\n  ${when}${timelineAny}`
+        );
+      }
+      if (config.calls.enabled) {
+        lines.push('');
+        lines.push(
+          `Rescue goes out ${config.calls.delayMinSeconds}–${config.calls.delayMaxSeconds}s after an unanswered call, and is cancelled if the customer writes first or you answer.`
         );
       }
       return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'debug': {
+      // Owner-only view of which model answered: provider, model, latency,
+      // tokens and why the first choice did not.
+      const sub = String(args[0] || 'last').toLowerCase();
+      const { formatLast, lastFor } = await import('../services/providerTrace.js');
+      const { formatTimeline, timingSummary } = await import('../services/timeline.js');
+      const { replyTiming } = await import('../core/timing.js');
+      if (sub === 'last') {
+        // The model trace says who answered; the timeline says where the
+        // seconds went between the customer's message and the reply.
+        const trace = formatLast({ limit: 5 });
+        const tl = formatTimeline({ limit: 5 });
+        return { handled: true, reply: tl ? `${trace}\n\n${tl}` : trace };
+      }
+      if (sub === 'timing') return { handled: true, reply: timingSummary(replyTiming()) };
+      if (/^\+?\d{8,}$/.test(sub)) {
+        const rows = lastFor(sub.replace('+', ''), 5);
+        if (!rows.length) return { handled: true, reply: `No model calls for +${sub.replace('+', '')} yet.` };
+        const lines = [`🧪 +${sub.replace('+', '')} — last ${rows.length}`];
+        for (const r of rows) {
+          lines.push(`• ${r.provider}/${r.model} · ${r.ms} ms · ${r.tokens || 0} tokens · ${r.kind}${r.fallback ? ` · fallback from ${r.fallback} (${r.reason || 'n/a'})` : ''}`);
+        }
+        // The same reply timeline, for this one chat.
+        const chatLines = formatTimeline({ limit: 3, chat: sub.replace('+', '') });
+        return { handled: true, reply: chatLines ? `${lines.join('\n')}\n\n${chatLines}` : lines.join('\n') };
+      }
+      return { handled: true, reply: 'Usage: .debug last — or .debug 923001234567' };
+    }
+
+    case 'marketing': {
+      return handleMarketingCommand({ sub: 'marketing', args, raw: input });
+    }
+
+    // ── the business brain (Part 3) ─────────────────────────
+    case 'brain':
+    case 'impact':
+    case 'strategy':
+    case 'do':
+    case 'why':
+    case 'goal':
+    case 'experiment':
+    case 'proposals': {
+      return handleBrainCommand({ sub: cmd, args, raw: input });
+    }
+
+    case 'plan': {
+      return handleMarketingCommand({ sub: 'plan', args, raw: input });
+    }
+
+    case 'offer': {
+      return handleMarketingCommand({ sub: 'offer', args, raw: input });
+    }
+
+    case 'promo': {
+      return handleMarketingCommand({ sub: 'promo', args, raw: input });
+    }
+
+    case 'channels': {
+      return handleMarketingCommand({ sub: 'channels', args, raw: input });
+    }
+
+    case 'adcopy': {
+      return handleMarketingCommand({ sub: 'adcopy', args, raw: input });
+    }
+
+    case 'reply-review':
+    case 'review-reply': {
+      return handleMarketingCommand({ sub: 'reply-review', args, raw: input });
+    }
+
+    case 'agents':
+    case 'agent': {
+      if (cmd === 'agents') return await handleAgentCommand({ sub: 'list' });
+      const [sub, ...rest] = args;
+      return await handleAgentCommand({ sub, args: [cmd, ...rest], raw: arg });
     }
 
     default:

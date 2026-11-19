@@ -29,7 +29,13 @@ export const CLOUD_CAPABILITIES = {
   document: true,
   mediaDownload: true,
   markRead: true,
-  presence: false, // no typing indicator exists on the Cloud API
+  // No presence protocol on the Cloud API. Typing still exists — it rides on
+  // the read receipt (POST /messages with status=read + typing_indicator) — so
+  // it has its own capability flag rather than pretending to be presence.
+  presence: false,
+  typingIndicator: true,
+  typingMaxSeconds: 25, // Meta drops the label after 25 s; the call must repeat
+  typingKinds: ['text'], // 'recording' has no Cloud equivalent
   deleteMessage: false, // you cannot unsend on the Cloud API
   deliveryReceipts: true,
   templates: true,
@@ -543,16 +549,53 @@ export class CloudTransport extends Transport {
     }
   }
 
-  /** The Cloud API has no typing indicator. Say so instead of pretending. */
+  /** No presence protocol on the Cloud API: this stays a no-op. */
   async setPresence() {
     return null;
+  }
+
+  /**
+   * Typing, the Cloud API way: mark the customer's message read *and* raise the
+   * typing label in one call. Meta's documented shape is
+   *   { messaging_product: 'whatsapp', status: 'read', message_id,
+   *     typing_indicator: { type: 'text' } }
+   * The label is dropped when the next message is sent, or after 25 s — so it
+   * is refreshed while a slow reply is being written. There is no `paused`,
+   * `available` or `recording`: those are accepted and ignored.
+   *
+   * @param {string} messageId the inbound wamid to acknowledge
+   * @param {{state?:string}} [opts]
+   * @returns {Promise<{sent:boolean, reason?:string}>}
+   */
+  async sendTypingIndicator(messageId = null, { state = 'composing' } = {}) {
+    if (state !== 'composing') return { sent: false, reason: `cloud: no ${state} state` };
+    if (!messageId) return { sent: false, reason: 'cloud: typing needs the inbound message id' };
+    try {
+      await this.graph(`${this.phoneId}/messages`, {
+        method: 'POST',
+        body: {
+          messaging_product: 'whatsapp',
+          status: 'read',
+          message_id: messageId,
+          typing_indicator: { type: 'text' },
+        },
+      });
+      return { sent: true };
+    } catch (err) {
+      // A cosmetic indicator must never fail a reply: record it, carry on.
+      this.lastError = err.message;
+      this.typingError = err.message;
+      return { sent: false, reason: err.message };
+    }
   }
 
   // ── Baileys-compatible spellings ─────────────────────────
   // humanizer.js and older call sites speak Baileys. These two lines mean the
   // rest of the bot does not need to know which transport is underneath.
   async sendPresenceUpdate() {
-    return null; // nothing to send; presence is not part of the Cloud API
+    // Presence is not part of the Cloud API; typing comes from the read receipt
+    // above, which needs the message id that this call does not carry.
+    return null;
   }
 
   async readMessages(keys = []) {

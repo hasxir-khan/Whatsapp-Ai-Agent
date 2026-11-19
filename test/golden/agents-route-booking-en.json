@@ -1,0 +1,71 @@
+{
+  "id": "agents-route-booking-en",
+  "title": "A booking request goes to the booking assistant, not the default one",
+  "template": "restaurant",
+  "category": "booking",
+  "language": "en",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "sales",
+        "name": "Menu",
+        "role": "sales",
+        "routing": [
+          "price",
+          "menu",
+          "order",
+          "discount"
+        ],
+        "instructions": "Quote prices and totals from the catalogue only. Discounts belong to the owner.",
+        "tools": [
+          "check_stock"
+        ],
+        "enabled": true,
+        "default": true
+      },
+      {
+        "id": "bookings",
+        "name": "Bookings",
+        "role": "booking",
+        "routing": [
+          "table",
+          "reserve",
+          "book a table"
+        ],
+        "instructions": "Offer real slots only; confirm party size and time.",
+        "tools": [],
+        "enabled": true
+      }
+    ],
+    "business": {
+      "hours": "Daily 12:00-23:00"
+    }
+  },
+  "turns": [
+    {
+      "user": "I want to reserve a table for four tomorrow at 7pm",
+      "model": [
+        {
+          "text": "Table for four tomorrow at 7pm — shall I put your name down?"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agent": "bookings",
+    "minReplies": 1,
+    "language": "en",
+    "require": [
+      {
+        "match": "table",
+        "why": "the booking assistant answers the booking"
+      }
+    ],
+    "forbid": [
+      "confirmed|booked it"
+    ]
+  }
+}

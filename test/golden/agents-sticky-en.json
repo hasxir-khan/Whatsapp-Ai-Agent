@@ -1,0 +1,72 @@
+{
+  "id": "agents-sticky-en",
+  "title": "The conversation stays with the booking assistant on a neutral follow-up",
+  "template": "restaurant",
+  "category": "booking",
+  "language": "en",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "sales",
+        "name": "Menu",
+        "role": "sales",
+        "routing": [
+          "price",
+          "menu",
+          "order",
+          "discount"
+        ],
+        "instructions": "Quote prices and totals from the catalogue only. Discounts belong to the owner.",
+        "tools": [
+          "check_stock"
+        ],
+        "enabled": true,
+        "default": true
+      },
+      {
+        "id": "bookings",
+        "name": "Bookings",
+        "role": "booking",
+        "routing": [
+          "table",
+          "reserve",
+          "book a table"
+        ],
+        "instructions": "Offer real slots only; confirm party size and time.",
+        "tools": [],
+        "enabled": true
+      }
+    ],
+    "business": {
+      "hours": "Daily 12:00-23:00"
+    }
+  },
+  "turns": [
+    {
+      "user": "I want to reserve a table for two tonight",
+      "model": [
+        {
+          "text": "Two seats tonight — what time suits you?"
+        }
+      ]
+    },
+    {
+      "user": "thanks, see you then",
+      "model": [
+        {
+          "text": "See you tonight — I have your name down."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agents": [
+      "bookings"
+    ],
+    "minReplies": 2,
+    "language": "en"
+  }
+}

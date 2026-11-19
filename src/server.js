@@ -125,6 +125,8 @@ function buildStatus() {
       })),
       enabled: config.calls.enabled,
       delaySeconds: config.calls.delaySeconds,
+      delayMinSeconds: config.calls.delayMinSeconds,
+      delayMaxSeconds: config.calls.delayMaxSeconds,
     },
     leads: rankLeads({ limit: 6 }).map((l) => ({
       name: l.name || `+${l.number}`,
@@ -832,6 +834,76 @@ export async function handleAdminRoute(req, res, url) {
     }
     audit('profile_saved', { slug, ip, detail: { bytes: result.bytes } });
     return respond(200, { ok: true, reloaded: result.reloaded, warnings: result.warnings });
+  }
+
+  if (action === 'agents' && method === 'GET') {
+    try {
+      const A = await import('./services/agents.js');
+      const P = await import('./services/agentPacks.js');
+      const profile = readTenantProfile(slug);
+      const rows = Array.isArray(profile?.agents) ? profile.agents : [];
+      const packId = profile?.industry || profile?.template || null;
+      return respond(200, {
+        ok: true,
+        featureOn: profile?.features?.multiAgent === true,
+        marketingOn: profile?.features?.marketingAgents === true,
+        pack: packId ? { id: packId, label: P.packLabel(packId) } : null,
+        max: A.MAX_AGENTS,
+        agents: rows.map((a) => ({
+          id: a.id,
+          name: a.name || a.id,
+          role: a.role || 'custom',
+          enabled: a.enabled === true,
+          instructions: a.instructions || '',
+          tools: Array.isArray(a.tools) ? a.tools : [],
+          hours: a.hours || null,
+          handoff: a.handoff || null,
+          never: Array.isArray(a.never) ? a.never : [],
+        })),
+      });
+    } catch (err) {
+      return respond(404, { error: err.message });
+    }
+  }
+
+  // One field at a time, validated the same way the WhatsApp command validates
+  // it, then written through the existing profile writer (which re-checks the
+  // whole document and reloads it live).
+  if (action === 'agents' && method === 'POST') {
+    try {
+      const A = await import('./services/agents.js');
+      const profile = readTenantProfile(slug);
+      const rows = Array.isArray(profile.agents) ? [...profile.agents] : [];
+      const id = String(body?.id || '').trim();
+      const index = rows.findIndex((a) => a.id === id);
+      if (index < 0) return respond(404, { error: 'unknown_agent' });
+
+      const agent = { ...rows[index] };
+      if (typeof body?.enabled === 'boolean') agent.enabled = body.enabled;
+      if (typeof body?.instructions === 'string') agent.instructions = body.instructions.trim();
+      if (typeof body?.name === 'string' && body.name.trim()) agent.name = body.name.trim();
+
+      const check = A.validateAgent(agent);
+      if (check.errors.length) {
+        audit('agent_rejected', { slug, ip, detail: check.errors, ok: false });
+        return respond(400, { error: 'invalid_agent', errors: check.errors });
+      }
+
+      rows[index] = agent;
+      // The flag follows the roster, exactly like the WhatsApp command.
+      const anyOn = rows.some((a) => a.enabled === true);
+      const saved = writeTenantProfile(slug, {
+        ...profile,
+        agents: rows,
+        features: { ...(profile.features || {}), multiAgent: anyOn },
+      });
+      if (!saved.ok) return respond(400, { error: 'invalid_profile', errors: saved.errors });
+
+      audit('agent_saved', { slug, ip, detail: { id, enabled: agent.enabled === true } });
+      return respond(200, { ok: true, reloaded: saved.reloaded, warnings: saved.warnings || [] });
+    } catch (err) {
+      return respond(400, { error: err.message });
+    }
   }
 
   if (action === 'keys' && method === 'POST') {

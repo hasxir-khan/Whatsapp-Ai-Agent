@@ -8,7 +8,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { config, describeConfig, teamMembers } from '../src/config/env.js';
 import { GEMINI_BASE, geminiHeadersWith, authHeadersFor, isKeyError, explainGeminiError, maskKey, keyFormat } from '../src/utils/gemini.js';
-import { validateProfile, FEATURE_KEYS, effectiveCatalog, business, featureOn } from '../src/services/profile.js';
+import { validateProfile, FEATURE_KEYS, effectiveCatalog, business, featureOn, profile as readProfile } from '../src/services/profile.js';
 import { listTemplates } from '../src/services/templates.js';
 
 const ok = (m) => console.log(`  ✅ ${m}`);
@@ -150,6 +150,57 @@ async function checkBusiness() {
     problems.push(`Business profile: ${e}`);
   }
   if (!errors.length) ok('Profile structure is valid');
+
+  // custom agents (phase 6) — only when the owner switched them on
+  if (featureOn('multiAgent')) {
+    const { agentDiagnostics, listAgents, MAX_AGENTS } = await import('../src/services/agents.js');
+    const diag = agentDiagnostics();
+    for (const w of diag.warnings) {
+      info(`note: ${w}`);
+      notes.push(w);
+    }
+    for (const e of diag.errors) {
+      bad(e);
+      problems.push(`Agents: ${e}`);
+    }
+    const roster = listAgents();
+    if (roster.length && !diag.errors.length) {
+      ok(`Agents: ${roster.filter((a) => a.enabled).length}/${roster.length} on (${roster.map((a) => a.id).join(', ')}) · max ${MAX_AGENTS}`);
+    }
+  }
+
+  // ── marketing team (phase 6, part 2) ────────────────────
+  // Only checked when it is on: warnings about a feature someone never
+  // switched on are noise, and this file is about real problems.
+  {
+    const M = await import('../src/services/marketing.js');
+    if (M.marketingEnabled()) {
+      const cfg = M.marketingConfig();
+      const offersArr = (p) => (Array.isArray(p) ? p : []);
+      const offers = offersArr(readProfile().business?.offers).length + offersArr(readProfile().offers).length;
+
+      if (!cfg.approvalMode) {
+        warn('Marketing: approvalMode is off — promos will send without you seeing the list first');
+      }
+      if (!offers) {
+        warn('Marketing: no offers configured — .plan and .offer have nothing to work from');
+      }
+      if (!M.discountCap()) {
+        warn('Marketing: no policies.maxDiscountPercent — every discount will come to you as a decision');
+      }
+      if (readProfile().business?.type && /clinic|hospital|doctor|dental|medical/i.test(String(readProfile().business.type))) {
+        const { emergencyContact } = await import('../src/services/agentPacks.js');
+        const c = emergencyContact();
+        if (!c.configured) {
+          warn('Clinic: no emergency number configured — emergency messages will say "local emergency number"');
+        }
+      }
+      const reachable = M.promoSegments().reachable;
+      ok(`Marketing: on · ${reachable} reachable contact${reachable === 1 ? '' : 's'} · one promo per contact every ${cfg.minDaysBetweenPromos} days`);
+    } else if (readProfile().features?.marketingAgents) {
+      warn('Marketing: features.marketingAgents is set but did not read as on — check the value is true, not "yes"');
+    }
+  }
 
   // industry templates must all load
   const templates = listTemplates();
@@ -665,6 +716,37 @@ export function growthSettingsWarnings(profile = {}, env = {}, { transport = nul
       warnings.push(`SELF_HEALING_MAX_PER_DAY is ${env.SELF_HEALING_MAX_PER_DAY} — more proposals than you will actually review is noise, not learning`);
     }
   }
+  // ── Phase 6 Part 3: the business brain ────────────────────
+  if (on('businessBrain')) {
+    const brain = profile.brain || {};
+    const approval = profile.features?.growthApproval !== false;
+    const autoRun = Array.isArray(brain.autoRun) ? brain.autoRun : [];
+
+    if (on('reasoning') && !(env.GEMINI_API_KEY || env.GROQ_API_KEY || env.OPENAI_API_KEY || env.ANTHROPIC_API_KEY || env.OPENROUTER_API_KEY)) {
+      warnings.push('reasoning is on but no model key is set — the router falls back to the deterministic path, so complex turns get no plan');
+    }
+    if (!approval) {
+      warnings.push('businessBrain is on with growthApproval off — a proposal could reach a customer before you see the draft');
+    }
+    if (autoRun.length && !approval) {
+      warnings.push(`brain.autoRun lists ${autoRun.join(', ')} while growthApproval is off — those actions would send with no approval step at all`);
+    }
+    const goals = Array.isArray(profile.business?.goals) ? profile.business.goals.length : 0;
+    if (!goals) {
+      warnings.push('businessBrain is on but no goals are set — .goal add 20 orders by 2026-12-31 gives it something to measure against');
+    }
+    const cap = Number(brain.dailyReasoningCalls ?? 200);
+    if (on('reasoning') && cap > 1000) {
+      warnings.push(`brain.dailyReasoningCalls is ${cap} — on a free tier that is a day of quota, spent quietly`);
+    }
+    const minutes = Number(brain.minutesPerConversation ?? 6);
+    if (!(minutes > 0)) {
+      warnings.push('brain.minutesPerConversation is 0 — "time saved" will always read zero');
+    }
+  } else if (on('reasoning')) {
+    warnings.push('reasoning is on but businessBrain is off — the router has nothing to verify against; turn on businessBrain or turn reasoning off');
+  }
+
   return warnings;
 }
 

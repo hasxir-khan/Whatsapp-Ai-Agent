@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config, normalizePhone } from '../config/env.js';
 import { featureOn } from './profile.js';
+import { clearAgentState } from './agents.js';
 import { invoiceDir } from './invoice.js';
 import { sweepTemp } from './media.js';
 import {
@@ -94,6 +95,29 @@ export function exportContact(rawNumber) {
   // person, so it travels with them.
   const sourceLink = all('SELECT source, code, detail, created_at FROM contact_sources WHERE number = ?', [number]);
   const notes = all('SELECT note, author, created_at FROM contact_notes WHERE number = ?', [number]);
+  // Phase 6: which custom agent held this conversation, and what it did.
+  // Empty unless the owner switched multiAgent on, so an existing export is
+  // byte-identical when the feature is off.
+  const agentChats = featureOn('multiAgent')
+    ? all('SELECT agent, handoffs, updated_at FROM agent_chats WHERE chat = ? OR chat = ?', [number, jid])
+    : [];
+  const agentEvents = featureOn('multiAgent')
+    ? all('SELECT agent, kind, detail, created_at FROM agent_events WHERE chat = ? OR chat = ?', [number, jid])
+    : [];
+  // Phase 6 Part 2: the promo messages we sent this contact are their data too.
+  // Only included when the marketing team is on, so other exports do not change.
+  const growthMessages = featureOn('marketingAgents')
+    ? all('SELECT agent, reason, result, created_at FROM growth_sends WHERE number = ?', [number])
+    : [];
+  // Phase 6 Part 3: every decision the brain took about this chat, and every
+  // experiment it put this contact in. Only when the flag is on, so other
+  // exports keep their exact shape.
+  const brainDecisions = featureOn('businessBrain')
+    ? all('SELECT kind, action, rationale, outcome, created_at FROM brain_decisions WHERE chat = ? OR chat = ?', [number, jid])
+    : [];
+  const experimentSends = featureOn('businessBrain')
+    ? all('SELECT experiment_id, variant, outcome, created_at FROM experiment_sends WHERE number = ?', [number])
+    : [];
   const orderIds = all('SELECT id FROM orders WHERE chat = ? OR chat = ?', [number, jid]).map((row) => row.id);
   const orderHistory = orderIds.length
     ? all(`SELECT * FROM order_events WHERE order_id IN (${orderIds.map(() => '?').join(',')}) ORDER BY id`, orderIds)
@@ -140,10 +164,13 @@ export function exportContact(rawNumber) {
     notes,
     sourceLink,
     orderHistory,
+    ...(featureOn('multiAgent') ? { agentChats, agentEvents } : {}),
+    ...(featureOn('marketingAgents') ? { growthMessages } : {}),
+    ...(featureOn('businessBrain') ? { brainDecisions, experimentSends } : {}),
   };
 
   const counts = Object.fromEntries(
-    Object.entries({ messages, facts, leads, bookings, orders, followups, referrals, reviews, intake, calls, intents, consents, tags, notes, sourceLink, orderHistory })
+    Object.entries({ messages, facts, leads, bookings, orders, followups, referrals, reviews, intake, calls, intents, consents, tags, notes, sourceLink, orderHistory, ...(featureOn('multiAgent') ? { agentChats, agentEvents } : {}), ...(featureOn('marketingAgents') ? { growthMessages } : {}), ...(featureOn('businessBrain') ? { brainDecisions, experimentSends } : {}) })
       .map(([key, rows]) => [key, rows.length])
   );
 
@@ -250,6 +277,37 @@ export function forgetContact(rawNumber, { reason = 'owner_request', now = new D
     if (before) {
       run(`DELETE FROM order_events WHERE order_id IN (${holes})`, orderIds);
       removed.order_events = before;
+      total += before;
+    }
+  }
+  // Phase 6: the agent that answered, and its event trail, are about this
+  // person as well.
+  if (featureOn('multiAgent')) {
+    for (const table of ['agent_chats', 'agent_events']) {
+      const where = 'chat = ? OR chat = ?';
+      const before = countRows(table, where, [number, jid]);
+      if (before) {
+        run(`DELETE FROM ${table} WHERE ${where}`, [number, jid]);
+        removed[table] = before;
+        total += before;
+      }
+    }
+    try {
+      clearAgentState(jid);
+    } catch {
+      /* memory only */
+    }
+  }
+  // Phase 6 Part 3: the reasoning trail is about this person, so it goes too.
+  for (const { table, where } of [
+    { table: 'brain_decisions', where: 'chat = ? OR chat = ?' },
+    { table: 'experiment_sends', where: 'number = ?' },
+  ]) {
+    const params = where.includes('OR') ? [number, jid] : [number];
+    const before = countRows(table, where, params);
+    if (before) {
+      run(`DELETE FROM ${table} WHERE ${where}`, params);
+      removed[table] = before;
       total += before;
     }
   }

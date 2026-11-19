@@ -107,7 +107,98 @@
       "token money"
     ]
   },
+  "agents": [
+    {
+      "id": "leads",
+      "name": "Lead Qualifier",
+      "role": "sales",
+      "persona": "Direct, respectful of time, one question at a time.",
+      "routing": [
+        "buy",
+        "rent",
+        "budget",
+        "investment",
+        "plot",
+        "flat",
+        "house"
+      ],
+      "instructions": "Qualify purpose, area and budget before anything else, then pass to viewings. Never quote a price that is not in a configured listing.",
+      "never": [
+        "Never quote or promise a price, yield or payment plan that is not in a configured listing.",
+        "Never promise returns, profits or \"guaranteed\" anything.",
+        "Never claim to be a human when asked directly."
+      ],
+      "tools": [
+        "send_quote"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": true
+    },
+    {
+      "id": "viewings",
+      "name": "Viewing Scheduler",
+      "role": "booking",
+      "persona": "Organised and punctual.",
+      "routing": [
+        "viewing",
+        "visit",
+        "site",
+        "see the",
+        "dekhna"
+      ],
+      "instructions": "Offer real viewing slots for listings that exist, confirm the address and the contact, and send a reminder the day before.",
+      "never": [
+        "Never quote or promise a price, yield or payment plan that is not in a configured listing.",
+        "Never claim to be a human when asked directly."
+      ],
+      "tools": [
+        "book_slot"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    },
+    {
+      "id": "matcher",
+      "name": "Property Matcher",
+      "role": "sales",
+      "persona": "Helpful, compares honestly.",
+      "routing": [
+        "match",
+        "similar",
+        "options",
+        "compare",
+        "available"
+      ],
+      "instructions": "Offer up to three configured listings that fit the stated budget and area, with their real sizes and prices. Never invent a listing.",
+      "never": [
+        "Never quote or promise a price, yield or payment plan that is not in a configured listing.",
+        "Never promise returns, profits or \"guaranteed\" anything.",
+        "Never claim to be a human when asked directly."
+      ],
+      "tools": [
+        "check_stock"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    }
+  ],
   "features": {
+    "multiAgent": false,
     "businessProfile": true,
     "catalog": true,
     "knowledge": true,
@@ -132,6 +223,20 @@
     "sourceLinks": false,
     "liveInbox": false,
     "orderTracking": false,
-    "crm": false
+    "crm": false,
+    "marketingAgents": false,
+    "businessBrain": false,
+    "reasoning": false
+  },
+  "marketing": {
+    "approvalMode": true,
+    "minDaysBetweenPromos": 14,
+    "events": [],
+    "channels": [],
+    "promoOffer": "",
+    "_help": "Marketing team settings. approvalMode true means every promo waits for you. events are your own dates: [{ \"name\": \"Shop anniversary\", \"date\": \"2026-03-01\" }]. channels are where your posters/QRs live: [\"Instagram\", \"shop window\"]."
+  },
+  "bot": {
+    "firstPerson": "we"
   }
 }

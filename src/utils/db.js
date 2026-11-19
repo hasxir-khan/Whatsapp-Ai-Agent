@@ -237,7 +237,9 @@ CREATE TABLE IF NOT EXISTS calls (
   video       INTEGER DEFAULT 0,
   status      TEXT,          -- offer | accepted | missed | rejected | handled
   outcome     TEXT,          -- what the assistant did about it
-  created_at  TEXT,
+  created_at  TEXT,          -- when it started ringing
+  ended_at    TEXT,          -- when the phone stopped ringing (answered, hung up, timed out)
+  apologized_at TEXT,        -- when the chat apology went out
   handled_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_calls_created ON calls(created_at);
@@ -560,6 +562,100 @@ CREATE TABLE IF NOT EXISTS pending_rules (
   decided_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pending_rules_status ON pending_rules(status, created_at);
+
+-- Phase 6 part 1 ────────────────────────────────────────────
+-- Which custom agent owns a conversation, and how many hand-offs it has used.
+CREATE TABLE IF NOT EXISTS agent_chats (
+  tenant      TEXT,
+  chat        TEXT,
+  agent       TEXT,
+  handoffs    INTEGER DEFAULT 0,
+  updated_at  TEXT,
+  PRIMARY KEY (tenant, chat)
+);
+
+-- One row per thing an agent did: route, first_reply, handoff, order, booking.
+-- Analytics only — nothing here changes what the bot says.
+CREATE TABLE IF NOT EXISTS agent_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  chat        TEXT,
+  agent       TEXT,
+  kind        TEXT,
+  detail      TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_created ON agent_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events(agent, kind);
+
+-- ── phase 6, part 3: the business brain ─────────────────────
+-- Every proposal, every decision and its short rationale. The rationale is
+-- capped in code (300 chars): the chain of thought itself is never stored.
+CREATE TABLE IF NOT EXISTS brain_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT,
+  chat TEXT,
+  kind TEXT,              -- route | verify | next_best_action | strategy | experiment
+  action TEXT,
+  rationale TEXT,
+  payload TEXT,
+  outcome TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_brain_decisions_created ON brain_decisions(created_at);
+CREATE INDEX IF NOT EXISTS idx_brain_decisions_chat ON brain_decisions(chat);
+
+CREATE TABLE IF NOT EXISTS brain_proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT,
+  kind TEXT,              -- campaign | faq | offer | followups | reactivation
+  title TEXT,
+  detail TEXT,
+  payload TEXT,
+  status TEXT DEFAULT 'proposed',   -- proposed | drafted | approved | rejected | done
+  created_at TEXT,
+  decided_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT,
+  metric TEXT,
+  target INTEGER,
+  due_at TEXT,
+  status TEXT DEFAULT 'active',
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS experiments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT,
+  kind TEXT,              -- followup | offer | review_ask
+  variant_a TEXT,
+  variant_b TEXT,
+  min_sample INTEGER DEFAULT 30,
+  status TEXT DEFAULT 'running',
+  winner TEXT,
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS experiment_sends (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  experiment_id INTEGER,
+  number TEXT,
+  variant TEXT,
+  outcome TEXT,           -- replied | converted | none
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_experiment_sends ON experiment_sends(experiment_id, variant);
+
+CREATE TABLE IF NOT EXISTS brain_weights (
+  tenant TEXT,
+  key TEXT,
+  value REAL,
+  updated_at TEXT,
+  PRIMARY KEY (tenant, key)
+);
 `;
 
 export async function initDB({ file = DB_FILE } = {}) {
@@ -619,6 +715,8 @@ function migrate() {
   add('contacts', 'assigned_at', 'TEXT');
   add('calls', 'video', 'INTEGER DEFAULT 0');
   add('calls', 'outcome', 'TEXT');
+  add('calls', 'ended_at', 'TEXT');
+  add('calls', 'apologized_at', 'TEXT');
   add('leads', 'score', 'INTEGER DEFAULT 0');
   add('leads', 'priority', 'TEXT');
   add('leads', 'next_action', 'TEXT');
@@ -871,10 +969,18 @@ export function recordCall({ id, number, name = null, video = false, status = 'o
   return getCall(id);
 }
 
-export function updateCall(id, { status, outcome } = {}) {
+export function updateCall(id, { status, outcome, endedAt = null, apologizedAt = null } = {}) {
   if (!id) return null;
   const fields = [];
   const values = [];
+  if (endedAt) {
+    fields.push('ended_at = ?');
+    values.push(endedAt instanceof Date ? endedAt.toISOString() : String(endedAt));
+  }
+  if (apologizedAt) {
+    fields.push('apologized_at = ?');
+    values.push(apologizedAt instanceof Date ? apologizedAt.toISOString() : String(apologizedAt));
+  }
   if (status) {
     fields.push('status = ?');
     values.push(status);

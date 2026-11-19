@@ -11,6 +11,8 @@
 // directory. Every harness entry point does it for that reason.
 import './evalEnv.js';
 import { allowedNumbers, forbiddenStrings, languageOf } from './fixtures.js';
+import { sentenceCount } from '../core/brevity.js';
+import { endsMidSentence, extractRanges, checkPersona } from '../core/replyGuard.js';
 
 const RAW_OUTPUT = [
   /\{\s*"/,          // raw JSON
@@ -51,6 +53,35 @@ function digitGaps(replies, allowed) {
   return problems;
 }
 
+/** Every published price band in the profile: [{min, max}] */
+function priceBands(profile = {}) {
+  const bands = [];
+  const push = (item) => {
+    const min = Number(item?.min ?? item?.price);
+    const max = Number(item?.max ?? item?.price ?? item?.min);
+    if (Number.isFinite(min) && min > 0) bands.push({ min, max: Number.isFinite(max) && max > 0 ? max : min });
+  };
+  const items = Array.isArray(profile.catalog) ? profile.catalog : profile.catalog?.items || [];
+  for (const item of items) push(item);
+  for (const item of profile.owner?.services || []) push(item);
+  for (const item of profile.owner?.addons || []) push(item);
+  return bands;
+}
+
+/** A guard event's problems, whether the detail is JSON or free text. */
+function guardProblems(event) {
+  const detail = event?.detail;
+  if (!detail) return [];
+  if (typeof detail === 'object') return Array.isArray(detail.problems) ? detail.problems : [];
+  try {
+    const parsed = JSON.parse(detail);
+    if (Array.isArray(parsed?.problems)) return parsed.problems.map(String);
+  } catch {
+    /* not JSON: fall through to the plain-text form */
+  }
+  return [String(detail)];
+}
+
 function snippet(text, needle) {
   const at = text.indexOf(needle);
   const start = Math.max(0, at - 40);
@@ -88,6 +119,27 @@ export function evaluate({ scenario, run, mode = 'deterministic' }) {
   const tooLong = replies.filter((r) => r.text.length > maxLength).map((r) => `turn ${r.turn}: ${r.text.length} chars`);
   checks.push(failIfAny('length', tooLong, { hard: !live, okDetail: `≤ ${maxLength} chars` }));
 
+  // ── the assistant that answered ───────────────────────────
+  // Only scenarios that name an assistant are judged on it, so every existing
+  // scenario is untouched.
+  if (a.agent || Array.isArray(a.agents)) {
+    const trail = (run.agentTrail || []).map((x) => x.agent).filter(Boolean);
+    if (a.agent) {
+      const last = trail[trail.length - 1] || null;
+      checks.push(
+        failIfAny('agent', last === a.agent ? [] : [`expected "${a.agent}", saw "${last || 'none'}"`], { hard: true })
+      );
+    }
+    if (Array.isArray(a.agents)) {
+      const seen = [...new Set(trail)].sort();
+      const want = [...a.agents].sort();
+      const same = seen.length === want.length && seen.every((id, i) => id === want[i]);
+      checks.push(
+        failIfAny('agents', same ? [] : [`expected [${want.join(', ')}], saw [${seen.join(', ')}]`], { hard: true })
+      );
+    }
+  }
+
   // ── no invented numbers ───────────────────────────────────
   if (a.numbers === false) {
     checks.push(check('numbers', 'SKIP', 'scenario turns the number check off', { hard: false }));
@@ -98,7 +150,30 @@ export function evaluate({ scenario, run, mode = 'deterministic' }) {
       seeds: run.seedEcho || [],
       extra: [...(run.extraNumbers || []), ...(run.orderIds || [])],
     });
-    const problems = digitGaps(replies, allowed);
+    // A number inside a published price band is a quote, not an invention:
+    // 155,000 for a store listed at 120,000–350,000 is derived from the price
+    // list, while 90,000 is below its floor and still fails.
+    const bands = priceBands(run.profile);
+    const inBand = (raw) => {
+      const n = Number(String(raw).replace(/,/g, ''));
+      return Number.isFinite(n) && bands.some((b) => n >= b.min && n <= b.max);
+    };
+    const problems = digitGaps(replies, allowed).filter((line) => {
+      const m = line.match(/^"([^"]+)"/);
+      return !(m && inBand(m[1]));
+    });
+    // A draft the pipeline had to throw away still counts: the model invented a
+    // price, and the fact that the customer never saw it is the repair working,
+    // not the model behaving.
+    if (!a.expectGuardRepair) {
+      for (const event of events) {
+        if (!/^reply_guard_rejected$/.test(String(event.type || ''))) continue;
+        for (const line of guardProblems(event)) {
+          const hit = String(line).match(/number "([^"]+)" is not in the catalogue/);
+          if (hit) problems.push(`the model invented "${hit[1]}" and the draft was replaced`);
+        }
+      }
+    }
     checks.push(
       failIfAny('numbers', problems, {
         hard: !softNumbers,
@@ -107,7 +182,153 @@ export function evaluate({ scenario, run, mode = 'deterministic' }) {
     );
   }
 
+  // ── one customer message, one reply ───────────────────────
+  // The batch pipeline has many senders; a customer must never get two answers
+  // to one message, and two answers must never be glued into one bubble.
+  // Counted in logical replies (one per batch), not bubbles: an answer split
+  // over three bubbles on a phone is still one answer.
+  const batchesOf = (turn) => {
+    const t = (run.turns || []).find((x) => x.index === turn);
+    if (t && Number.isFinite(t.batches)) return t.batches;
+    return replies.filter((r) => r.turn === turn).length;
+  };
+  const turnsWithReplies = [...new Set(replies.map((r) => r.turn))];
+  if (a.oneReplyPerTurn !== false) {
+    const multi = [];
+    let total = 0;
+    for (const turn of turnsWithReplies) {
+      const n = batchesOf(turn);
+      total += n;
+      if (n > 1) multi.push(`turn ${turn}: ${n} separate replies`);
+    }
+    checks.push(failIfAny('one_reply', multi, { okDetail: `${total} repl${total === 1 ? 'y' : 'ies'}, one per message` }));
+  }
+  if (a.maxReplies !== undefined) {
+    const total = turnsWithReplies.reduce((n, turn) => n + batchesOf(turn), 0);
+    checks.push(
+      failIfAny('max_replies', total > Number(a.maxReplies) ? [`${total} replies > ${a.maxReplies}`] : [], {
+        okDetail: `${total} ≤ ${a.maxReplies}`,
+      })
+    );
+  }
+
+  // ── brevity: how many sentences did the customer have to read? ──
+  // Optional, so no existing scenario changes meaning. A quote or a list is
+  // exempt in the pipeline itself, and scenarios that expect one simply do not
+  // set this.
+  if (a.maxSentences !== undefined) {
+    const over = [];
+    for (const r of replies) {
+      const n = sentenceCount(r.text);
+      if (n > Number(a.maxSentences)) over.push(`turn ${r.turn}: ${n} sentences > ${a.maxSentences} — "${r.text.slice(0, 70)}"`);
+    }
+    checks.push(failIfAny('max_sentences', over, { okDetail: `≤ ${a.maxSentences} sentence(s) per reply` }));
+  }
+
+  // ── a reaction instead of a reply ─────────────────────────
+  // "ok" and "thanks" get a 👍 (or nothing at all), never a paragraph.
+  if (a.reactionOnly) {
+    const reactions = run.reactions || [];
+    const problems = [];
+    if (!reactions.length) problems.push('no reaction was sent');
+    if (replies.length) problems.push(`${replies.length} text repl${replies.length === 1 ? 'y' : 'ies'} sent, expected none`);
+    checks.push(failIfAny('reaction_only', problems, { okDetail: `${reactions.length} reaction(s), no text` }));
+  }
+
+  // ── nothing ends mid-sentence ─────────────────────────────
+  if (a.noMidSentence !== false) {
+    const cut = [];
+    for (const r of replies) {
+      const verdict = endsMidSentence(r.text);
+      if (verdict.cut) cut.push(`turn ${r.turn}: ${verdict.reason} — "${r.text.slice(-40)}"`);
+    }
+    checks.push(failIfAny('no_mid_sentence', cut, { okDetail: 'every reply ends on a finished sentence' }));
+  }
+
+  // ── the same project is never quoted two different ranges ──
+  if (a.samePrice !== false) {
+    const ranges = [];
+    for (const r of replies) {
+      for (const range of extractRanges(r.text)) ranges.push({ turn: r.turn, ...range });
+    }
+    const distinct = new Set(ranges.map((r) => `${r.lo}-${r.hi}`));
+    checks.push(
+      failIfAny('same_price', distinct.size > 1 ? [`ranges differ: ${[...distinct].join(' vs ')}`] : [], {
+        okDetail: ranges.length ? `one range: ${[...distinct][0]}` : 'no price range quoted',
+      })
+    );
+  }
+
+  // ── one voice ─────────────────────────────────────────────
+  if (a.persona === 'strict' || a.persona === true) {
+    const mixed = [];
+    for (const r of replies) {
+      const problems = checkPersona(r.text, { strict: false });
+      if (problems.length) mixed.push(`turn ${r.turn}: ${problems[0]}`);
+    }
+    checks.push(failIfAny('persona', mixed, { okDetail: 'one voice in every reply' }));
+  }
+
+  // ── a document answer only says what the file says ────────
+  if (a.documentGrounded) {
+    // Every number in the reply must appear in the document the customer sent,
+    // or in the profile/seeds (a price the business published).
+    const sourceText = (scenario.turns || [])
+      .map((t) => (t.document && t.document.text) || '')
+      .join('\n');
+    const docNumbers = new Set((sourceText.match(/\d[\d,.]*/g) || []).map((n) => n.replace(/[,.]$/, '')));
+    const groundedAllowed = allowedNumbers({
+      profile: run.profile,
+      scenario,
+      seeds: run.seedEcho || [],
+      extra: [...(run.extraNumbers || []), ...docNumbers],
+    });
+    const problems = [];
+    for (const r of replies) {
+      for (const m of r.text.matchAll(/\d[\d,]*(?:\.\d+)?/g)) {
+        const raw = m[0].replace(/,/g, '');
+        if (groundedAllowed.has(raw) || docNumbers.has(raw)) continue;
+        problems.push(`"${m[0]}" in turn ${r.turn} is not in the document`);
+        break;
+      }
+    }
+    checks.push(failIfAny('document_grounded', problems, { okDetail: 'only what the file says' }));
+  }
+
+  // ── the fallback really happened ──────────────────────────
+  if (a.providerFallback) {
+    const traces = run.traces || [];
+    const fellBack = traces.some((t) => t.fallback) || (run.events || []).some((e) => /llm_fallback|reply_cut_detected/.test(String(e.type)));
+    checks.push(
+      failIfAny('provider_fallback', fellBack ? [] : ['no fallback was recorded, the chain was never exercised'], {
+        okDetail: 'the chain moved to a fallback and answered once',
+      })
+    );
+  }
+
+  // ── the repair really ran ─────────────────────────────────
+  // A scenario that says "the draft will be caught" must actually have caught
+  // one; otherwise it is measuring a pipeline that never needed to repair.
+  if (a.expectGuardRepair) {
+    const rejected = events.filter((e) => /^reply_guard_rejected$/.test(String(e.type || '')));
+    const repaired = events.filter((e) => /^reply_guard_(repaired|safe_line)$/.test(String(e.type || '')));
+    checks.push(
+      failIfAny(
+        'guard_repair',
+        [
+          ...(rejected.length ? [] : ['no draft was rejected — the scenario did not exercise the guard']),
+          ...(repaired.length ? [] : ['a draft was rejected but the run did not record a repair']),
+        ],
+        { okDetail: `${rejected.length} rejected, ${repaired.length} repaired` }
+      )
+    );
+  }
+
   // ── the right language ────────────────────────────────────
+  // Checked twice: on what the customer actually received, and on what the
+  // model actually wrote. The pipeline may replace an off-language draft with a
+  // safe line, which is the right behaviour — but the model's mistake still has
+  // to show up in the report instead of hiding behind the repair.
   const wrongLanguage = [];
   for (const reply of replies) {
     const seen = languageOf(reply.text);
@@ -115,6 +336,12 @@ export function evaluate({ scenario, run, mode = 'deterministic' }) {
     if (seen !== expectLang) {
       wrongLanguage.push(`turn ${reply.turn}: expected ${expectLang}, got ${seen} — "${reply.text.slice(0, 60)}…"`);
     }
+  }
+  for (const event of run.events || []) {
+    if (!/^reply_guard_rejected$/.test(String(event.type || ''))) continue;
+    const lines = guardProblems(event).filter((line) => /^language:/.test(String(line)));
+    if (!lines.length) continue;
+    wrongLanguage.push(`the model answered in the wrong language and was replaced: ${lines[0]}`);
   }
   checks.push(
     failIfAny('language', wrongLanguage, { hard: !softLanguage, okDetail: `every reply is ${expectLang}` })

@@ -1,0 +1,74 @@
+{
+  "id": "agents-handoff-roman-ur",
+  "title": "A complaint is handled by support and handed to the owner with a short summary",
+  "template": "restaurant",
+  "category": "complaint",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "sales",
+        "name": "Menu",
+        "role": "sales",
+        "routing": [
+          "price",
+          "menu",
+          "order",
+          "discount"
+        ],
+        "instructions": "Quote prices and totals from the catalogue only. Discounts belong to the owner.",
+        "tools": [
+          "check_stock"
+        ],
+        "enabled": true,
+        "default": true
+      },
+      {
+        "id": "support",
+        "name": "Support",
+        "role": "support",
+        "routing": [
+          "refund",
+          "complaint",
+          "galat",
+          "غلط",
+          "واپس",
+          "شکایت"
+        ],
+        "instructions": "Solve the problem first. Never promise money back; hand refunds to the owner.",
+        "tools": [
+          "handoff"
+        ],
+        "enabled": true,
+        "handoff": "owner"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "user": "mera order galat aya hai, refund chahiye",
+      "model": [
+        {
+          "text": "Bhai maaf kijiye — main owner ko bata raha hoon, woh aap se rabta karein ge. Refund ka faisla unka hai."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agent": "support",
+    "minReplies": 1,
+    "language": "roman-ur",
+    "require": [
+      {
+        "match": "owner",
+        "why": "the customer is told a human is taking over"
+      }
+    ],
+    "forbid": [
+      "refund mil jayega|refund approved"
+    ]
+  }
+}

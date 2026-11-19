@@ -1,0 +1,27 @@
+{
+  "id": "fix-midsentence-retry-en",
+  "title": "A reply cut mid-list is regenerated, never sent half-finished",
+  "template": "restaurant",
+  "category": "persona",
+  "language": "en",
+  "mode": "both",
+  "profile": { "features": { "businessProfile": true } },
+  "turns": [
+    {
+      "user": "What comes in the family platter?",
+      "expect": "the list is finished, or the reply is cut back to a whole sentence",
+      "model": [
+        { "text": "The family platter has: 1, 2, 3, 4, 5, 6," },
+        { "text": "The family platter has grilled chicken, seekh kebab, naan, salad and two drinks. It serves four people." }
+      ]
+    }
+  ],
+  "assert": {
+    "noMidSentence": true,
+    "forbid": ["1, 2, 3, 4, 5, 6,"],
+    "require": [{ "match": "chicken|kebab|naan", "why": "the finished answer reached the customer" }],
+    "maxReplies": 1,
+    "oneReplyPerTurn": true,
+    "events": ["reply_cut_detected"]
+  }
+}

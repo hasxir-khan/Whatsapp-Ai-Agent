@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { evalConfigDir, ownerNumber, defaultCustomer, profilePath } from './evalEnv.js';
 import { allowedNumbers } from './fixtures.js';
+import { config } from '../config/env.js';
 
 const TEMPLATE_DIR = new URL('../../config/templates/', import.meta.url);
 
@@ -117,6 +118,16 @@ function countTable(db, table) {
   }
 }
 
+/** YYYY-MM-DD, `days` from now, in the business's timezone. */
+function localDatePlus(days = 0) {
+  const shifted = new Date(Date.now() + days * 86_400_000);
+  try {
+    return shifted.toLocaleDateString('en-CA', { timeZone: config.timezone || 'UTC' });
+  } catch {
+    return shifted.toISOString().slice(0, 10);
+  }
+}
+
 function seedScenario({ db, scenario, number, now, tenant = null }) {
   const seed = scenario.seed || {};
   const jid = `${number}@s.whatsapp.net`;
@@ -195,8 +206,10 @@ function seedScenario({ db, scenario, number, now, tenant = null }) {
 
   for (const booking of seed.bookings || []) {
     // "Tomorrow" is relative to the real clock, because the booking agent reads
-    // the real clock too. A fixed date here would silently never collide.
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    // the real clock too. It has to be tomorrow *in the business's timezone*:
+    // after midnight in Karachi (but still yesterday in UTC) a UTC-based date
+    // lands on the wrong day and the seeded slot never collides.
+    const tomorrow = localDatePlus(1);
     db.run('INSERT INTO bookings (chat, service, date, time, name, status) VALUES (?,?,?,?,?,?)', [
       jid,
       booking.service || 'Table',
@@ -247,6 +260,7 @@ function seedScenario({ db, scenario, number, now, tenant = null }) {
 
 function makeTransport({ db, number, now }) {
   const sent = [];
+  const reactions = [];
   const jid = `${number}@s.whatsapp.net`;
   const transport = {
     kind: 'baileys',
@@ -257,9 +271,25 @@ function makeTransport({ db, number, now }) {
       db.saveMessage(String(to).split('@')[0], to.startsWith(ownerNumber) ? 'owner' : 'assistant', payload?.text || '[media]');
       return { key: { id: `eval-${sent.length}-${Math.random().toString(36).slice(2, 8)}` } };
     },
-    async sendPresenceUpdate() {},
+    async sendPresenceUpdate(state = 'paused', jid = null) {
+      transport.presence.push({ state, jid, at: now });
+    },
     async readMessages() {},
+    // A reaction is not a reply: it is recorded separately so a scenario can
+    // assert "👍, and nothing else".
+    reactions,
+    presence: [],
+    async sendReaction(to, key, emoji) {
+      reactions.push({ jid: to, key, emoji, at: now });
+      return { key: { id: `react-${reactions.length}` } };
+    },
+    // The next media download: a document's text when a turn sent a file, the
+    // placeholder audio otherwise.
+    nextMedia: null,
     async getMedia() {
+      const media = transport.nextMedia;
+      transport.nextMedia = null;
+      if (media) return media;
       return { buffer: Buffer.from('eval-audio-bytes'), mimetype: 'audio/ogg' };
     },
     can: () => true,
@@ -299,6 +329,21 @@ function messageFor({ scenario, turn, number, index, nonce, tag }) {
   if (turn.image) {
     return { ...base, message: { imageMessage: { mimetype: 'image/jpeg', caption: turn.caption || '' } } };
   }
+  if (turn.document) {
+    const name = String(turn.document.name || 'brief.txt');
+    return {
+      ...base,
+      message: {
+        documentMessage: {
+          mimetype: 'text/plain',
+          fileName: name,
+          fileLength: String(turn.document.text || '').length,
+          caption: turn.caption || '',
+          pageCount: 1,
+        },
+      },
+    };
+  }
   return { ...base, message: { conversation: String(turn.user || '') } };
 }
 
@@ -326,6 +371,37 @@ async function runAction({ turn, transport, m, scenario, number }) {
     if (res.ok && turn.notify) await m.orders.notifyCustomer(transport, res.order, res.to, { now });
     return res;
   }
+  if (turn.action === 'missed_call') {
+    const { handleMissedCall } = await import('../services/calls.js');
+    return handleMissedCall(transport, number, { id: turn.callId || `call-${number}-1`, video: false, reason: turn.reason || 'timeout' });
+  }
+  if (turn.action === 'call_offer') {
+    const { handleCallEvents, __resetCalls } = await import('../services/calls.js');
+    __resetCalls();
+    const callId = turn.callId || `call-${number}-offer`;
+    // The rescue delay is a config value; a scenario may shorten it so the test
+    // does not sit for a real minute. Default stays 60s.
+    const saved = m.env.config.calls.delaySeconds;
+    const savedMin = m.env.config.calls.delayMinSeconds;
+    const savedMax = m.env.config.calls.delayMaxSeconds;
+    if (turn.delaySeconds !== undefined) {
+      // Pin the whole window: a scenario asking for 0 s must not sit in a
+      // random 60–90 s ringing window.
+      m.env.config.calls.delaySeconds = Number(turn.delaySeconds);
+      m.env.config.calls.delayMinSeconds = Number(turn.delaySeconds);
+      m.env.config.calls.delayMaxSeconds = Number(turn.delaySeconds);
+    }
+    try {
+      await handleCallEvents(transport, [{ id: callId, from: number, status: 'offer', video: false }]);
+      const waitMs = Math.max(0, Number(m.env.config.calls.delaySeconds) * 1000) + 400;
+      await new Promise((r) => setTimeout(r, Math.min(waitMs, 3000)));
+      return { ok: true, callId };
+    } finally {
+      m.env.config.calls.delaySeconds = saved;
+      m.env.config.calls.delayMinSeconds = savedMin;
+      m.env.config.calls.delayMaxSeconds = savedMax;
+    }
+  }
   if (turn.action === 'reactivation_send') {
     return m.reactivation.startCampaign({ now, tag: turn.tag || null });
   }
@@ -347,6 +423,15 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
 
   const profile = resolveProfile(scenario);
   writeProfile(profile);
+  // Assistant memory is process state, and one scenario must never inherit the
+  // previous scenario's routing. The database is emptied separately.
+  try {
+    const A = await import('../services/agents.js');
+    A.clearAgentState();
+    A.resetBreakers();
+  } catch {
+    /* the feature is off in this build */
+  }
   env.reloadProfile();
   m.intake.resetState?.(scenario.number || defaultCustomer);
 
@@ -358,7 +443,17 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
   const transport = makeTransport({ db, number, now: FIXED_NOW });
   transport.jid = jid;
 
+  // A brief the customer already gave. Written through the intake module so
+  // its in-memory cache sees it too — a plain INSERT would be overwritten by
+  // the first turn.
+  if (scenario.seed?.intakeFields) {
+    m.intake.mergeExternalFields?.(number, scenario.seed.intakeFields);
+  }
+
   model.reset?.();
+  if (Array.isArray(scenario.fixture?.docNotes) && model.docNotes) {
+    model.docNotes = [...scenario.fixture.docNotes];
+  }
   model.install?.();
   const tag = runTag(nonce);
 
@@ -370,8 +465,10 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
     mode,
     profile,
     turns: [],
+    agentTrail: [],
     replies: [],
     ownerMessages: [],
+    reactions: [],
     sideEffects: [],
     confirmationAsked: 0,
     modelCalls: 0,
@@ -397,6 +494,12 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
     const before = Object.fromEntries(SIDE_EFFECT_TABLES.map((t) => [t, countTable(db, t)]));
     const pendingBefore = Boolean(db.getPendingConfirmation(transport.jid));
     const sentStart = transport.sent.length;
+    let batchesBefore = 0;
+    try {
+      batchesBefore = db.get("SELECT COUNT(*) AS n FROM events WHERE type = 'reply_sent'")?.n || 0;
+    } catch {
+      batchesBefore = 0;
+    }
 
     const steps = Array.isArray(turn.model) ? turn.model : [];
     if (steps.length) model.beginTurn(steps);
@@ -408,6 +511,11 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
 
     try {
       if (turn.user !== undefined) {
+        if (turn.document) {
+          // The download the document branch performs must return the file's
+          // text, not the placeholder audio.
+          transport.nextMedia = { buffer: Buffer.from(String(turn.document.text || '')), mimetype: 'text/plain' };
+        }
         await handleIncoming(transport, messageFor({ scenario, turn, number, index, nonce, tag }));
       } else if (turn.owner !== undefined) {
         const res = await handleOwnerCommand(transport, `${ownerNumber}@s.whatsapp.net`, turn.owner, ownerNumber);
@@ -442,10 +550,39 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
       if (after > before[table]) run.sideEffects.push({ turn: index, table, delta: after - before[table], pendingBefore });
     }
 
+    let batches = 0;
+    try {
+      batches = db.get("SELECT COUNT(*) AS n FROM events WHERE type = 'reply_sent'")?.n || 0;
+    } catch {
+      batches = 0;
+    }
     const pendingAfter = Boolean(db.getPendingConfirmation(transport.jid));
     if (!pendingBefore && pendingAfter) run.confirmationAsked += 1;
 
-    run.turns.push({ index, kind: turn.user !== undefined ? 'user' : turn.owner !== undefined ? 'owner' : 'action', leftover, pendingBefore, pendingAfter, replies: replies.length });
+    // Which assistant holds the conversation after this turn (null when the
+    // multi-agent feature is off, which is the default).
+    let activeAgent = null;
+    try {
+      const A = await import('../services/agents.js');
+      activeAgent = A.currentAgent(transport.jid)?.agent || A.currentAgent(number)?.agent || null;
+    } catch {
+      activeAgent = null;
+    }
+
+    run.turns.push({
+      index,
+      kind: turn.user !== undefined ? 'user' : turn.owner !== undefined ? 'owner' : 'action',
+      leftover,
+      pendingBefore,
+      pendingAfter,
+      replies: replies.length,
+      // Logical replies (one per batch), which is what "one reply per message"
+      // means: three bubbles of one answer are still one reply.
+      batches: Math.max(0, batches - batchesBefore),
+    });
+    run.agentTrail.push({ turn: index, agent: activeAgent });
+    for (const r of transport.reactions.splice(0)) run.reactions.push({ turn: index, ...r });
+    transport.presence.length = 0;
   }
 
   run.modelCalls = model.calls?.length || 0;
@@ -462,6 +599,18 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
   run.optouts = db.all('SELECT number FROM growth_optouts');
   run.growth = db.all('SELECT agent, number, reason, result, detail FROM growth_sends');
   run.contact = db.getContact(number) || null;
+  // Which provider/model answered each reply, and what the fallback was.
+  try {
+    run.traces = db.all('SELECT provider, model, ms, tokens, fallback, reason, kind, ok FROM llm_trace ORDER BY id');
+  } catch {
+    run.traces = [];
+  }
+  // The call timeline, for the rescued-call scenarios.
+  try {
+    run.calls = db.all('SELECT id, number, status, outcome, created_at, handled_at FROM calls ORDER BY id');
+  } catch {
+    run.calls = [];
+  }
 
   // Numbers a scenario legitimately lets through (dates it asked for, ids it
   // quotes back in a required pattern).

@@ -70,7 +70,10 @@ export async function runAll({ mode = 'deterministic', only = null, category = n
       checks: verdict.checks,
       modelCalls: run.modelCalls,
       replies: run.replies,
-      durationMs: 0,
+      // Which provider and model actually answered, how long it took and how
+      // many tokens it cost — the report for a live run is only useful with it.
+      providers: summariseProviders(run.traces),
+      durationMs: (run.traces || []).reduce((n, t) => n + (Number(t.ms) || 0), 0),
     };
     results.push(result);
     if (typeof onScenario === 'function') onScenario(result);
@@ -93,4 +96,23 @@ export async function runAll({ mode = 'deterministic', only = null, category = n
   };
 }
 
-export default { runAll, scenarioDir, GOLDEN_DIR };
+/** One line per reply: provider/model · latency · tokens · fallback reason. */
+export function summariseProviders(traces = []) {
+  const replies = (traces || []).filter((t) => /^reply/.test(String(t.kind || 'reply')));
+  const seen = new Map();
+  for (const t of replies) {
+    const key = `${t.provider}/${t.model}`;
+    const entry = seen.get(key) || { provider: t.provider, model: t.model, calls: 0, ms: 0, tokens: 0, fallback: null, reason: null };
+    entry.calls += 1;
+    entry.ms += Number(t.ms) || 0;
+    entry.tokens += Number(t.tokens) || 0;
+    if (t.fallback) {
+      entry.fallback = t.fallback;
+      entry.reason = t.reason || null;
+    }
+    seen.set(key, entry);
+  }
+  return [...seen.values()];
+}
+
+export default { runAll, scenarioDir, GOLDEN_DIR, summariseProviders };

@@ -55,6 +55,11 @@ export const FEATURE_KEYS = [
   'privacyTools',
   // phase 5
   'sourceLinks',
+  // phase 6
+  'multiAgent',
+  'marketingAgents',
+  'businessBrain',
+  'reasoning',
 ];
 
 export const FEATURE_LABELS = {
@@ -93,6 +98,10 @@ export const FEATURE_LABELS = {
   healthAlerts: 'Tell the owner when WhatsApp, the AI, disk, backups or an unanswered chat go wrong',
   privacyTools: 'Data export and deletion: .export <number>, .forget <number> <number>',
   sourceLinks: 'Tracked wa.me links, QR codes and printable posters: .link, .links, .qr, .poster',
+  multiAgent: 'Custom named assistants per business, routed automatically (.agents, .agent)',
+  marketingAgents: 'Owner-facing marketing team: plan, content, offers, promos, reviews, channels, ad copy (.marketing)',
+  businessBrain: 'Business brain: impact numbers, daily brief, weekly strategy, goals, experiments, next-best-action (.brain)',
+  reasoning: 'Reasoning router: complex turns get plan → act → verify before answering',
 };
 
 // ── live profile access ─────────────────────────────────────
@@ -137,6 +146,12 @@ export const FEATURE_ALIASES = {
   health: 'healthAlerts',
   privacy: 'privacyTools',
   gdpr: 'privacyTools',
+  agents: 'multiAgent',
+  multiagent: 'multiAgent',
+  marketing: 'marketingAgents',
+  marketingteam: 'marketingAgents',
+  brain: 'businessBrain',
+  businessbrain: 'businessBrain',
 };
 
 /** Flags that are ON unless explicitly turned off. */
@@ -334,15 +349,22 @@ export function toPkrAmount(amount) {
 export function effectiveServices() {
   const seen = new Set();
   const out = [];
+  // The same service can exist twice: once in the catalogue the customer sees
+  // and once in a legacy `owner.services` list. Quoting matched whichever came
+  // first, so one project could be priced 120,000–350,000 on the price list and
+  // 25,000–75,000 from the old list in the same chat. The name decides, and the
+  // catalogue entry wins.
+  const nameKey = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
   for (const raw of catalogItems()) {
     const item = normalizeItem(raw);
     // Products are quotable too (a burger, a lawn suit) — only free or
     // price-less entries stay out of the quote engine.
     if (item.min === null || item.min <= 0) continue;
-    const key = item.id || item.name.toLowerCase();
-    if (seen.has(key)) continue;
+    const key = item.id || nameKey(item.name);
+    if (seen.has(key) || seen.has(`name:${nameKey(item.name)}`)) continue;
     seen.add(key);
+    seen.add(`name:${nameKey(item.name)}`);
     out.push({
       id: item.id,
       name: item.name,
@@ -358,9 +380,10 @@ export function effectiveServices() {
 
   for (const raw of profile().owner?.services || []) {
     const id = raw.id || slugId(raw.name);
-    const key = id || String(raw.name || '').toLowerCase();
-    if (seen.has(key)) continue;
+    const key = id || nameKey(raw.name);
+    if (seen.has(key) || seen.has(`name:${nameKey(raw.name)}`)) continue;
     seen.add(key);
+    seen.add(`name:${nameKey(raw.name)}`);
     out.push(raw);
   }
 

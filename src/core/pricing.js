@@ -205,6 +205,26 @@ export function buildQuote(fields = {}, number = '') {
 
   // Round to friendly numbers
   const roundTo = (n) => (n >= 100000 ? Math.round(n / 5000) * 5000 : n >= 20000 ? Math.round(n / 1000) * 1000 : Math.round(n / 500) * 500);
+
+  // Never quote below the price the business publishes for that service. The
+  // complexity multiplier used to be able to take an e-commerce store quoted at
+  // 120,000–350,000 down to 48,000–130,000 in the same conversation — one
+  // project, two ranges, and the cheaper one was not on the price list.
+  const addonCeiling = addons.reduce((n, a) => n + (Number(a.max) || 0), 0);
+  if (service?.min > 0 && pkrMin < service.min) {
+    const lift = service.min - pkrMin;
+    pkrMin += lift;
+    pkrMax += lift;
+  }
+  // ...and never above the published maximum either (plus whatever the
+  // add-ons are allowed to cost). A quote outside the price list is a quote the
+  // customer cannot check against anything.
+  const ceiling = Number(service?.max) > 0 ? Number(service.max) + addonCeiling : 0;
+  if (ceiling && pkrMax > ceiling) {
+    pkrMax = ceiling;
+    if (pkrMin > pkrMax) pkrMin = Math.max(Number(service?.min) || 0, Math.round(pkrMax * 0.75));
+  }
+
   pkrMin = roundTo(pkrMin);
   pkrMax = roundTo(pkrMax);
 

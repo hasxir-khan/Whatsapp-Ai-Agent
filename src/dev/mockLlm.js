@@ -13,6 +13,21 @@ export function setMockReply(fn) {
   overrideReply = fn;
 }
 
+// ── Phase 6 Part 3: the reasoning router's plan call ─────────
+// Offline tests need a plan without inventing a planning model. Setting a plan
+// here makes the fake provider answer the plan prompt with it; clearing it puts
+// the default back, which is a plain sentence and therefore an unusable plan —
+// exactly what the router must survive.
+let planSteps = null;
+
+export function __testSetPlan(steps) {
+  planSteps = Array.isArray(steps) ? steps.slice(0, 3) : null;
+}
+
+export function __testClearPlan() {
+  planSteps = null;
+}
+
 function jsonResponse(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
     status,
@@ -85,6 +100,29 @@ export async function mockFetch(url, options = {}) {
   const href = String(url);
   const body = options.body ? safeParseBody(options.body) : {};
 
+  // ── the reasoning plan ────────────────────────────────
+  const planSystemText = String(
+    body.system ||
+      body.systemInstruction?.parts?.map((p) => p.text).join(' ') ||
+      body.system_instruction?.parts?.map((p) => p.text).join(' ') ||
+      ''
+  );
+  if (/you plan, you do not answer/i.test(planSystemText)) {
+    const planText = planSteps
+      ? JSON.stringify({ steps: planSteps, risk: 'medium' })
+      : 'I would check the order first.';
+    if (href.includes('generativelanguage.googleapis.com')) {
+      return jsonResponse({
+        candidates: [{ content: { parts: [{ text: planText }] } }],
+        usageMetadata: { totalTokenCount: 60 },
+      });
+    }
+    return jsonResponse({
+      choices: [{ message: { content: planText } }],
+      usage: { total_tokens: 60 },
+    });
+  }
+
   // ── speech-to-text ────────────────────────────────────
   if (href.includes('/audio/transcriptions')) {
     return jsonResponse({
@@ -102,6 +140,18 @@ export async function mockFetch(url, options = {}) {
   // ── gemini ────────────────────────────────────────────
   if (href.includes('generativelanguage.googleapis.com')) {
     if (href.includes(':generateContent')) {
+      // A test that forced a reply gets it here too, so the same test works
+      // whichever provider the router happens to prefer.
+      if (overrideReply) {
+        const geminiUser = (body.contents || [])
+          .flatMap((c) => c.parts || [])
+          .map((part) => (typeof part.text === 'string' ? part.text : ''))
+          .join('\n');
+        return jsonResponse({
+          candidates: [{ content: { parts: [{ text: overrideReply(geminiUser) }] } }],
+          usageMetadata: { totalTokenCount: 60 },
+        });
+      }
       return jsonResponse({
         candidates: [{ content: { parts: [{ text: 'A screenshot of a clothing store homepage: hero image with a model, product grid of six items, prices in dollars, and a cart icon. The header navigation reads Home, Shop, About, Contact.' }] } }],
         usageMetadata: { totalTokenCount: 120 },
@@ -191,4 +241,4 @@ function safeParseBody(body) {
   }
 }
 
-export default { mockTransport, setMockReply, mockFetch };
+export default { mockTransport, setMockReply, mockFetch, __testSetPlan, __testClearPlan };

@@ -1,0 +1,68 @@
+{
+  "id": "agents-refund-ur",
+  "title": "In Urdu the support assistant refuses to promise money back",
+  "template": "clinic",
+  "category": "complaint",
+  "language": "ur",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "sales",
+        "name": "Menu",
+        "role": "sales",
+        "routing": [
+          "price",
+          "menu",
+          "order",
+          "discount"
+        ],
+        "instructions": "Quote prices and totals from the catalogue only. Discounts belong to the owner.",
+        "tools": [
+          "check_stock"
+        ],
+        "enabled": true,
+        "default": true
+      },
+      {
+        "id": "support",
+        "name": "Support",
+        "role": "support",
+        "routing": [
+          "refund",
+          "complaint",
+          "galat",
+          "غلط",
+          "واپس",
+          "شکایت"
+        ],
+        "instructions": "Solve the problem first. Never promise money back; hand refunds to the owner.",
+        "tools": [
+          "handoff"
+        ],
+        "enabled": true,
+        "handoff": "owner"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "user": "مجھے رقم واپس چاہیے، یہ غلط بل ہے",
+      "model": [
+        {
+          "text": "میں نے یہ بات مالک کو بھیج دی ہے، وہ آپ سے رابطہ کریں گے۔"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agent": "support",
+    "minReplies": 1,
+    "language": "ur",
+    "forbid": [
+      "رقم واپس مل جائے گی"
+    ]
+  }
+}

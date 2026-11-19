@@ -1,0 +1,71 @@
+{
+  "id": "pack-realestate-viewing-en",
+  "title": "A real-estate enquiry routes to the Viewing Scheduler and never quotes an unlisted price",
+  "template": "real-estate",
+  "category": "booking",
+  "language": "en",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "leads",
+        "name": "Lead Qualifier",
+        "role": "sales",
+        "routing": [
+          "buy",
+          "budget",
+          "investment"
+        ],
+        "instructions": "Qualify purpose, area and budget first.",
+        "never": "Never quote a price not in a listing.",
+        "tools": [
+          "send_quote"
+        ],
+        "enabled": true,
+        "default": true
+      },
+      {
+        "id": "viewings",
+        "name": "Viewing Scheduler",
+        "role": "booking",
+        "routing": [
+          "viewing",
+          "visit",
+          "site",
+          "dekhna"
+        ],
+        "instructions": "Offer real viewing slots for listings that exist.",
+        "never": "Never invent a listing.",
+        "tools": [
+          "book_slot"
+        ],
+        "enabled": true,
+        "default": false
+      }
+    ],
+    "business": {
+      "about": "Chak Shahzad 10 marla house, listed at 25000000."
+    }
+  },
+  "turns": [
+    {
+      "user": "I would like a viewing of the 10 marla house this week",
+      "model": [
+        {
+          "text": "I can arrange a viewing — would Thursday afternoon suit you? Which area do you prefer?"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agent": "viewings",
+    "minReplies": 1,
+    "language": "en",
+    "forbid": [
+      "guaranteed|best investment|return on"
+    ],
+    "numbers": "hard"
+  }
+}

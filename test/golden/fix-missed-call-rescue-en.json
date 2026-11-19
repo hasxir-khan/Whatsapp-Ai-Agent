@@ -1,0 +1,29 @@
+{
+  "id": "fix-missed-call-rescue-en",
+  "title": "An unanswered call is rescued in chat once, and the timeline records it",
+  "template": "salon",
+  "category": "missed-call",
+  "language": "en",
+  "mode": "both",
+  "profile": { "features": { "businessProfile": true } },
+  "seed": {
+    "messages": [{ "role": "user", "text": "Hi, I want to book a haircut for Saturday please.", "minutesAgo": 200 }]
+  },
+  "turns": [
+    {
+      "action": "call_offer",
+      "delaySeconds": 1,
+      "expect": "the rescue message goes out about a second later and says the call was missed",
+      "model": [
+        { "text": "Sorry I missed your call — tell me here what you need and we will get it sorted." }
+      ]
+    }
+  ],
+  "assert": {
+    "require": [{ "match": "call|callback|missed", "why": "the customer is told why we are writing" }],
+    "maxReplies": 1,
+    "oneReplyPerTurn": true,
+    "events": ["call_fallback"],
+    "noErrorEvents": true
+  }
+}

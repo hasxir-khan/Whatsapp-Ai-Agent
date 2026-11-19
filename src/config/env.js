@@ -362,6 +362,15 @@ export const config = {
     ]),
     temperature: toNum(process.env.LLM_TEMPERATURE, 0.7),
     maxTokens: toInt(process.env.LLM_MAX_TOKENS, 700),
+    // Customer replies get a larger, explicit budget: the old 700-token cap is
+    // what cut a menu answer off at "1, 2, 3, 4, 5, 6,". Small JSON jobs keep
+    // the cheap budget above.
+    replyMaxTokens: toInt(process.env.LLM_REPLY_MAX_TOKENS, 1000),
+    // How long one provider may take before the chain moves on.
+    providerTimeoutMs: toInt(process.env.LLM_TIMEOUT_MS, 45000),
+    // OpenRouter is only used for models named here — no wildcard, no
+    // ":free" routing surprise, and it always sits last in the chain.
+    openrouterAllowlist: toList(process.env.OPENROUTER_ALLOWED_MODELS, null),
     historyTurns: toInt(process.env.HISTORY_TURNS, 16),
   },
 
@@ -398,14 +407,36 @@ export const config = {
   },
 
   tts: {
-    // off | on_request | match_voice | always
-    mode: (process.env.VOICE_REPLY_MODE || 'on_request').toLowerCase(),
+    // off | on_request | match_voice | always   ('match' is accepted for match_voice)
+    mode: (process.env.VOICE_REPLY_MODE || 'match_voice').toLowerCase(),
     providers: toList(process.env.TTS_PROVIDERS, ['edge', 'groq']),
     edgeVoice: process.env.TTS_VOICE || '',
     groqModelEnglish: process.env.GROQ_TTS_MODEL || 'canopylabs/orpheus-v1-english',
     groqVoice: process.env.GROQ_TTS_VOICE || 'troy',
     maxChars: toInt(process.env.TTS_MAX_CHARS, 600),
+    // A voice note longer than ~20 s is a podcast episode; the spoken part is
+    // cut at a sentence boundary and the rest stays as text.
+    maxSeconds: toInt(process.env.TTS_MAX_SECONDS, 20),
+    // A voice note for the very first message to a new contact (off by default).
+    greetVoice: toBool(process.env.TTS_GREET_VOICE, false),
     ffmpegPath: process.env.FFMPEG_PATH || '',
+  },
+
+  // Human-feel timing. Every value can also live in the profile under
+  // business.tone.replyTiming; an environment variable set here wins over both.
+  timing: {
+    enabled: toBool(process.env.REPLY_TIMING, true),
+    debounceMs: toInt(process.env.DEBOUNCE_MS, 2000),
+    readMinMs: toInt(process.env.READ_DELAY_MIN_MS, 1000),
+    readMaxMs: toInt(process.env.READ_DELAY_MAX_MS, 3000),
+    typingMinMs: toInt(process.env.TYPING_MIN_MS, 3000),
+    typingMaxMs: toInt(process.env.TYPING_MAX_MS, 10000),
+    targetMinMs: toInt(process.env.REPLY_TARGET_MIN_MS, 5000),
+    targetMaxMs: toInt(process.env.REPLY_TARGET_MAX_MS, 15000),
+    refreshMs: toInt(process.env.TYPING_REFRESH_MS, 8000),
+    hardCapMs: toInt(process.env.TYPING_HARD_CAP_MS, 30000),
+    holdingAfterMs: toInt(process.env.HOLDING_AFTER_MS, 30000),
+    maxSentences: toInt(process.env.REPLY_MAX_SENTENCES, 2),
   },
 
   behavior: {
@@ -432,7 +463,16 @@ export const config = {
   // call goes unanswered.
   calls: {
     enabled: toBool(process.env.CALLS_ENABLED, true),
+    // The old fixed delay still wins when it is set explicitly, so an existing
+    // install that tuned CALL_FALLBACK_SECONDS keeps its behaviour.
     delaySeconds: toInt(process.env.CALL_FALLBACK_SECONDS, 60),
+    // A person does not answer a missed call on a stopwatch: 60–90 s, random.
+    delayMinSeconds: toInt(process.env.CALL_DELAY_MIN_SECONDS, toInt(process.env.CALL_FALLBACK_SECONDS, 60)),
+    delayMaxSeconds: toInt(process.env.CALL_DELAY_MAX_SECONDS, toInt(process.env.CALL_FALLBACK_SECONDS, 90)),
+    // One apology per contact per 30 min, whatever happens.
+    apologyWindowMinutes: toInt(process.env.CALL_APOLOGY_WINDOW_MIN, 30),
+    // Voice note for the apology, on top of the text.
+    apologyVoice: toBool(process.env.CALL_APOLOGY_VOICE, false),
     // auto | voice_note | text
     mode: (process.env.CALL_FALLBACK_MODE || 'auto').toLowerCase(),
     // auto | formal | casual  (auto follows the client's own register)
@@ -549,7 +589,7 @@ export function describeConfig() {
     `OpenRouter   : ${has(config.keys.openrouter)}   (vision fallback)`,
     `Voice replies: ${config.tts.mode} via ${config.tts.providers.join(' > ')}`,
     `Transport    : ${config.transport === 'cloud' ? `Cloud API (webhook /webhook/${config.cloud.slug})` : 'Baileys (QR / pairing code)'}`,
-    `Missed calls: ${config.calls.enabled ? `answered in chat after ${config.calls.delaySeconds}s` : 'off'}`,
+    `Missed calls: ${config.calls.enabled ? `answered in chat after ${config.calls.delayMinSeconds}–${config.calls.delayMaxSeconds}s` : 'off'}`,
     `Team         : ${(config.owner.profile?.owner?.team || []).length} teammate(s) + owner`,
     `Dashboard    : ${config.server.enabled ? `http://0.0.0.0:${config.server.port}` : 'disabled'}`,
   ].join('\n');

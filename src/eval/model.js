@@ -28,6 +28,10 @@ export function classifyCall(body = {}) {
     return 'json';
   }
   if (CONFIRM_SYSTEM.test(system)) return 'confirm';
+  // Reading a document part by part is infrastructure, not a conversation
+  // turn: it is answered from the scenario's recorded notes so a 70 KB brief
+  // does not have to record thirteen model steps.
+  if (/read documents sent on whatsapp|summari[sz]e documents/i.test(system)) return 'doc';
   if (/extract structured|Extract the project/i.test(system)) return 'json';
   return 'main';
 }
@@ -51,11 +55,15 @@ function openAiTool(name, args) {
  * Deterministic model. One queue per conversation turn.
  */
 export class ScriptedModel {
-  constructor() {
+  constructor({ docNotes = [] } = {}) {
     this.queue = [];
     this.calls = [];
     this.exhausted = 0;
     this.installed = false;
+    // What "reading the document" says. One note is reused for every chunk and
+    // for the merge; several are consumed in order.
+    this.docNotes = [...docNotes];
+    this.lastDocNote = null;
   }
 
   install() {
@@ -77,6 +85,11 @@ export class ScriptedModel {
       if (kind === 'confirm') {
         return openAiText('Just checking the details — shall I go ahead?');
       }
+      if (kind === 'doc') {
+        const note = this.docNotes.length ? this.docNotes.shift() : this.lastDocNote || 'Nothing useful in this part.';
+        this.lastDocNote = note;
+        return openAiText(note);
+      }
 
       const step = this.queue.shift();
       if (!step) {
@@ -84,6 +97,13 @@ export class ScriptedModel {
         // which turn lost its recording.
         this.exhausted += 1;
         return openAiText('One moment please.');
+      }
+      if (step.timeout) {
+        // The chain's timeout path: this model never answered in time.
+        const err = new Error('provider timed out');
+        err.name = 'TimeoutError';
+        err.status = 0;
+        throw err;
       }
       if (step.tool) return openAiTool(step.tool, step.args || {});
       if (step.error) {
@@ -111,6 +131,7 @@ export class ScriptedModel {
     this.queue = [];
     this.calls = [];
     this.exhausted = 0;
+    this.lastDocNote = null;
   }
 }
 

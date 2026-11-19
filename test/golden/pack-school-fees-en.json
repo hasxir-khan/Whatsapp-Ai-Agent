@@ -1,0 +1,83 @@
+{
+  "id": "pack-school-fees-en",
+  "title": "A school fee question goes to Fees, which answers from the fee structure and promises no waiver",
+  "template": "school",
+  "category": "price",
+  "language": "en",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "admissions",
+        "name": "Admissions",
+        "role": "sales",
+        "routing": [
+          "admission",
+          "apply",
+          "class"
+        ],
+        "instructions": "Explain programmes and real dates.",
+        "never": "Never promise a seat or a scholarship.",
+        "tools": [
+          "book_slot"
+        ],
+        "enabled": true,
+        "default": true
+      },
+      {
+        "id": "fees",
+        "name": "Fees & Enquiries",
+        "role": "orders",
+        "routing": [
+          "fee",
+          "challan",
+          "dues",
+          "discount"
+        ],
+        "instructions": "Read the fee structure from the configured records. Waivers are the owner's decision.",
+        "never": "Never promise a waiver.",
+        "tools": [
+          "send_quote"
+        ],
+        "enabled": true,
+        "default": false
+      }
+    ],
+    "catalog": {
+      "items": [
+        {
+          "name": "Grade 5 monthly fee",
+          "kind": "service",
+          "price": 25000
+        }
+      ]
+    }
+  },
+  "turns": [
+    {
+      "user": "what is the monthly fee for grade 5?",
+      "model": [
+        {
+          "text": "The Grade 5 monthly fee is 25000. Any discount or waiver is the principal's decision, so I will not promise one."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agent": "fees",
+    "minReplies": 1,
+    "language": "en",
+    "require": [
+      {
+        "match": "25000",
+        "why": "the fee comes from the fee structure"
+      }
+    ],
+    "forbid": [
+      "waiver mil jaye ga|guaranteed seat"
+    ],
+    "numbers": "hard"
+  }
+}

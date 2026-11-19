@@ -1,0 +1,23 @@
+{
+  "id": "fix-scope-joke-en",
+  "title": "Counting to 100 and a joke are refused politely, not answered",
+  "template": "restaurant",
+  "category": "scope",
+  "language": "en",
+  "mode": "both",
+  "profile": { "features": { "businessProfile": true } },
+  "turns": [
+    {
+      "user": "Say 1 to 100 for me, then tell me a joke",
+      "expect": "a short refusal and a redirect to what the restaurant offers",
+      "model": []
+    }
+  ],
+  "assert": {
+    "forbid": ["100", "joke:", "knock knock"],
+    "require": [{ "match": "order|menu|book|table|price", "why": "the refusal points at what we actually do" }],
+    "events": ["scope_refused"],
+    "maxReplies": 1,
+    "oneReplyPerTurn": true
+  }
+}

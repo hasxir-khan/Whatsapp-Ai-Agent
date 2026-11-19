@@ -1,0 +1,41 @@
+{
+  "id": "feel-short-answer-ur",
+  "title": "ایک مختصر سوال کا مختصر جواب — اردو میں",
+  "template": "clinic",
+  "category": "persona",
+  "language": "ur",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    }
+  },
+  "turns": [
+    {
+      "user": "کیا آج کلینک کھلا ہے؟",
+      "model": [
+        {
+          "text": "جی بالکل، آج رات 9 بجے تک کھلا ہے۔ آپ کس وقت آنا چاہیں گے؟ مزید یہ کہ ہمارے پاس ڈاکٹر صاحب بھی موجود ہیں اور لیب ٹیسٹ بھی ہوتے ہیں۔"
+        }
+      ],
+      "expect": "the reply is trimmed to two sentences and keeps the timing"
+    }
+  ],
+  "assert": {
+    "language": "ur",
+    "maxSentences": 2,
+    "require": [
+      {
+        "match": "9",
+        "why": "the closing time must survive the trim"
+      }
+    ],
+    "sideEffects": "none",
+    "noErrorEvents": true
+  },
+  "fixture": {
+    "numbers": [
+      "9"
+    ]
+  }
+}

@@ -26,6 +26,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { buildProfileFromTemplate, isTemplate, listTemplates, TEMPLATE_IDS } from '../src/services/templates.js';
 import { runSetup } from './wizard.js';
+import { templateAgents, MAX_AGENTS, validateAgent } from '../src/services/agents.js';
 
 // Where the users live: whatever folder you ran the command from.
 const ROOT = process.cwd();
@@ -558,6 +559,85 @@ function cmdIndexImages(slug, flags) {
   process.exit(child.status || 0);
 }
 
+/**
+ * `agents <slug>` — put the template's starter assistants into this tenant.
+ *
+ * Everything it writes is disabled unless --enable names it: the owner reads
+ * the roster, edits what they want, and switches one on with `.agent on <id>`
+ * on WhatsApp. The bot behaves exactly as before until they do.
+ */
+async function cmdAgents(slug, flags) {
+  const tenant = readTenant(slug);
+  if (!tenant) die(`No tenant "${slug}". Try: node scripts/tenant.js list`);
+
+  const dir = tenantDir(slug);
+  const file = path.join(dir, 'config', 'owner.json');
+  if (!fs.existsSync(file)) {
+    die(`No profile yet at ${file}. Run: node scripts/tenant.js setup ${slug}`);
+  }
+
+  let profile;
+  try {
+    profile = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    die(`${file} is not valid JSON — fix it first.`);
+  }
+
+  const type = String(flags.type || tenant.template || profile.business?.type || '').toLowerCase();
+  const candidates = templateAgents(type);
+  const existing = Array.isArray(profile.agents) ? profile.agents : [];
+  const enable = String(flags.enable || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const unknown = enable.filter((id) => !candidates.some((a) => a.id === id));
+  if (unknown.length) {
+    die(`Unknown assistant(s): ${unknown.join(', ')}. Choose from: ${candidates.map((a) => a.id).join(', ')}`);
+  }
+
+  console.log(`\n${c.bold(`Assistants for ${tenant.name}`)}\n`);
+  for (const a of candidates) {
+    const have = existing.some((x) => x.id === a.id);
+    console.log(`  ${a.id.padEnd(10)} ${c.bold(a.name.padEnd(12))} ${c.dim(a.role)}${have ? c.green('  (already here)') : ''}`);
+    console.log(`     ${c.dim(String(a.instructions || '').slice(0, 88))}`);
+    if (a.never?.length) console.log(`     ${c.yellow('never:')} ${c.dim(a.never[0])}`);
+  }
+
+  // Merge: never overwrite an assistant the owner has already customised.
+  const merged = existing.map((x) => ({ ...x }));
+  for (const a of candidates) {
+    if (merged.some((x) => x.id === a.id)) continue;
+    merged.push({ ...a, enabled: enable.includes(a.id) });
+  }
+  for (const a of merged) {
+    if (enable.includes(a.id)) a.enabled = true;
+  }
+
+  if (merged.length > MAX_AGENTS) die(`That would be ${merged.length} assistants; the maximum is ${MAX_AGENTS}.`);
+  for (const a of merged) {
+    const check = validateAgent(a);
+    if (check.errors.length) die(`${a.id}: ${check.errors.join('; ')}`);
+  }
+
+  const turnedOn = merged.filter((a) => a.enabled).map((a) => a.id);
+  profile.agents = merged;
+  profile.features = { ...(profile.features || {}) };
+  // The feature follows the roster: one enabled assistant is enough.
+  profile.features.multiAgent = turnedOn.length > 0;
+
+  if (flags.dry) {
+    console.log(`\n${c.yellow('Dry run')} — would write ${merged.length} assistants, ${turnedOn.length} enabled.\n`);
+    return;
+  }
+
+  fs.writeFileSync(file, `${JSON.stringify(profile, null, 2)}\n`);
+  console.log(`\n${c.green('✔')} ${merged.length} assistants written to ${c.dim(path.relative(process.cwd(), file))}`);
+  console.log(`  Enabled : ${turnedOn.length ? turnedOn.join(', ') : c.yellow('none — behaviour is unchanged')}`);
+  if (turnedOn.length) console.log(`  multiAgent is now ${c.bold('on')} for this tenant.`);
+  console.log(`  Switch one on later from WhatsApp: ${c.dim(`.agent on ${candidates[0].id}`)}\n`);
+}
+
 function cmdTemplates() {
   const templates = listTemplates();
   console.log(`\n${c.bold('Industry templates')}\n`);
@@ -566,6 +646,7 @@ function cmdTemplates() {
     console.log(`     ${c.dim(t.description)}`);
     console.log(`     ${c.dim(`${t.items} example items · ${t.faqs} FAQs · good for ${t.goodFor}`)}`);
   }
+  console.log(`\n  Each template ships 2–3 assistants, disabled: ${c.dim('node scripts/tenant.js agents <slug>')}`);
   console.log(`\n  Use one: ${c.dim('node scripts/tenant.js new "My Business" --number 923001112233 --template restaurant')}`);
   console.log(`  Or run the wizard: ${c.dim('node scripts/tenant.js setup <slug>')}\n`);
 }
@@ -641,6 +722,14 @@ switch (command) {
     break;
   }
 
+  case 'agents':
+  case 'assistants': {
+    const slug = positional[0];
+    if (!slug) die('Usage: node scripts/tenant.js agents <slug> [--enable sales,bookings] [--dry]');
+    cmdAgents(slug, flags).catch((e) => die(e.message));
+    break;
+  }
+
   case 'templates':
   case 'template':
     cmdTemplates();
@@ -654,6 +743,7 @@ ${c.bold('Multi-user manager')}
   ${c.dim('node scripts/tenant.js setup <slug>')}          ${c.dim('# business wizard')}
   ${c.dim('node scripts/tenant.js learn <slug> <file|url>')} ${c.dim('# knowledge base')}
   ${c.dim('node scripts/tenant.js index-images <slug>')} ${c.dim('# embed catalogue photos (visual search)')}
+  ${c.dim('node scripts/tenant.js agents <slug>')}          ${c.dim('# add the starters, switched off')}
   ${c.dim('node scripts/tenant.js templates')}
   ${c.dim('node scripts/tenant.js list')}
   ${c.dim('node scripts/tenant.js show <slug> [--start]')}

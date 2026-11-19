@@ -1,0 +1,43 @@
+{
+  "id": "feel-ack-reaction-en",
+  "title": "\"Thanks!\" after an answered question gets a reaction, not a paragraph",
+  "template": "salon",
+  "category": "persona",
+  "language": "en",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    }
+  },
+  "seed": {
+    "messages": [
+      {
+        "role": "user",
+        "text": "How much for a haircut and beard trim?",
+        "minutesAgo": 30
+      },
+      {
+        "role": "assistant",
+        "text": "Haircut is 1500 and beard trim 700 — both together 2000.",
+        "minutesAgo": 29
+      }
+    ]
+  },
+  "turns": [
+    {
+      "user": "thanks!",
+      "expect": "a 👍 reaction goes out and no text at all"
+    }
+  ],
+  "assert": {
+    "reactionOnly": true,
+    "minReplies": 0,
+    "maxReplies": 0,
+    "events": [
+      "ack_reaction"
+    ],
+    "noErrorEvents": true,
+    "sideEffects": "none"
+  }
+}

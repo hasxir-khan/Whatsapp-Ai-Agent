@@ -24,6 +24,14 @@ export const CATEGORIES = [
   'stock',        // out of stock
   'crm',          // tags and notes are never revealed to a customer
   'source',       // a tracked link/QR brings someone in, and the marker never leaks
+  'price-integrity', // the same project is never quoted two different ranges
+  'language',     // the reply language is the conversation's, not the last message's
+  'scope',        // off-topic requests are refused and redirected
+  'persona',      // one voice per tenant, never mixed inside a reply
+  'provider',     // timeout → fallback, one reply, same answer
+  'document',     // a long file is read in full, summarised, never over-claimed
+  'dedupe',       // one customer message, one reply
+  'missed-call',  // the ~60s rescue, and no duplicate when the customer writes first
 ];
 
 export const LANGUAGES = ['en', 'roman-ur', 'ur'];
@@ -35,15 +43,28 @@ export const ACTIONS = [
   'notify_customer',  // orders.notifyCustomer for a seeded order
   'transition',       // orders.transitionOrder (actor configurable)
   'reactivation_send',// reactivationAgent.startCampaign at a fixed clock
+  'missed_call',      // the rescue message, as if the 60s timer just fired
+  'call_offer',       // an incoming call event → the real timer (delaySeconds honoured)
 ];
 
 export const ASSERT_KEYS = [
-  'numbers', 'language', 'maxLength', 'minReplies', 'require', 'forbid',
+  'numbers', 'language', 'maxLength', 'minReplies', 'maxReplies', 'require', 'forbid',
   'events', 'ownerNotified', 'confirmations', 'sideEffects', 'optout',
-  'growthHold', 'noErrorEvents', 'maxChanges',
+  'growthHold', 'noErrorEvents', 'maxChanges', 'agent', 'agents',
+  // Part 3 fix pass
+  'oneReplyPerTurn',   // at most one outbound reply for each customer message
+  'noMidSentence',     // no reply ends mid-sentence, mid-list or on a comma
+  'persona',           // strict | off — mixed "I"/"we" fails the reply
+  'samePrice',         // no two replies in the run quote different ranges
+  'providerFallback',  // the run must have fallen back at least once
+  'documentGrounded',  // every number in the reply is in the file or the profile
+  'expectGuardRepair', // the scenario tests the repair: the draft is expected to be rejected
+  // Part 4 human-feel pass
+  'maxSentences',      // no reply may be longer than this many sentences
+  'reactionOnly',      // an acknowledgement gets a reaction and no text at all
 ];
 
-const MAX_TURNS = 12;
+const MAX_TURNS = 16;
 const MAX_REPLY = 1200;
 
 // Fake-only numbers: 92300… (Pakistan, reserved for these tests), 4477009…
@@ -113,6 +134,19 @@ export function validateScenario(raw = {}) {
         if (!turn.caption || String(turn.caption).length < 3) errors.push(`${where}.caption is required for an image`);
         return;
       }
+      if (turn.document !== undefined) {
+        if (turn.user === undefined) errors.push(`${where} is a document and must still set "user": ""`);
+        if (!isPlainObject(turn.document)) return errors.push(`${where}.document must be an object`);
+        if (!turn.document.name || !/\.(txt|md|csv|json)$/i.test(String(turn.document.name))) {
+          errors.push(`${where}.document.name must be a plain-text file name (.txt, .md, .csv)`);
+        }
+        if (!turn.document.text || String(turn.document.text).length < 20) {
+          errors.push(`${where}.document.text must be the file body (20+ characters)`);
+        } else if (String(turn.document.text).length > 200000) {
+          errors.push(`${where}.document.text is too large for a fixture (200k max)`);
+        }
+        return;
+      }
       if (turn.voice === true) {
         if (turn.user === undefined) errors.push(`${where} is a voice note and must still set "user": ""`);
         if (!turn.voiceTranscript || String(turn.voiceTranscript).length < 3) {
@@ -127,18 +161,25 @@ export function validateScenario(raw = {}) {
       if (turn.action && !ACTIONS.includes(turn.action)) {
         errors.push(`${where}.action must be one of: ${ACTIONS.join(', ')}`);
       }
+      if (turn.delaySeconds !== undefined && !(Number(turn.delaySeconds) >= 0 && Number(turn.delaySeconds) <= 120)) {
+        errors.push(`${where}.delaySeconds must be between 0 and 120`);
+      }
       if (turn.model !== undefined) {
         if (!Array.isArray(turn.model)) return errors.push(`${where}.model must be an array of steps`);
         turn.model.forEach((step, j) => {
           if (!isPlainObject(step)) return errors.push(`${where}.model[${j}] must be an object`);
           const hasText = typeof step.text === 'string';
           const hasTool = typeof step.tool === 'string';
-          if (!hasText && !hasTool) errors.push(`${where}.model[${j}] needs "text" or "tool"`);
+          const hasTimeout = step.timeout === true;
+          if (!hasText && !hasTool && !hasTimeout) errors.push(`${where}.model[${j}] needs "text", "tool" or "timeout": true`);
           if (hasTool && step.args !== undefined && !isPlainObject(step.args)) {
             errors.push(`${where}.model[${j}].args must be an object`);
           }
           if (hasText && step.text.length > MAX_REPLY) {
             errors.push(`${where}.model[${j}].text is longer than ${MAX_REPLY} characters`);
+          }
+          if (step.timeout !== undefined && step.timeout !== true) {
+            errors.push(`${where}.model[${j}].timeout must be true`);
           }
         });
       }

@@ -1,0 +1,73 @@
+{
+  "id": "pack-restaurant-orders-en",
+  "title": "A restaurant template routes an order to the Orders assistant, which reads the price from the catalogue",
+  "template": "restaurant",
+  "category": "order",
+  "language": "en",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "reservations",
+        "name": "Reservations",
+        "role": "booking",
+        "routing": [
+          "table",
+          "reserve",
+          "booking"
+        ],
+        "instructions": "Offer real table slots only.",
+        "never": "Never invent a slot.",
+        "tools": "book_slot",
+        "enabled": true,
+        "default": false
+      },
+      {
+        "id": "orders",
+        "name": "Orders",
+        "role": "orders",
+        "routing": [
+          "order",
+          "burger",
+          "biryani",
+          "deliver"
+        ],
+        "instructions": "Take the order, read the total back from the catalogue, then ask for one yes.",
+        "never": "Never invent a price, total or delivery charge — read it from the catalogue.",
+        "tools": [
+          "check_stock",
+          "create_order"
+        ],
+        "enabled": true,
+        "default": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "user": "I want to order two zinger burgers for delivery",
+      "model": [
+        {
+          "text": "Two Zinger Burgers at 650 each — shall I place that order?"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agent": "orders",
+    "minReplies": 1,
+    "language": "en",
+    "require": [
+      {
+        "match": "650",
+        "why": "the price comes from the catalogue"
+      }
+    ],
+    "forbid": [
+      "1200|1100"
+    ],
+    "sideEffects": "none"
+  }
+}

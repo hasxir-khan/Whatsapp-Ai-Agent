@@ -1,0 +1,39 @@
+{
+  "id": "brain-clinic-multi-step-roman-ur",
+  "title": "Appointment, fee and parking asked together in Roman Urdu, answered from the price list",
+  "template": "clinic",
+  "category": "price",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "toolCalling": true
+    }
+  },
+  "turns": [
+    {
+      "user": "kal appointment mil jaye gi? consultation fees kitni hai aur parking hai ya nahi?",
+      "model": [
+        {
+          "tool": "check_stock",
+          "args": {
+            "item": "General consultation"
+          }
+        },
+        {
+          "text": "Ji appointment kal ke liye ho jaye gi — time bata dein. Consultation 2000 PKR hai. Parking reception ke saamne mil jati hai."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "minReplies": 1,
+    "language": "roman-ur",
+    "require": [
+      {
+        "match": "2000"
+      }
+    ],
+    "sideEffects": "none"
+  }
+}

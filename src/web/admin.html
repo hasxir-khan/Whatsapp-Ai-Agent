@@ -99,6 +99,14 @@
       </section>
 
       <section>
+        <h2>Assistants</h2>
+        <div class="kv">Optional named assistants for this business (max 8). Each one answers within its own hours and tools. Nothing changes until you switch one on. <span id="agents-pack"></span></div>
+        <table style="margin-top:8px;"><thead><tr><th>id</th><th>name</th><th>role</th><th>state</th><th></th></tr></thead>
+        <tbody id="agents"><tr><td colspan="5" class="msg">…</td></tr></tbody></table>
+        <div class="msg" id="agents-msg"></div>
+      </section>
+
+      <section>
         <h2>Keys (write-only)</h2>
         <div class="grid2">
           <div class="field"><label for="k-groq">GROQ_API_KEY</label><input id="k-groq" type="password" placeholder="gsk_…" spellcheck="false"></div>
@@ -165,6 +173,7 @@
   const state = { slug: null, tenants: [], csrf: cookie('wa_admin_csrf') };
 
   const say = (id, text, kind = '') => { const el = $(id); el.textContent = text; el.className = 'msg ' + kind; };
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
   async function api(path, options = {}) {
     const res = await fetch(path, {
@@ -274,6 +283,7 @@
       'last activity ' + fmt(tenant.lastMessageAt),
     ].join('  ·  ');
     $('keys-state').textContent = 'Groq: ' + (tenant.keys.groq || 'not set') + '   Gemini: ' + (tenant.keys.gemini || 'not set');
+    loadAgents();
     $('del-confirm').value = '';
     $('qr').innerHTML = '';
     say('run-msg', ''); say('profile-msg', ''); say('keys-msg', ''); say('upload-msg', ''); say('del-msg', '');
@@ -337,6 +347,40 @@
       }
     } catch (e) { say('run-msg', e.message, 'err'); }
   });
+
+
+  async function loadAgents() {
+    try {
+      const d = await api('/api/admin/tenants/' + state.slug + '/agents');
+      if ($('agents-pack')) $('agents-pack').textContent = d.pack ? 'Starter pack: ' + d.pack.label : '';
+      const body = $('agents');
+      if (!d.agents.length) {
+        body.innerHTML = '<tr><td colspan="5" class="msg">No assistants yet. Add them from WhatsApp with <code>.agent add</code>, or from the terminal: <code>node scripts/tenant.js agents</code>.</td></tr>';
+        return;
+      }
+      body.innerHTML = d.agents.map((a) =>
+        '<tr><td><code>' + esc(a.id) + '</code></td><td>' + esc(a.name) + '</td>' +
+        '<td title="' + esc((a.never || []).join(' ')) + '">' + esc(a.role) + ((a.never || []).length ? ' <span class="msg">(' + a.never.length + ' never-rules)</span>' : '') + '</td>' +
+        '<td>' + (a.enabled ? 'on' : 'off') + '</td>' +
+        '<td><button data-agent="' + esc(a.id) + '" data-on="' + (a.enabled ? '0' : '1') + '">' + (a.enabled ? 'Switch off' : 'Switch on') + '</button></td></tr>'
+      ).join('');
+      for (const b of body.querySelectorAll('button[data-agent]')) {
+        b.onclick = () => withBusy(b, async () => {
+          try {
+            const r = await api('/api/admin/tenants/' + state.slug + '/agents', {
+              method: 'POST',
+
+              body: JSON.stringify({ id: b.dataset.agent, enabled: b.dataset.on === '1' }),
+            });
+            say('agents-msg', 'Saved' + (r.reloaded ? ' and reloaded live' : ''), 'ok');
+            await loadAgents();
+          } catch (e) { say('agents-msg', e.message, 'err'); }
+        });
+      }
+    } catch (e) {
+      $('agents').innerHTML = '<tr><td colspan="5" class="msg">' + esc(e.message) + '</td></tr>';
+    }
+  }
 
   $('save-profile').onclick = () => withBusy('save-profile', async () => {
     let profile;

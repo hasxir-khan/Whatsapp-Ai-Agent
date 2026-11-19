@@ -1,0 +1,38 @@
+{
+  "id": "feel-short-answer-roman-ur",
+  "title": "A Roman Urdu one-line question gets a one-line answer",
+  "template": "restaurant",
+  "category": "persona",
+  "language": "roman-ur",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    }
+  },
+  "turns": [
+    {
+      "user": "aaj khula hai?",
+      "model": [
+        {
+          "text": "Ji bilkul! Hum roz khulte hain. Aaj shaam 11 baje tak khula hai. Chicken karahi bhi available hai. Aap kab aa rahe hain?"
+        }
+      ],
+      "expect": "two short sentences, no opener, one question at most"
+    }
+  ],
+  "assert": {
+    "language": "roman-ur",
+    "maxSentences": 2,
+    "forbid": [
+      "^Ji bilkul!"
+    ],
+    "sideEffects": "none",
+    "noErrorEvents": true
+  },
+  "fixture": {
+    "numbers": [
+      "11"
+    ]
+  }
+}

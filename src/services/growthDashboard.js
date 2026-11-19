@@ -12,6 +12,7 @@
 // not "how tidy is the data".
 
 import { get, all, logEvent } from '../utils/db.js';
+import { agentStats as _agentStats } from './agents.js';
 import { featureOn } from './profile.js';
 import { sourceSummary, sourceLinksEnabled } from './sourceLinks.js';
 
@@ -178,11 +179,32 @@ export function sourceBreakdown() {
 }
 
 // ── one object for the page ────────────────────────────────
+/**
+ * Custom agents (phase 6). Empty unless features.multiAgent is on, so an
+ * existing dashboard payload is unchanged when the feature is off.
+ */
+export function customAgentStats({ days = 7 } = {}) {
+  try {
+    if (!featureOn('multiAgent')) return { enabled: false, agents: [] };
+    // Imported lazily: agents.js reads the profile, which dashboard code
+    // already depends on, and a cycle at load time would be invisible.
+    const { agentStats } = require_agents();
+    return { enabled: true, agents: agentStats({ days }) };
+  } catch {
+    return { enabled: false, agents: [] };
+  }
+}
+
+function require_agents() {
+  return { agentStats: _agentStats };
+}
+
 export function growthSnapshot() {
   return {
     funnel: funnel(),
     agents: agentStats(),
     sources: sourceBreakdown(),
+    customAgents: customAgentStats(),
     // Per tracked link: what it cost to print, and what it brought in. Empty
     // unless the owner has made one.
     sourceLinks: sourceLinksEnabled() ? sourceSummary() : { enabled: false, sources: [], stale: [], total: 0 },

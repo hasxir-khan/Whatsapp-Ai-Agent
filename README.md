@@ -2137,6 +2137,15 @@ Type in your own WhatsApp chat (message yourself):
 | `.links` | chats, leads, paid orders and revenue per tracked link |
 | `.qr instagram` | the QR as a PNG (phone screen) and as an SVG (the printer) |
 | `.poster instagram` | an A4 PDF for the wall, built only from your profile |
+| `.brain` | the business brain: today in three lines (`.brain on\|off`) |
+| `.impact` | automation rate, first reply, after-hours, leads, bookings, revenue, hours saved, follow-ups and reviews — with definitions |
+| `.strategy` | the weekly review: funnel, slow hours, repeat questions and objections, channels by revenue, and at most five ranked actions |
+| `.do <n>` | prepare one ranked action as a draft — a promo preview, an FAQ line, an offer verdict, a follow-up batch. Nothing is sent |
+| `.why <n>` | why that action is on the list, with its effort and its estimated effect |
+| `.goal add 20 orders by 2026-12-31` | a goal with progress, a projection and an early warning (max three) |
+| `.goal drop <n>` | remove one |
+| `.experiment new followup "a" \| "b"` | test two wordings on a stable split; `.experiment <n>` for the verdict, `.experiment adopt <n>` to use the winner |
+| `.brain weights` / `.brain reset` | what the learning loop has learned, and putting it back to 1.00 |
 | `.id` / `.ping` | debugging |
 
 Commands typed inside a client's chat are deleted right after they run — the client never sees them. Anything sensitive is owner-only.
@@ -2513,6 +2522,13 @@ src/
     liveInbox.js        the inbox: chats, threads, replies, takeover
     injection.js        (core) untrusted text: detect, neutralise, fence
     script.js           (core) Urdu/Arabic → shaped or transliterated
+    impact.js           the impact numbers: automation, response, revenue, hours saved
+    reasoning.js        the router: classify, plan, verify, budget, decision records
+    strategist.js       the daily brief and the weekly review, with ranked actions
+    nextBestAction.js   a readable score per contact, with a reason and a draft
+    goals.js            goals: progress, projection, early warning
+    experiments.js      two variants, a stable split, honest verdicts
+    learning.js         named weights, five rules, clamped and resettable
   transport/            how the bot talks to WhatsApp, behind one interface
     base.js             the interface + the internal message shape
     baileys.js          Baileys (default), wrapped unchanged
@@ -2541,27 +2557,489 @@ scripts/
   backup.js  restore.js   one-file backup of DB + config
 src/web/inbox.html      the inbox page (one file, no dependencies)
 assets/fonts/           Noto Sans + Noto Naskh Arabic (bundled, subsetted, OFL)
-test/                   762 tests (node:test, no dependencies)
-test/golden/            44 recorded conversations (the golden eval)
+test/                   889 tests (node:test, no dependencies)
+test/golden/            68 recorded conversations (the golden eval)
 ```
 
 ---
 
+## Named assistants (multi-agent)
+
+One WhatsApp number can sound like several people — an order taker, a booking
+desk, a support line — without hiring anyone. Each assistant has its own name,
+its own knowledge, its own tools, its own hours and its own escalation rule. A
+customer never sees a menu; the message is routed and the right person answers.
+
+It is **off by default**. With `features.multiAgent` false there is no routing,
+no extra model call, no extra database write: the built-in manager and
+specialists behave exactly as they did before.
+
+```bash
+# from WhatsApp, as the owner
+.set features.multiAgent true
+.agents                       # who exists, and who is on
+.agent add frontdesk Front Desk booking
+.agent set frontdesk instructions Always confirm the time before ending.
+.agent on frontdesk
+.agent test frontdesk "kal 5 baje table chahiye"   # dry run, nothing is sent
+```
+
+`scripts/tenant.js agents <slug>` writes the current template's starters into a
+tenant's profile — disabled, so the owner can read them first. The admin panel
+has the same roster with one switch per assistant, behind the existing
+authenticated routes.
+
+### The config
+
+```json
+{
+  "features": { "multiAgent": true },
+  "agents": [
+    {
+      "id": "orders",
+      "name": "Order desk",
+      "role": "orders",
+      "persona": "Warm, quick, never pushy.",
+      "routing": ["order", "deliver", "چاہیے"],
+      "instructions": "Take the order, read the total back, then ask for a yes.",
+      "tools": ["check_stock", "create_order"],
+      "hours": "12:00-23:00",
+      "handoff": "owner",
+      "enabled": true,
+      "default": true
+    },
+    {
+      "id": "bookings",
+      "name": "Bookings",
+      "role": "booking",
+      "routing": ["table", "reserve", "booking"],
+      "instructions": "Offer real slots only. Confirm party size and time.",
+      "tools": ["book_slot"],
+      "hours": "09:00-22:00",
+      "handoff": "923001234568",
+      "enabled": true
+    }
+  ]
+}
+```
+
+Limits that are enforced, not documented and hoped for: eight assistants per
+business, 400 characters of instructions, 240 of persona. Instructions are run
+through the same injection detector as untrusted customer text — an assistant
+whose instructions say *“ignore your previous instructions”* is refused with an
+error, not quietly loaded.
+
+**Prices, totals and discounts still come only from the catalogue and the
+pricing code.** An assistant cannot widen that: it can ask for a price, never
+invent one.
+
+### How a message is routed
+
+1. **Rules first** — the assistant's own keywords, the customer's language, and
+   their tags/history. A clear winner (2+ points, a 2-point margin) answers
+   without spending a token.
+2. **Sticky** — a conversation stays with the assistant holding it. A neutral
+   “thanks” does not bounce to someone else; a clear new intent does.
+3. **The model, only when unsure** — the same 3-second budget as the existing
+   router, its own 15-minute cache, and the default assistant if it times out,
+   throws or answers with something that is not an id.
+4. **Fallbacks** — if that assistant's breaker is open, its share of the daily
+   budget is spent, or the clock is outside its hours, the next suitable
+   assistant answers. **Nobody's message is ever silently dropped.**
+
+Every route is written to `agent_events` with the reason, so `.status`, the live
+inbox (each chat shows the assistant holding it) and the weekly report can all
+say who answered what.
+
+### Two worked examples
+
+**A restaurant that takes orders and tables.** `orders` is the default, with
+`check_stock`, `create_order` and catalogue-derived prices. `bookings` has
+`book_slot` and answers 09:00–22:00. “2 zinger burgers deliver kar dein” scores
+on *order/deliver* and goes to `orders`; “kal 5 baje table” scores on *table*
+and goes to `bookings`. At 23:30 the booking desk is closed, so the order desk
+answers “we're closed for bookings tonight, I can take an order or pass this to
+the owner” — the message is answered, not dropped.
+
+**A clinic with one assistant and a hand-off.** `frontdesk` handles timings and
+fees from the knowledge base and has no tool that writes anything. Its hand-off
+target is the owner. A fee question is answered from the documents; “I want to
+speak to the doctor” hands over with a short summary (numbers and anything
+key-shaped are stripped from it). Two hand-offs in one conversation are allowed;
+the third asks the owner instead of pinging them again.
+
+### Safety rails
+
+- The tenant's tools are the ceiling; an assistant's list is **intersected** with
+  them, so a misconfigured agent can never gain a tool the business lacks.
+- Per-assistant circuit breaker (3 failures, 5 minutes) and a per-assistant share
+  of the daily token allowance: one broken assistant cannot take the bot down.
+- Assistants only reply inside the normal pipeline. They cannot message another
+  customer, and they cannot send a growth message except through `growth.js`
+  and its opt-out/quiet-hours gates.
+- `.export` includes the per-assistant conversation state and event trail;
+  `.forget` deletes both, and clears the in-memory routing so the customer is
+  not re-attached to a name they asked you to forget.
+- `npm run doctor` warns about overlapping routing rules, an assistant with no
+  instructions, and a hand-off target that is neither the owner nor a team
+  member.
+
+### What it costs
+
+When the rules are confident, routing is free. When they are not, one small
+8-token call — cached for 15 minutes per message shape, and abandoned after
+3 seconds. Everything else about the assistant (its prompt, its tools, its
+hours) costs nothing extra: it is the same single reply the bot already sends.
+
+---
+
+## Industry agent packs
+
+Every template now ships two or three assistants built for that trade, with
+their persona, instructions, tool allowlist, hand-off rule and a short list of
+"never do" rules. They are **disabled** until the owner switches one on, so
+installing a template still changes nothing.
+
+| Template | Assistants |
+|---|---|
+| restaurant | Orders · Reservations · Support |
+| clinic | Appointments · Reception FAQ · Follow-up reminders |
+| salon | Booking · Offers |
+| real-estate | Lead qualifier · Viewing scheduler · Property matcher |
+| shop | Sales · Order status · Returns |
+| agency | Discovery & quote · Project status · Support |
+| school | Admissions · Fees & enquiries · Parent support |
+| generic | Sales · Support · Booking |
+
+They appear in `scripts/tenant.js agents <slug>`, in `.agents` (each one shows
+its first "never" rule), and in the admin panel's roster with the pack name.
+
+### Two industries, worked through
+
+**A clinic.** `appointments` books from the real slot list; `reception` answers
+fees, timings and parking from the profile; `reminders` confirms follow-ups from
+the booking record. All three carry the same three rules: *never diagnose, never
+name a medicine or a dosage, never give a treatment plan.* Before any of that,
+the message is checked for emergencies — chest pain, `sans nahi`, `سانس نہیں` —
+and an emergency is never answered by a model:
+
+```
+🧑‍💼 Customer: mere walid ko seene mein dard hai, sans nahi aa rahi
+🤖 (immediately, no model call): This sounds like an emergency … Please call 1122 now.
+   The owner is alerted with the words that triggered it.
+```
+
+The number comes from `business.emergency.number`; with none configured the reply
+says "your local emergency number" and `npm run doctor` warns you about it.
+
+**A restaurant.** `orders` takes the order and reads the price from the
+catalogue; `reservations` offers only real slots and hands off for a party larger
+than the policy allows; `support` finds the order before it says anything, and
+refunds are the owner's call. Rules like *"never invent a price"* and *"never
+approve a discount"* are stored on the agent and passed to the model verbatim.
+
+---
+
+## The marketing team
+
+Owner-facing drafts. `features.marketingAgents`, **off by default**. Nothing here
+messages a customer except `.promo send`, which is the owner starting it — and
+even then every message goes through `growth.js`, so opt-outs, quiet hours, the
+per-contact cap and the Cloud-template rule all still apply.
+
+```bash
+.marketing                       # the menu, and .marketing on/off
+.plan                            # this month: theme, dates, offers, channels
+.content ad|reel|status|bilingual [topic]
+.offer 10% off Friday dinner     # is it inside your own rules?
+.promo preview vip "message"     # count, samples, and who is held back
+.promo send / .promo stop        # slow batches, five at a time
+.reply-review 2 "cold food"      # a draft in the right tone for the rating
+.channels                        # chats, orders, revenue per source
+.adcopy  [topic]                 # click-to-WhatsApp variants + prefilled message
+```
+
+**The planner** reads your catalogue, offers, past orders and an events calendar:
+your own dates from `marketing.events`, plus a regional list (Eid, Ramadan,
+Independence Day, Black Friday, Valentine's, …). Lunar dates are marked
+`verify` with a note — the bot never states an Eid date as certain, because it
+isn't.
+
+**The offer checker** compares an idea against `policies.maxDiscountPercent` and,
+when the catalogue has cost data, against the thinnest real margin. Above either
+line it says *owner decision* and refuses to put the offer in a promo.
+
+**The promo broadcaster** previews first, with the audience count, three masked
+samples, and exactly who is excluded (opted out, blocked, paused, or had a promo
+inside `minDaysBetweenPromos`). Sending requires a preview from the last 30
+minutes and `approvalMode` on. One message per contact per N days, five per
+batch, through the same gate every other proactive message uses.
+
+**The claims guard** runs over every output — planner, content, offers, promos,
+ad copy, review replies. It blocks unverifiable rankings ("best", "#1"),
+guarantees, invented urgency or scarcity, fake testimonials, paying for reviews,
+number that is not in your catalogue or policies, and any health claim for a
+clinic (cure, treat, dosage, mg, success rates). A draft that fails is never
+shown as if it passed.
+
+**Reputation** drafts replies to a review you paste: five stars is a thank-you
+with no sales pitch; one star is a serious apology, no compensation promised, the
+owner named, a real contact route.
+
+**Channels** does the arithmetic in code from tracked links and orders — chats,
+paid orders, revenue and revenue-per-chat by source — then recommends where the
+next poster or QR should go.
+
+**Ads** writes three variants (direct, question, Roman Urdu), an audience
+outline, and a prefilled opening message for a click-to-WhatsApp ad, with your
+tracked link when one exists.
+
+### Without a key
+
+Every one of these has a deterministic path. The plan, the content, the offer
+verdict, the segment count, the channel ranking and the review reply are built
+from config and database rows, not from a model. With a key the model may
+rewrite the prose — and if it breaks a rule, the deterministic draft is used
+instead. Per-agent budget share and the circuit breaker apply: three failures and
+the marketing model calls stop for five minutes while the templates carry on.
+
+### The weekly brief
+
+With the flag on, the weekly analyst report gains a short `📣 Marketing` section:
+the next date worth planning around, the best channel with real numbers, the
+offer on file, the promo state, and the reachable contact count. It adds no new
+send — it rides along with the report, which already respects quiet hours — and
+is absent entirely when the flag is off.
+
+---
+
+## The business brain — how it thinks
+
+`features.businessBrain` and `features.reasoning`, **both off by default**. With
+them off, every file in this chapter does nothing: the bot answers exactly as it
+did before, the growth dashboard and the weekly report print their old text, and
+`npm test` has no idea the feature exists.
+
+```bash
+.brain on                        # the brain: numbers, brief, strategy, goals
+.brain reasoning on              # the reasoning path for complex turns
+.impact                          # the numbers, with their definitions
+.brain                           # today in three lines
+.strategy                        # the weekly review and five ranked actions
+.do 1                            # prepare action 1 as a draft (never sends)
+.why 1                           # why it is on the list
+.goal add 20 orders by 2026-12-31
+.experiment new followup "a" | "b"
+```
+
+### See it before you switch it on
+
+```bash
+npm run brain        # eight commands, fake data, no WhatsApp, no key
+```
+
+It builds a throw-away tenant under `data/brain-demo`, fills it with invented
+conversations, orders, follow-up sends and a quiet quote, then runs `.impact`,
+`.brain`, `.strategy`, `.why 1`, `.do 1`, a goal, an experiment and
+`.brain weights` through the same handler your phone hits. Reasoning is left off
+on purpose: that is the deterministic path, with no key and no network. Delete
+`data/brain-demo` afterwards; your real `config/owner.json` and `data/` are never
+opened.
+
+### The rule everything else follows
+
+**Every number comes from SQL. The model only explains, proposes and rewrites
+prose.** Nothing in this chapter asks a model to count anything, and nothing a
+model writes can reach a customer without passing a gate that already existed:
+`growth.js` caps, quiet hours, opt-outs, `growthApproval` and approval mode,
+`policies.maxDiscountPercent`, and the catalogue. The Brain proposes; the owner
+approves.
+
+### The impact dashboard
+
+Ten numbers, each one query. All of them are for a window that starts on Monday
+at 00:00 UTC, so two installs in two countries compare the same days.
+
+| figure | exactly how it is computed |
+|---|---|
+| **automation rate** | conversations in the window (distinct numbers with a customer message) minus those with any `role='owner'` message in the same window. `handled ÷ conversations`. "80–90% without you" is this number, and only this number. |
+| **first response** | for each conversation, the first customer message and the first assistant message after it. The mean gap, in minutes. A slow reply cannot hide behind a fast one. |
+| **after-hours coverage** | replies sent while `business.hours` says you are closed (via `hours.js`, in your timezone). Only counted when hours are configured. |
+| **leads** | `leads` rows created in the window. |
+| **bookings / orders** | rows created in the window; "by the bot" means the chat had no owner message in the same window. |
+| **revenue** | sum of `orders.total` where the status is `paid`, `delivered` or `completed` — cancelled and unpaid are excluded, as they always are. "Attributable" is the subset whose chat the owner never touched. |
+| **hours saved** | `conversations × brain.minutesPerConversation` (default 6, clamped 1–60). A configurable estimate, labelled as one. |
+| **follow-ups answered** | each proactive send, and whether that contact wrote back within 72 hours of it. |
+| **review asks → reviews** | `review_asks` created, and how many of them have a rating. |
+
+Below `brain.thinDataConversations` (default 20) the report says *not enough
+data* and calls the figures counts, not rates — an automation rate from four
+conversations is noise, and presenting it as a rate would be dishonest.
+
+Week-over-week change is an arrow and a percentage against the previous Monday
+window. `.growth` gains a short version of this, `.report week` gains the
+strategist section, `.impact` is the whole thing.
+
+### The reasoning router
+
+Most WhatsApp messages are four words. They do not need a reasoning model, so
+`classifyTurn` scores the message with rules — multi-step (+2), high-value or
+legal/refund language (+2), a long message (+1), money in the message (+1), a
+long history (+1), an ambiguous one-worder (+1), conflicting numbers (+1), an
+upset customer (+1) — and only `score ≥ 2` takes the expensive path.
+
+For those turns:
+
+1. **plan** — the reasoning provider lists at most three things to check. This
+   plan lives for one turn. It is never shown to the customer, never stored, and
+   never logged.
+2. **act** — the normal brain writes the reply with the plan as a private
+   checklist. Every tool, cap and confirmation is exactly what it was.
+3. **verify** — every number in the draft must exist in the catalogue, policies,
+   orders or bookings; the language must match the customer's; forbidden strings
+   (system prompt, key shapes, tag markup) are refused; a booking or order
+   written without a pending confirmation is refused.
+4. **one retry** with the problems named, then a **hand-off** to the owner. A
+   wrong price is worse than a slow answer.
+
+Only a ≤300-character rationale is written to `brain_decisions`. If you want to
+know what the brain did, that table is the answer — and it contains no chain of
+thought, because there is none to leak.
+
+**Providers** behind one interface (`REASONING_PROVIDERS`): Gemini thinking
+(`gemini-2.5-flash`) or Groq reasoning (`deepseek-r1-distill-llama-70b`), picked
+by `brain.reasoningProvider` (`auto` by default) with an optional
+`brain.reasoningModel` override. An explicitly named provider never silently
+substitutes a different one: if it is not configured, the turn takes the normal
+path.
+
+**Budget.** `brain.dailyReasoningCalls` (default 200) per tenant per day, counted
+in `brain_reasoning_<date>`. At the cap, every turn takes the deterministic path.
+Free tier survives a busy day; the owner is told what was spent in `.brain`.
+
+**Latency.** `brain.turnLatencyMs` (default 12000). If the plan is not ready by
+then, the bot sends one short holding line in the customer's language and carries
+on — it never leaves someone staring at a typing indicator.
+
+**Without a key** the router does nothing at all: the normal brain answers, and
+`.brain` says `reasoning: no model key — deterministic mode`.
+
+### The strategist
+
+`.brain` is three lines. `.strategy` is the week:
+
+- funnel — conversations → handled without you → leads → bookings → paid orders,
+  with the conversations that got no reply at all called out;
+- response — first reply, busiest hours, after-hours coverage;
+- the questions that repeat, the objections that repeat, stock questions;
+- channels ranked by revenue, the cold pool, cancellations and no-shows.
+
+Then **at most five ranked actions**. Each has a title, the reason it is on the
+list (from the diagnosis, not from a model), an effort, an effect written as a
+**labelled estimate and a range** — "estimated: +3–8% reply-to-order conversion",
+never a promise — and `.do <n>`.
+
+`.do <n>` prepares: a campaign becomes a promo preview with a count and a sample,
+an FAQ becomes the exact `.addfaq` line to send, an offer becomes the discount
+verdict, follow-ups become a short list with drafts. Nothing is sent, nothing is
+saved to a customer, and every proposal and every owner decision is written to
+`brain_proposals` and `brain_decisions`.
+
+Customer text never reaches the strategist's prompt: it sees aggregates and
+short snippets. When a model is available it may rewrite the prose, and the
+rewrite is rejected if it drops a single multi-digit number or shrinks the report
+to half its size — a prettier report with no figures in it is the failure this
+module exists to prevent.
+
+### Goals
+
+`.goal add 20 orders by 2026-12-31`, with the metric read from the database, not
+from your wording: bookings, orders, revenue, leads, reviews. Three active goals
+at most — more is a wish list. Each shows progress, a projection from the pace so
+far and a warning when that projection misses the target. "Off track" is a
+calculation, not a feeling.
+
+### Experiments
+
+`.experiment new followup "Want me to hold your usual table?" | "Shall I save
+your usual slot?"` — the owner approves both variants; the split is a hash of the
+contact and the experiment id, so the same person always sees the same wording
+and nobody is re-randomised between turns.
+
+A result appears only when **each arm** has `min_sample` sends (default 30,
+floor 10), and then it is one of three honest answers: `too early`,
+`inconclusive` (inside the noise for this sample), or `likely better` (a gap that
+clears two standard errors). A winner is a suggestion: `.experiment adopt <n>` is
+the owner's decision, and nothing rolls out on its own. Opt-outs and caps apply
+to every send.
+
+### The learning loop
+
+Five rules, in the open:
+
+| outcome | weight moves by | meaning |
+|---|---|---|
+| `converted` | +0.05 | an order or booking followed the message |
+| `replied` | +0.02 | the customer wrote back |
+| `asked_owner` | 0 | no signal either way |
+| `none` | −0.03 | no reply within the window |
+
+Weights are per action type (`nba:followup`, `nba:offer`, …) and per assistant
+(`agent:<id>`), clamped to 0.50–1.50, and they only multiply the score the
+deterministic ranker already computed. `.brain weights` prints them; `.brain
+reset` puts them back to 1.00. There is no hidden model anywhere in this loop —
+if you disagree with the weights, you can read them and delete them.
+
+### Safety and privacy
+
+- Customer text is fenced through `injection.js` before it reaches any prompt.
+- Decision records are per tenant; `.export 92300…` includes them and
+  `.forget 92300…` deletes them (plus that contact's experiment rows) — both only
+  when the flag is on, so every other export keeps its old shape.
+- Every proposal and every owner decision is in the audit log
+  (`brain_decision`, `brain_proposals`, `experiment_adopted`, `brain_weights`).
+- Nothing here gives medical, legal or financial advice, in any language, in any
+  output.
+- `brain.autoRun` exists for owners who explicitly want an action type to run
+  without a draft step. It is empty by default, and `npm run doctor` warns when it
+  is set while `growthApproval` is off.
+
+### Turning it on, and what to expect
+
+```bash
+# 1. the numbers first — nothing else changes
+.set features.businessBrain true
+.impact
+
+# 2. the week
+.strategy
+
+# 3. only then, the expensive path
+.set features.reasoning true
+```
+
+Start with `businessBrain` alone for a week: the impact numbers and the strategy
+are free (SQL and templates), and they tell you whether your automation rate is
+already where you think it is. Turn on `reasoning` when you have a key and a real
+volume of multi-part questions — it costs model calls, and its daily budget is the
+only thing standing between you and your free tier.
+
 ## Tests
 
 ```bash
-npm test                 # 762 tests, ~65s, no network, no keys, no config/owner.json
-npm run eval             # 44 recorded conversations, ~10s, no keys either
+npm test                 # 889 tests, ~90s, no network, no keys, no config/owner.json
+npm run eval             # 68 recorded conversations, ~11s, no keys either
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys
 ```
 
-The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening, `37`–`38` for PDF documents and the learning loop, `39` for the live inbox.
+The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening, `37`–`38` for PDF documents and the learning loop, `39` for the live inbox, `51` for named assistants, `52` for the industry packs, `53` for the marketing team and `54`–`55` for the
+business brain (services and commands).
 
 ---
 
-## The golden eval — 44 conversations that must keep working
+## The golden eval — 68 conversations that must keep working
 
 `npm test` proves the code runs. The golden eval proves the *bot still behaves*:
 each scenario is a whole conversation — a tenant template, a catalogue, a few
@@ -2595,6 +3073,7 @@ What each conversation is checked for, in code:
 | `maxChanges` | at most N rows of a table, ever — a double "yes" must not place two orders. |
 | `events` / `optout` / `growthHold` / `ownerNotified` | the behaviour actually happened: the handoff, the opt-out, the quiet-hours hold, the owner alert. |
 | `require` / `forbid` | this phrase must appear, that one must not. |
+| `agent` / `agents` | which named assistant answered (and that no other one did). |
 | `minReplies` / `maxLength` / `raw_output` | something was said, it was not a wall of text, and it was not JSON or a tool error. |
 
 Coverage today: 8 templates (restaurant, clinic, salon, real estate, shop,
@@ -2602,8 +3081,18 @@ agency, school, generic) × 3 languages, across price and stock questions, price
 objections and the discount cap, valid and impossible bookings, double booking,
 orders and duplicate confirmations, order status, complaints, RAG hits and
 misses, prompt injection in customer text, in an uploaded document and in an
-image caption, opt-out and deletion requests, voice notes, quiet hours, and
-tags/notes that must stay private.
+image caption, opt-out and deletion requests, voice notes, quiet hours,
+tags/notes that must stay private, and named assistants — routing, stickiness,
+a refused refund in Roman Urdu and in Urdu script, and a customer trying to
+rewrite an assistant's instructions.
+Multi-agent routing covers the
+six assistant scenarios; the industry packs add one conversation per template —
+restaurant orders, a clinic emergency in Urdu script, a salon offer in Roman
+Urdu, a viewing, a return, a project status, a school fee and a generic booking.
+The business-brain scenarios (`brain-*`) are the multi-step ones: three questions
+in a single message, two conflicting budgets, two children in two grades, an
+upset customer with two complaints, and a long half-specified brief — each in a
+language the owner's customers actually use.
 
 ### How to add a golden scenario
 
