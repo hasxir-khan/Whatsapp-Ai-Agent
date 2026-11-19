@@ -1,0 +1,38 @@
+{
+  "id": "cc-insult-repeat-ur",
+  "title": "A repeated insult starts a cool-down and tells the owner",
+  "template": "agency",
+  "category": "persona",
+  "language": "ur",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "تم بیوقوف ہو"
+    },
+    {
+      "user": "تم بے وقوف اور بیکار ہو"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision"
+    ],
+    "minReplies": 1,
+    "maxReplies": 2,
+    "ownerNotified": true,
+    "require": [
+      {
+        "match": "owner|مالک|cool-down|insulted",
+        "stream": "owner",
+        "why": "the owner is told once"
+      }
+    ],
+    "forbid": [
+      "بیوقوف ہو آپ|stupid"
+    ]
+  }
+}

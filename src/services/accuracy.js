@@ -175,9 +175,23 @@ export function accuracyReport({ days = 7, now = new Date(), weeks = 4 } = {}) {
     weekly.set(key, entry);
   }
 
+  // Conversation Control: how each message was handled. Only present when the
+  // command ran at least once, so an install without the feature sees nothing.
+  let decisionRows = [];
+  try {
+    decisionRows = all(
+      'SELECT action, COUNT(*) AS count FROM decisions WHERE created_at >= ? GROUP BY action ORDER BY count DESC',
+      [from]
+    );
+  } catch {
+    decisionRows = [];
+  }
+  const decisions = decisionRows.map((r) => ({ action: r.action, count: Number(r.count) || 0 }));
+
   return {
     window: { days, from, to: iso(now), weeks: weeksBack },
     metrics,
+    decisions,
     providers,
     weekly: [...weekly.values()].sort((a, b) => a.week.localeCompare(b.week)),
     instrumented: metrics.filter((m) => m.status === 'ok').length,
@@ -204,6 +218,11 @@ export function accuracyText(report) {
       const avg = p.avgSeconds === null ? '' : ` · avg ${p.avgSeconds}s`;
       lines.push(`• ${p.provider}: ${p.replies} repl${p.replies === 1 ? 'y' : 'ies'}${avg}`);
     }
+  }
+
+  if (report.decisions?.length) {
+    lines.push('', '*Decisions*');
+    lines.push(report.decisions.map((d) => `${d.action} ${d.count}`).join(' · '));
   }
 
   if (report.weekly.length) {

@@ -1,0 +1,32 @@
+{
+  "id": "cc-collector-multi-answer-roman-ur",
+  "title": "Several requirements in one Roman Urdu message are read back once, with one question",
+  "template": "agency",
+  "category": "document",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "mujhe web app chahiye login aur payments ke sath, budget 200000, March tak ready chahiye"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision"
+    ],
+    "minReplies": 1,
+    "maxReplies": 1,
+    "maxSentences": 2,
+    "language": "roman-ur",
+    "require": [
+      {
+        "match": "samjha|understood|sahi|yaad|note",
+        "why": "the answers are read back"
+      }
+    ]
+  }
+}

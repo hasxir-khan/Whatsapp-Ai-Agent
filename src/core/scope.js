@@ -21,6 +21,17 @@ const RULES = [
   { kind: 'trivia', re: /\b(who is|who was|what is) (the )?(president|prime minister|capital of|weather|score|stock price)\b/i },
   { kind: 'game', re: /\b(play a game|let'?s play|truth or dare|never have i ever|tick tack|ta?c toe)\b/i },
   { kind: 'translate', re: /\btranslate (this|the following)\b(?!\s*(order|message|receipt|address))/i },
+  // Roman Urdu and Urdu, for the same three requests. A customer testing the bot
+  // does not switch to English to test it.
+  { kind: 'counting', re: /\b(ginti|gino|gin)\b[^.\n]{0,20}\b\d{1,3}\b/i },
+  { kind: 'counting', re: /\b(\d{1,3}|aik|ek|ایک)\s*(se|to|-|–|تک)\s*(\d{1,4}|so|سو)\b/i },
+  { kind: 'counting', re: /(گنتی|گنو|گن کر|ایک سے سو)/ },
+  { kind: 'joke', re: /\b(joke|latifa|chutkula)\b[^.\n]{0,20}\b(sunao|suna|batao|bata|do|dein)\b/i },
+  { kind: 'joke', re: /\b(koi|ek)\s+(joke|latifa)\b/i },
+  { kind: 'joke', re: /(جوك|جھوک|لطیفہ)\s*(سناؤ|سنا|بتاؤ|بتا)/ },
+  { kind: 'story', re: /(kahani|kahaniyan|nazm|shayari|ghazal)\s+(sunao|suna|likho|likh)/i },
+  { kind: 'story', re: /(کہانی|نظم|شاعری|غزل)\s*(سناؤ|سنا|لکھو)/ },
+  { kind: 'code', re: /\b(code|program|script)\b[^.\n]{0,20}\b(likho|likh|banao|bana|de|do)\b/i },
 ];
 
 // Words that make a message a business message no matter what else is in it.

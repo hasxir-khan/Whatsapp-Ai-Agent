@@ -11,12 +11,141 @@ import { config } from '../config/env.js';
 import { getIntake, saveIntake, upsertContact, logEvent, getContact } from '../utils/db.js';
 import { chatJson, hasLLM } from './llm.js';
 import { buildQuote, parseBudget } from './pricing.js';
+import { profile } from '../services/profile.js';
 
-const FIELDS = config.owner.profile?.intake?.fields || [];
-const REQUIRED = config.owner.profile?.intake?.required || ['projectType', 'goal', 'features'];
-const FIELD_IDS = FIELDS.map((f) => f.id);
-const FIELD_LABELS = Object.fromEntries(FIELDS.map((f) => [f.id, f.label]));
-const FIELD_ASKS = Object.fromEntries(FIELDS.map((f) => [f.id, f.ask]));
+// ── the field list ──────────────────────────────────────────
+// Read on every call, not once at import, for two reasons: the owner can change
+// it with `.set` and have the next message use it, and it lets one deploy serve
+// a tenant whose fields are nothing like the next tenant's.
+//
+// Precedence: the tenant's own `business.intake` (Conversation Control), then
+// the legacy `owner.profile.intake` block, then the agency default. The ids are
+// the same shapes the pricing code already reads (projectType, goal, features,
+// budget, timeline), so an existing install keeps its behaviour exactly.
+export const MAX_INTAKE_FIELDS = 12;
+
+const LEGACY_FIELDS = config.owner.profile?.intake?.fields || [];
+const LEGACY_REQUIRED = config.owner.profile?.intake?.required || ['projectType', 'goal', 'features'];
+
+const cleanField = (raw, i) => {
+  const id = String(raw?.id || '').trim();
+  if (!id) return null;
+  return {
+    id,
+    label: String(raw?.label || raw?.id || `Field ${i + 1}`).slice(0, 60),
+    ask: String(raw?.ask || raw?.label || raw?.id || '').slice(0, 160),
+    type: String(raw?.type || 'text').toLowerCase(),
+    required: raw?.required === true,
+    choices: Array.isArray(raw?.choices) ? raw.choices.map((c) => String(c).slice(0, 60)).slice(0, 12) : [],
+    askIf: raw?.askIf && typeof raw.askIf === 'object' ? raw.askIf : null,
+    sensitive: raw?.sensitive === true,
+  };
+};
+
+/** The fields in force for this tenant. Never throws, never empty. */
+export function intakeSpec() {
+  const b = profile()?.business?.intake;
+  const own = Array.isArray(b?.fields) ? b.fields : null;
+  const list = (own && own.length ? own : LEGACY_FIELDS)
+    .map(cleanField)
+    .filter(Boolean)
+    .slice(0, MAX_INTAKE_FIELDS);
+  if (!list.length) {
+    return {
+      fields: [],
+      ids: [],
+      required: [],
+      labels: {},
+      asks: {},
+      byId: {},
+      source: 'none',
+    };
+  }
+  const ids = list.map((f) => f.id);
+  const required = (
+    own && Array.isArray(b?.required) && b.required.length ? b.required : LEGACY_REQUIRED
+  )
+    .map((r) => String(r).trim())
+    .filter((r) => ids.includes(r));
+  return {
+    fields: list,
+    ids,
+    required: required.length ? required : ids.slice(0, 3),
+    labels: Object.fromEntries(list.map((f) => [f.id, f.label])),
+    asks: Object.fromEntries(list.map((f) => [f.id, f.ask])),
+    byId: Object.fromEntries(list.map((f) => [f.id, f])),
+    source: own && own.length ? 'business.intake' : 'owner.profile.intake',
+  };
+}
+
+/**
+ * Check an owner-defined field list. Called by profile.js on every write and by
+ * the doctor, so a broken list is reported where it was typed.
+ * @returns {{errors:string[], warnings:string[]}}
+ */
+export function validateIntake(raw) {
+  const errors = [];
+  const warnings = [];
+  if (raw === undefined || raw === null) return { errors, warnings };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    errors.push('business.intake must be an object with a fields list');
+    return { errors, warnings };
+  }
+  if (raw.fields !== undefined) {
+    if (!Array.isArray(raw.fields)) {
+      errors.push('business.intake.fields must be a list');
+    } else {
+      if (raw.fields.length > MAX_INTAKE_FIELDS) {
+        errors.push(`business.intake.fields has ${raw.fields.length} fields — the maximum is ${MAX_INTAKE_FIELDS}`);
+      }
+      const seen = new Set();
+      raw.fields.forEach((f, i) => {
+        if (!f || typeof f !== 'object') {
+          errors.push(`business.intake.fields[${i}] must be an object`);
+          return;
+        }
+        const id = String(f.id || '').trim();
+        if (!id) errors.push(`business.intake.fields[${i}] needs an id`);
+        else if (!/^[A-Za-z][A-Za-z0-9_]{0,29}$/.test(id)) errors.push(`business.intake field id "${id}" must be letters, digits or _`);
+        else if (seen.has(id)) errors.push(`business.intake field id "${id}" is used twice`);
+        else seen.add(id);
+        if (!f.question && !f.ask && !f.label) {
+          warnings.push(`business.intake field "${id || i}" has no question — the bot will not know what to ask`);
+        }
+        const type = String(f.type || 'text').toLowerCase();
+        if (!['text', 'choice', 'number', 'date', 'phone', 'address'].includes(type)) {
+          errors.push(`business.intake field "${id}" has type "${type}" — one of text, choice, number, date, phone, address`);
+        }
+        if (type === 'choice' && (!Array.isArray(f.choices) || !f.choices.length)) {
+          errors.push(`business.intake field "${id}" is a choice but has no choices`);
+        }
+        if (f.sensitive === true) {
+          warnings.push(`business.intake field "${id}" is sensitive — it is only asked when features.conversationControl is on, and it never goes into the event log`);
+        }
+      });
+      if (raw.required !== undefined && !Array.isArray(raw.required)) {
+        errors.push('business.intake.required must be a list of field ids');
+      }
+    }
+  }
+  return { errors, warnings };
+}
+
+/** A sensible starting list for a business that has not written one. */
+export function defaultIntakeFor(template = 'generic') {
+  const byTemplate = {
+    restaurant: ['items', 'quantity', 'fulfilment', 'address', 'time'],
+    clinic: ['service', 'preferredDate', 'patientName'],
+    salon: ['service', 'dateTime', 'staffPreference'],
+    'real-estate': ['intent', 'area', 'budget', 'bedrooms', 'moveInDate'],
+    shop: ['product', 'variant', 'quantity', 'address'],
+    school: ['program', 'childAge', 'visitTime'],
+    agency: ['projectType', 'goal', 'features', 'design', 'budget', 'timeline', 'content'],
+    generic: ['need', 'budget', 'timing'],
+  };
+  const ids = byTemplate[template] || byTemplate.generic;
+  return ids.map((id) => ({ id, label: id, ask: id, type: 'text' }));
+}
 
 const cache = new Map();
 
@@ -50,6 +179,12 @@ function persist(state) {
   return state;
 }
 
+/** Drop the in-memory copy so the next read comes from the database. */
+export function refreshState(number) {
+  cache.delete(number);
+  return getState(number);
+}
+
 export function resetState(number) {
   cache.delete(number);
   saveIntake(number, { stage: 'open', fields: {}, asked: [], quote: null, quoted_at: null });
@@ -60,25 +195,50 @@ const isEmpty = (v) =>
   v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
 
 export function completeness(state) {
-  const filled = FIELD_IDS.filter((id) => !isEmpty(state.fields[id])).length;
-  const requiredFilled = REQUIRED.filter((id) => !isEmpty(state.fields[id])).length;
-  const requiredScore = requiredFilled / REQUIRED.length;
-  const overall = filled / FIELD_IDS.length;
+  const spec = intakeSpec();
+  if (!spec.ids.length) return 0;
+  const filled = spec.ids.filter((id) => !isEmpty(state.fields[id])).length;
+  const requiredFilled = spec.required.filter((id) => !isEmpty(state.fields[id])).length;
+  const requiredScore = spec.required.length ? requiredFilled / spec.required.length : 1;
+  const overall = filled / spec.ids.length;
   return Math.round((requiredScore * 0.75 + overall * 0.25) * 100) / 100;
 }
 
 /** The single next thing worth asking. */
+/** Should this field be asked at all? `askIf` skips what the conversation rules out. */
+function askable(field, state) {
+  if (!field?.askIf) return true;
+  const { field: dependsOn, equals, includes } = field.askIf;
+  if (!dependsOn) return true;
+  const value = state.fields[dependsOn];
+  if (isEmpty(value)) return false;
+  if (equals !== undefined) return String(value).toLowerCase() === String(equals).toLowerCase();
+  if (includes !== undefined) return String(value).toLowerCase().includes(String(includes).toLowerCase());
+  return true;
+}
+
 export function nextField(state) {
-  for (const id of REQUIRED) {
-    if (isEmpty(state.fields[id])) return id;
+  const spec = intakeSpec();
+  for (const id of spec.required) {
+    if (isEmpty(state.fields[id]) && askable(spec.byId[id], state)) return id;
   }
   // Optional fields, but stop nagging after four of them
-  const optionalAsked = state.asked.filter((id) => !REQUIRED.includes(id)).length;
+  const optionalAsked = state.asked.filter((id) => !spec.required.includes(id)).length;
   if (optionalAsked >= 4) return null;
-  for (const id of FIELD_IDS) {
-    if (!REQUIRED.includes(id) && isEmpty(state.fields[id]) && !state.asked.includes(id)) return id;
+  for (const id of spec.ids) {
+    if (!spec.required.includes(id) && isEmpty(state.fields[id]) && !state.asked.includes(id) && askable(spec.byId[id], state)) {
+      return id;
+    }
   }
   return null;
+}
+
+/** Every field still unanswered (asked or not) — what a brief calls "missing". */
+export function missingFields(state) {
+  const spec = intakeSpec();
+  return spec.fields
+    .filter((f) => isEmpty(state.fields[f.id]) && askable(f, state))
+    .map((f) => ({ id: f.id, label: f.label, required: spec.required.includes(f.id), sensitive: f.sensitive === true }));
 }
 
 /** Merge fields that came from somewhere other than chat (e.g. a PDF brief). */
@@ -152,8 +312,10 @@ function heuristicExtract(text) {
 
 function mergeFields(fields, updates = {}) {
   const merged = { ...fields };
+  const ids = intakeSpec().ids;
   for (const [key, value] of Object.entries(updates)) {
-    if (!FIELD_IDS.includes(key)) continue;
+    if (ids.length && !ids.includes(key)) continue;
+    if (!ids.length && !['projectType', 'goal', 'features', 'design', 'content', 'timeline', 'budget', 'tech', 'extra'].includes(key)) continue;
     if (isEmpty(value)) continue;
     if (key === 'features') {
       const existing = merged.features;
@@ -270,7 +432,8 @@ ready_to_quote is true only if they have told you what to build AND the main fea
   persist(state);
 
   const complete = completeness(state);
-  const requiredDone = REQUIRED.every((id) => !isEmpty(state.fields[id]));
+  const spec = intakeSpec();
+  const requiredDone = spec.required.every((id) => !isEmpty(state.fields[id]));
   const hasPriceIntent = explicitPriceQuestion || intent === 'price';
   const readyToQuote =
     !state.quote &&
@@ -291,8 +454,8 @@ ready_to_quote is true only if they have told you what to build AND the main fea
     readyToQuote,
     quote: readyToQuote ? buildQuote(state.fields, number) : null,
     nextField: nextField(state),
-    nextFieldLabel: FIELD_LABELS[nextField(state)] || null,
-    nextFieldAsk: FIELD_ASKS[nextField(state)] || null,
+    nextFieldLabel: spec.labels[nextField(state)] || null,
+    nextFieldAsk: spec.asks[nextField(state)] || null,
     completeness: complete,
     hints: state.hints || {},
   };
@@ -313,8 +476,9 @@ export function intakePromptBlock(state) {
     lines.push('Known: ' + known.map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(', ') : String(v).slice(0, 200)}`).join(' | '));
   }
 
+  const spec = intakeSpec();
   if (next) {
-    lines.push(`NEXT THING TO ASK (only one question, in your own natural words): ${FIELD_ASKS[next] || FIELD_LABELS[next]}.`);
+    lines.push(`NEXT THING TO ASK (only one question, in your own natural words): ${spec.asks[next] || spec.labels[next]}.`);
     lines.push('If the client just answered it, acknowledge briefly and ask the next one. Never ask two questions at once and never re-ask anything under "Known".');
   } else {
     lines.push('You have everything needed. Do not ask more discovery questions — summarise what you understood and offer the next step.');
@@ -324,6 +488,7 @@ export function intakePromptBlock(state) {
 }
 
 export default {
-  getState, ingest, resetState, completeness, nextField, markAsked, markQuoted,
+  getState, ingest, resetState, refreshState, completeness, nextField, markAsked, markQuoted,
   intakePromptBlock, isIntakeActive, mergeExternalFields,
+  intakeSpec, validateIntake, defaultIntakeFor, missingFields, MAX_INTAKE_FIELDS,
 };

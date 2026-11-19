@@ -3041,6 +3041,158 @@ business brain (services and commands).
 
 ---
 
+## Conversation Control (V1)
+
+`features.conversationControl` — **off by default**. With it off, every path below
+is skipped and the bot behaves exactly as it did before: same guards, same
+replies, same events. With it on, every inbound batch gets **one decision**:
+
+| action | when |
+|---|---|
+| `reply` | an ordinary business message, a price question, an answered question |
+| `clarify` | too short or too vague to act on — one short question instead |
+| `redirect` | off-topic (counting, jokes, homework, code) — answered per the setting below |
+| `handover` | a human is asked for, a threat, emergency words, anger, repeated confusion, an approval-only action, the daily cap or the turn limit |
+| `react` | an acknowledgement that needs no words (`ok`, `thanks`) — 👍, or silence if the transport cannot react |
+| `ignore` | spam, a duplicate, or off-topic when that is what you asked for |
+
+Rules run first. A small classifier is asked **only** when the rules are unsure,
+with a 3 s timeout, a cache per distinct text, and **a normal reply as the
+fallback** — a customer never loses an answer because a classifier was slow.
+
+Five things are **never** ignored, whatever the rules or the classifier say: an
+opt-out, a privacy request, "I want a human", emergency/self-harm words, and
+anything inside an active order or booking. A brand-new contact is answered for
+their **first three messages** unless the message is clearly spam. And at most
+**two ignores in a row** per contact: the third message gets words and you get a
+ping.
+
+### Settings — `business.conversation`
+
+Every value is optional; the default is the cautious one. Edit with
+`.set business.conversation.<key> <value>`, or in `owner.json`:
+
+```json
+"business": {
+  "conversation": {
+    "scope": "business_only",
+    "offTopic": "redirect",
+    "warningsBeforeStop": 1,
+    "coolDownMinutes": 120,
+    "abuseLimit": 2,
+    "maxSentences": 3,
+    "languageMatching": true,
+    "handover": { "keywords": ["manager", "شکایت"], "confusionRepeats": 3, "angryTone": true },
+    "approvalRequired": ["refund"],
+    "dailyMessageCap": 40,
+    "maxBotTurnsBeforeHuman": 12,
+    "classifier": true,
+    "notifyOwner": true
+  }
+}
+```
+
+| setting | default | what it does |
+|---|---|---|
+| `scope` | `business_only` | `open` allows any chat; `business_plus_light_chat` allows jokes and small talk but not homework or code |
+| `offTopic` | `redirect` | `redirect` refuses once per message; `warn_then_stop` warns `warningsBeforeStop` times then goes quiet; `ignore` is silent from the first |
+| `warningsBeforeStop` | `1` | how many warnings `warn_then_stop` gives |
+| `coolDownMinutes` | `120` | how long the bot stays quiet after repeated insults |
+| `abuseLimit` | `2` | how many insults before the cool-down starts |
+| `maxSentences` | unset | caps reply length (`brevity.js` already trims; this only applies when written) |
+| `languageMatching` | `true` | reply in the conversation's language |
+| `handover.keywords` | `[]` | your own trigger words, matched case-insensitively |
+| `handover.confusionRepeats` | `3` | "I don't understand" this many times hands over |
+| `handover.angryTone` | `true` | strong anger cues hand over |
+| `approvalRequired` | `["refund"]` | actions that need your yes first: `refund`, `discount`, `cancellation`, `custom_order` |
+| `dailyMessageCap` | `40` | messages per contact per day, then a person takes over |
+| `maxBotTurnsBeforeHuman` | `12` | bot turns before a human is offered |
+| `classifier` | `true` | allow the small classifier when the rules are unsure |
+| `notifyOwner` | `true` | tell you when the bot had to stay quiet or hand over |
+
+`profile.js` validates every write (`scope`/`offTopic` enums, numeric ranges), so a
+typo is refused at `.set` time and reported by `npm run doctor`. The doctor also
+names the risky combinations: `offTopic: ignore` with `notifyOwner: false`, an
+open scope on a clinic/legal/finance business, `warningsBeforeStop: 0`, and caps
+so high they are not caps.
+
+### Abuse
+
+An insult gets **one** calm boundary line, in the customer's language, from a
+fixed string — no model, no argument, no retaliation. After `abuseLimit` insults
+the bot says it is pausing, stays quiet for `coolDownMinutes`, and tells you once.
+A **threat** or **self-harm words** are never a conversation: the chat pauses, you
+get an urgent flag, and the customer is told a person is coming (with the local
+emergency number advice for the self-harm case).
+
+### Requirement collector
+
+`business.intake` defines the questions, per business — `profile.js` validates
+them (max 12 fields):
+
+```json
+"business": {
+  "intake": {
+    "required": ["need", "budget"],
+    "fields": [
+      { "id": "need",   "label": "Need",   "ask": "what you need", "type": "text", "required": true },
+      { "id": "budget", "label": "Budget", "ask": "your budget range", "type": "number" },
+      { "id": "guests", "label": "Guests", "ask": "how many guests", "type": "number", "askIf": { "field": "need", "includes": "catering" } }
+    ]
+  }
+}
+```
+
+Fields are `{id, question/label, ask, type: text|choice|number|date|phone|address,
+required, choices, askIf, sensitive}`. With no `business.intake`, the existing
+agency list in `config/owner.example.json` is used, unchanged.
+
+Behaviour, all from data the intake already extracted:
+
+- exactly one question per turn, never re-asking what is answered;
+- several answers in one message are read back once — *"Here is what I
+  understood: Project type: web app · Budget: 200000. Is that right?"*;
+- a correction (*"actually 80k"*) updates the field and says what changed;
+- a contradiction (*"50k"* … later *"80k"*) names the uncertainty and asks one
+  question;
+- `.brief 92300…` prints the markdown brief: collected fields, missing
+  information, open questions, and whether it has stalled;
+- when the required fields are done, or the conversation stalls (6 h by
+  default), the brief is sent to you once;
+- `.export` and `.forget` cover it: a brief has no table of its own (it is a view
+  of `intake`), and `decisions` + `reply_reviews` are deleted with the contact.
+
+### No guessing
+
+A price question with **no published price**, or a policy question with **no
+policy written**, is not answered by the model. The customer is told it will be
+confirmed, the chat pauses, and you get a task with the exact question. Your reply
+goes to the customer yourself. Prices and timelines are only ever quoted from
+`catalog`, `owner.services` and `policies`.
+
+### The log and the commands
+
+| command | what it shows |
+|---|---|
+| `.decisions [n]` | the last n (default 20) decisions: time, action, reason code, source |
+| `.control` | every setting in force, and the never-ignored list |
+| `.brief <number>` | the markdown brief for one contact (or the open intakes) |
+| `.accuracy` | includes a decisions block when the feature has been used |
+| `.impact` | one line with the week's decisions per action |
+
+The `decisions` table stores `action`, `reason`, `confidence`, `source`, an
+urgent flag and a **fixed-phrase rationale** — never the customer's words. The
+rationale for `insult` is "an insult — one calm boundary line, no model", not the
+insult.
+
+### Not started
+
+The generic per-template collector (a default field list and default handover
+words for each of the eight industry templates) is the next part and is **not**
+in this build: fields come from `business.intake` or the existing agency list.
+
+---
+
 ## The golden eval — 68 conversations that must keep working
 
 `npm test` proves the code runs. The golden eval proves the *bot still behaves*:

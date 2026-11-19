@@ -1,0 +1,37 @@
+{
+  "id": "cc-ack-react-en",
+  "title": "An acknowledgement gets a reaction, not a paragraph",
+  "template": "agency",
+  "category": "persona",
+  "language": "en",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "ok thanks"
+    }
+  ],
+  "assert": {
+    "events": [
+      "ack_reaction"
+    ],
+    "maxReplies": 0,
+    "reactionOnly": true,
+    "minReplies": 0
+  },
+  "seed": {
+    "messages": [
+      {
+        "role": "user",
+        "text": "see you at 7 then"
+      },
+      {
+        "role": "assistant",
+        "text": "Done — table for four at 7, see you then."
+      }
+    ]
+  }
+}

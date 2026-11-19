@@ -18,7 +18,17 @@
 import { config } from '../config/env.js';
 import { business, tone as toneProfile } from '../services/profile.js';
 
+import { controlEnabled, rawConversation } from '../services/conversation.js';
+
 export const DEFAULT_MAX_SENTENCES = 2;
+
+/** `business.conversation.maxSentences`, but only when it is written down. */
+function conversationCap() {
+  if (!controlEnabled()) return null;
+  const raw = rawConversation();
+  const n = Number(raw?.maxSentences);
+  return Number.isFinite(n) && raw?.maxSentences !== undefined ? n : null;
+}
 
 const FILLER_OPENERS = [
   /^(sure|sure thing|certainly|of course|absolutely|great question|good question|no problem|happy to help|thanks for reaching out|thank you for reaching out)[!,.\s—-]+/i,
@@ -119,12 +129,20 @@ export function brevityInstruction({ maxSentences = DEFAULT_MAX_SENTENCES, lang 
     .join(' ');
 }
 
-/** The effective sentence cap: profile first, then env. */
+/**
+ * The effective sentence cap: Conversation Control (when the owner set it),
+ * then the business tone, then the tone profile, then the environment.
+ */
 export function maxSentences() {
+  // Only when the owner actually wrote a value: the feature's default must not
+  // silently override a tone the tenant already tuned.
+  const fromConversation = conversationCap();
   const fromBusiness = business()?.tone?.maxSentences;
   const fromTone = toneProfile()?.maxSentences;
   const fromEnv = Number(process.env.REPLY_MAX_SENTENCES);
-  const value = [fromBusiness, fromTone, Number.isFinite(fromEnv) ? fromEnv : null].find((v) => Number.isFinite(Number(v)) && v !== null && v !== undefined);
+  const value = [fromConversation, fromBusiness, fromTone, Number.isFinite(fromEnv) ? fromEnv : null].find(
+    (v) => Number.isFinite(Number(v)) && v !== null && v !== undefined
+  );
   const n = Math.max(1, Math.min(6, Number(value) || DEFAULT_MAX_SENTENCES));
   return n;
 }

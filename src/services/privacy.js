@@ -219,6 +219,11 @@ export const CONTACT_TABLES = [
   { table: 'tool_calls', where: 'chat = ? OR chat = ?' },
   { table: 'outbox', where: 'jid = ? OR jid = ?' },
   { table: 'cloud_messages', where: 'number = ?' },
+  // Conversation Control: the decision log and the review votes are about this
+  // person too. A brief has no table of its own — it is a view of `intake`,
+  // which is already in this list.
+  { table: 'decisions', where: 'number = ?' },
+  { table: 'reply_reviews', where: 'number = ?' },
 ];
 
 function countRows(table, where, params) {

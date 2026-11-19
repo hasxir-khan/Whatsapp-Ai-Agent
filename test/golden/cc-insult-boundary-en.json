@@ -1,0 +1,34 @@
+{
+  "id": "cc-insult-boundary-en",
+  "title": "An insult gets one calm boundary line and no argument",
+  "template": "agency",
+  "category": "persona",
+  "language": "en",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "you are stupid and useless"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision"
+    ],
+    "minReplies": 1,
+    "maxReplies": 1,
+    "require": [
+      {
+        "match": "professional|not going to trade insults",
+        "why": "the boundary is stated once"
+      }
+    ],
+    "forbid": [
+      "you are stupid|you are useless|idiot"
+    ],
+    "maxSentences": 2
+  }
+}

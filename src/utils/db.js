@@ -493,6 +493,24 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_key ON orders(key);
 
 -- Which specialist answered, and how we decided (phase 2 step 3).
+-- Conversation Control: one row per inbound batch. The decision, its reason code
+-- and a fixed-phrase rationale — never the customer's words.
+CREATE TABLE IF NOT EXISTS decisions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      TEXT,
+  action      TEXT,          -- reply | clarify | redirect | handover | react | ignore
+  reason      TEXT,          -- the reason code, e.g. human_request
+  confidence  REAL,
+  source      TEXT,          -- rules | llm | cache | protection | fallback
+  rationale   TEXT,          -- <=200 chars, built from a fixed phrase per reason
+  urgent      INTEGER DEFAULT 0,
+  lang        TEXT,
+  batch       TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_number ON decisions(number, id);
+CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions(created_at);
+
 CREATE TABLE IF NOT EXISTS message_intents (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   tenant      TEXT,
@@ -1360,6 +1378,10 @@ export function exportAll() {
     contacts: all('SELECT * FROM contacts'),
     leads: all('SELECT * FROM leads'),
     intake: listIntakes(1000),
+    // Conversation Control: a brief is a view of `intake` (covered above); the
+    // decisions are counts and reason codes, and they are exported so the owner
+    // can see what was decided about them.
+    decisions: all('SELECT number, action, reason, created_at FROM decisions ORDER BY id DESC LIMIT 1000'),
     followups: all('SELECT * FROM followups ORDER BY id DESC LIMIT 500'),
     usage: usageHistory(60),
   };

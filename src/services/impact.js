@@ -260,6 +260,17 @@ export function impactReport({ now = new Date() } = {}) {
     `Follow-ups: ${current.followUpsSent} sent · ${current.followUpsAnswered} answered · review asks: ${current.reviewAsks} · reviews: ${current.reviewsReceived}`
   );
   lines.push(`Time saved: ~${current.hoursSaved} h (${current.conversations} chats × ${current.minutesPerConversation} min)`);
+  // Conversation Control: how the week's messages were handled. Absent when the
+  // feature has never run, so the report reads exactly as before.
+  try {
+    const rows = db.all('SELECT action, COUNT(*) AS count FROM decisions WHERE created_at >= ? GROUP BY action ORDER BY count DESC', [w.from]);
+    if (rows.length) {
+      lines.push('');
+      lines.push(`Decisions: ${rows.map((r) => `${r.action} ${r.count}`).join(' · ')}`);
+    }
+  } catch {
+    /* the table exists only once the feature has been used */
+  }
   lines.push('');
   lines.push('Every number is a SQL count over this week. Definitions: README › How the Business Brain thinks.');
 

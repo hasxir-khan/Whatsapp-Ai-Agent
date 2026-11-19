@@ -1,0 +1,33 @@
+{
+  "id": "cc-price-published-ur",
+  "title": "With a published price band, a price question is answered from the catalogue",
+  "template": "agency",
+  "category": "price",
+  "language": "ur",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "ویب سائٹ کی قیمت کیا ہے؟",
+      "model": [
+        {
+          "text": "بزنس ویب سائٹ 60,000 سے 180,000 روپے تک ہے، کام کے حساب سے۔"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "minReplies": 1,
+    "require": [
+      {
+        "match": "60,000|60000|180,000|180000",
+        "why": "the published band is quoted"
+      }
+    ],
+    "numbers": "hard",
+    "language": "ur"
+  }
+}

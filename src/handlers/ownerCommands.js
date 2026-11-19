@@ -115,6 +115,9 @@ const HELP = `*Bot commands*
 .agent add|set|on|off|test|rm – manage one assistant
 .brain – the business brain: today, the week, what to do next
 .impact – automation, response time, leads, revenue and hours saved
+.decisions – the last 20 decisions, with the action and reason code
+.control – Conversation Control settings in force
+.brief 92300… – the requirements collected, what is missing, what to ask next
 .strategy – the weekly review and five ranked actions
 .do <n> / .why <n> – prepare one action as a draft / the reason it is there
 .goal add 20 orders by 2026-12-31 – goals, progress and a projection
@@ -690,6 +693,35 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         ...transportLines(),
       ];
       return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'decisions': {
+      const { decisionsText } = await import('../services/decision.js');
+      return { handled: true, reply: decisionsText(/^\d+$/.test(String(args[0] || '')) ? Number(args[0]) : 20) };
+    }
+
+    case 'control': {
+      const { controlText } = await import('../services/conversation.js');
+      return { handled: true, reply: controlText() };
+    }
+
+    case 'brief': {
+      const { briefMarkdown, briefFor, openBriefs } = await import('../services/brief.js');
+      const target = normalizePhone(String(args[0] || ''));
+      if (!target) {
+        const open = openBriefs({ limit: 10 });
+        return {
+          handled: true,
+          reply: open.length
+            ? ['Usage: .brief 92300…', '', 'Open intakes:', ...open.map((r) => `• ${r.number} — ${r.stage}`)].join('\n')
+            : 'Usage: .brief 92300…\nNo intake rows yet — one appears when a client starts answering questions.',
+        };
+      }
+      const brief = briefFor(target);
+      if (!brief.fields.some((f) => f.value !== null)) {
+        return { handled: true, reply: `Nothing collected for ${target} yet.` };
+      }
+      return { handled: true, reply: briefMarkdown(target, { businessType: business()?.type || null }) };
     }
 
     case 'accuracy': {

@@ -15,6 +15,14 @@ import { config, reloadProfile } from '../config/env.js';
 
 export { reloadProfile };
 
+// A single validator for `business.conversation`, living next to the defaults it
+// checks against. The cycle is safe: both modules only call each other inside
+// functions, never while they are being evaluated.
+import { validateConversation } from './conversation.js';
+// The same idea for the owner-defined intake fields: the list is data, and the
+// place that validates data is here, next to the catalog and the FAQs.
+import { validateIntake } from '../core/projectIntake.js';
+
 /** Every feature flag the bot knows about. Anything else in owner.json is ignored. */
 export const FEATURE_KEYS = [
   // phase 1
@@ -60,6 +68,8 @@ export const FEATURE_KEYS = [
   'marketingAgents',
   'businessBrain',
   'reasoning',
+  // phase 7
+  'conversationControl',
 ];
 
 export const FEATURE_LABELS = {
@@ -102,6 +112,7 @@ export const FEATURE_LABELS = {
   marketingAgents: 'Owner-facing marketing team: plan, content, offers, promos, reviews, channels, ad copy (.marketing)',
   businessBrain: 'Business brain: impact numbers, daily brief, weekly strategy, goals, experiments, next-best-action (.brain)',
   reasoning: 'Reasoning router: complex turns get plan → act → verify before answering',
+  conversationControl: 'Conversation Control: a decision per message (reply, clarify, redirect, handover, react, ignore), scope and off-topic rules, abuse boundaries, owner-defined intake fields and a written brief',
 };
 
 // ── live profile access ─────────────────────────────────────
@@ -456,6 +467,16 @@ export function setPath(dotted, value) {
   }
   let patch = value;
   for (let i = parts.length - 1; i >= 0; i -= 1) patch = { [parts[i]]: patch };
+
+  // The two blocks Conversation Control owns are validated *before* the write,
+  // so `.set business.conversation.scope nonsense` is refused rather than saved
+  // into a state the rules cannot run with.
+  if (parts[0] === 'business' && (parts[1] === 'conversation' || parts[1] === 'intake')) {
+    const current = readOverrides()?.business?.[parts[1]] || {};
+    const next = deepMerge(current, parts.length <= 2 ? value : patch.business[parts[1]]);
+    const check = parts[1] === 'conversation' ? validateConversation(next) : validateIntake(next);
+    if (check.errors.length) throw new Error(check.errors[0]);
+  }
   return savePatch(patch);
 }
 
@@ -519,6 +540,18 @@ export function validateProfile(p = profile()) {
   const errors = [];
   const warnings = [];
   const push = (list, msg) => list.push(msg);
+
+  // Conversation Control settings: the enums and ranges are checked on every
+  // write (`.set`, the admin panel, a hand-edited owner.json) as well as by the
+  // doctor. A typo becomes a warning; a value the rules cannot run with is an
+  // error, so it can never be saved into a half-working state.
+  const conversationCheck = validateConversation(p.business?.conversation);
+  conversationCheck.errors.forEach((e) => push(errors, e));
+  conversationCheck.warnings.forEach((w) => push(warnings, w));
+
+  const intakeCheck = validateIntake(p.business?.intake);
+  intakeCheck.errors.forEach((e) => push(errors, e));
+  intakeCheck.warnings.forEach((w) => push(warnings, w));
 
   const b = p.business || {};
   for (const key of ['name', 'type', 'city', 'hours']) {

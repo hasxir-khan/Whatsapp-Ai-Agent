@@ -143,6 +143,18 @@ async function checkBusiness() {
     notes.push(risk);
   }
 
+  // Conversation Control: the risky combinations, in the same place as the
+  // growth ones. Pure function, so `test/36` can assert the wording.
+  if (featureOn('conversationControl')) {
+    const { conversationWarnings, conversationSettings } = await import('../src/services/conversation.js');
+    const s = conversationSettings();
+    ok(`Conversation Control: scope ${s.scope} · off-topic ${s.offTopic} · cool-down ${s.coolDownMinutes} min · cap ${s.dailyMessageCap}/day`);
+    for (const risk of conversationWarnings(profile)) {
+      warn(risk);
+      notes.push(risk);
+    }
+  }
+
   const { errors, warnings } = validateProfile(profile);
   for (const w of warnings.slice(0, 6)) info(`note: ${w}`);
   for (const e of errors.slice(0, 8)) {

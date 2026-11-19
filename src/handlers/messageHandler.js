@@ -43,6 +43,11 @@ import { buildQuote, formatQuote } from '../core/pricing.js';
 import { createReplyChannel, beginBatch, batchIdOf } from '../core/replyChannel.js';
 import { guardReply, safeLine, rememberClaims, voiceOf } from '../core/replyGuard.js';
 import { scopeGuard } from '../core/scope.js';
+import { controlEnabled, conversationSettings } from '../services/conversation.js';
+import { decide, recordDecision } from '../services/decision.js';
+import * as briefs from '../services/brief.js';
+import { collectorTurn, conflictTurn } from '../services/collector.js';
+import { asksPrice, asksPriceQuestion, hasPublishedPrices, noGuessLine, ownerTaskText, unansweredPolicy } from '../services/noGuess.js';
 import { replyLanguage } from '../services/languageStick.js';
 import * as memory from '../services/memory.js';
 import { sendHuman, sendTyping, sendReaction, markRead, scheduleRead, isQuietNow, quietEndsAt } from '../core/humanizer.js';
@@ -175,6 +180,13 @@ export async function handleIncoming(transport, rawIncoming) {
     // clever. It is honoured instantly: pending drafts die here.
     const said = (info.text || info.caption || '').trim();
     if (said && detectOptOut(said)) {
+      // Conversation Control: an opt-out is a decision too, and it is never an
+      // ignore. Logged here because this path returns before the batch.
+      if (controlEnabled()) {
+        recordDecision(number, await decide({ number, text: said, lang: detectLanguage(said).code }), {
+          lang: detectLanguage(said).code,
+        });
+      }
       recordOptOut(number, { reason: said.slice(0, 80) });
       cancelFollowUpDrafts(number, 'opted_out');
       const lang = detectLanguage(said).code;
@@ -207,6 +219,9 @@ export async function handleIncoming(transport, rawIncoming) {
         requestDeletion(number, { language: lang });
       } catch (err) {
         db.logEvent('privacy_request_error', number, err.message);
+      }
+      if (controlEnabled()) {
+        recordDecision(number, await decide({ number, text: said, lang }), { lang });
       }
       memory.saveUserTurn(number, said, info.kind, { lang, privacy: 'delete_request' });
       memory.saveAssistantTurn(number, ack, 'text');
@@ -308,11 +323,14 @@ export async function handleIncoming(transport, rawIncoming) {
       applyAction(number, 'block');
       return;
     }
-    if (spam.isScam) {
+    if (spam.isScam && !controlEnabled()) {
       await sendTyping(transport, jid, WARN_MESSAGE, { delay: 900 });
       await notifyOwner(transport, `🚫 Possible scam from +${number}\n${(info.text || '').slice(0, 200)}\nBlocked: ${spam.action === 'block' ? 'yes' : 'no'}`);
       return;
     }
+    // Conversation Control decides about spam in the batch, so the decision is
+    // logged and the "clear spam" case is one silent ignore instead of a second
+    // warning. The hard block above still happens either way.
 
     // Read receipt after a beat (1–3 s), not on arrival: the customer sees a
     // person pick the phone up, not a webhook firing.
@@ -639,6 +657,32 @@ async function processBatch(sock, jid, number, items) {
     return await runBatch(sock, jid, number, items, ctx);
   } finally {
     await ctx.session?.stop({ paused: true });
+    // The brief is checked on the way out, so it covers every return path in
+    // runBatch (a reply, a redirect, a handover, a silent ignore). With the flag
+    // off this is one boolean and nothing else happens.
+    maybeSendBrief(sock, number).catch(() => {});
+  }
+}
+
+/**
+ * Conversation Control: send the owner the brief when the requirements are done
+ * or the conversation has stalled. One per contact: `brief_sent` is the record.
+ */
+async function maybeSendBrief(sock, number) {
+  if (!controlEnabled()) return false;
+  try {
+    const due = briefs.briefDue(number);
+    if (!due.due) return false;
+    if (briefs.briefAlreadySent(number)) return false;
+    // Nothing collected is not a brief, it is an empty form.
+    if (!due.brief.fields.some((f) => f.value !== null)) return false;
+    const body = `${briefs.briefSummaryLine(number)}\n\n${briefs.briefMarkdown(number)}`;
+    await notifyOwner(sock, body.slice(0, 3500));
+    db.logEvent('brief_sent', number, { because: due.because, percent: due.brief.percent });
+    return true;
+  } catch (err) {
+    db.logEvent('brief_error', number, err.message);
+    return false;
   }
 }
 
@@ -761,6 +805,107 @@ async function runBatch(sock, jid, number, items, ctx) {
       db.logEvent('bot_disclosure_error', number, err.message);
     }
     return;
+  }
+
+  // ════════════════════════════════════════════════════════
+  // Conversation Control V1 (features.conversationControl)
+  // ════════════════════════════════════════════════════════
+  // One decision per inbound batch, logged whether or not it changes anything.
+  // With the flag off this whole block is skipped and every path below behaves
+  // exactly as it did before.
+  if (controlEnabled()) {
+    const settings = conversationSettings();
+    const decision = await decide({ number, text: humanText, contact, lang: langInfo.code });
+    recordDecision(number, decision, { lang: langInfo.code, batch: batchId });
+    ctx.decision = decision;
+
+    if (decision.confusion && decision.action === 'reply') db.logEvent('confusion_noted', number, { lang: langInfo.code });
+
+    // The owner hears about anything the bot did not answer itself, and about
+    // an insult that repeated past the limit — once, with a reason code.
+    if (decision.notifyOwner) {
+      const why = {
+        human_request: 'asked for a human',
+        handover_keyword: 'matched your handover keywords',
+        sensitive_keyword: 'used emergency or sensitive words',
+        self_harm: 'used self-harm words',
+        threat: 'made a threat',
+        insult: 'insulted the bot again — cool-down started',
+        confusion: 'seems stuck after repeated confusion',
+        angry: 'sounds angry — a decision needs a person',
+        ignore_limit: 'had to be answered after two ignores in a row',
+      }[decision.reason];
+      if (why) {
+        const urgent = decision.urgent ? '🚨 URGENT — ' : '';
+        await notifyOwner(
+          sock,
+          `${urgent}🙋 +${number} ${why}.\n${decision.urgent ? 'Please look at this chat now.' : 'The chat is paused for you; .resume to hand it back.'}`
+        );
+      }
+    }
+
+    if (decision.action === 'ignore') {
+      // Silence, but not accidental silence: the reason is in `.decisions`, and
+      // the two-in-a-row limit means nobody is ghosted for long.
+      memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, decision: decision.reason });
+      channel.claim();
+      db.logEvent('decision_ignore', number, { reason: decision.reason });
+      return;
+    }
+
+    if (decision.action === 'react') {
+      const emoji = ackReaction(humanText);
+      const incomingKey = items[0]?.incoming?.id || null;
+      const reacted = incomingKey ? await sendReaction(sock, jid, { remoteJid: jid, id: incomingKey, fromMe: false }, emoji) : false;
+      memory.saveUserTurn(number, humanText, 'text', { lang: langInfo.code, decision: 'react' });
+      channel.claim();
+      if (reacted) {
+        noteSent([incomingKey]);
+        db.logEvent('ack_reaction', number, { emoji, decision: true });
+        memory.saveAssistantTurn(number, `[reaction ${emoji}]`, 'reaction');
+      } else {
+        db.logEvent('ack_silent', number, { decision: true });
+      }
+      return;
+    }
+
+    if (decision.action === 'handover') {
+      // A person takes over: the customer is told once, the chat pauses, and the
+      // reason (never the words) is in the log.
+      try {
+        if (decision.text) {
+          const sentH = await channel.say(decision.text, { incomingText: humanText });
+          memory.saveAssistantTurn(number, decision.text, 'text');
+          noteSent([sentH?.key?.id]);
+        }
+        memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, decision: decision.reason });
+      } catch (err) {
+        db.logEvent('decision_handover_error', number, err.message);
+      }
+      try {
+        db.setContactPaused(number, new Date(Date.now() + (decision.urgent ? 6 * 60 : config.behavior.handoffMinutes) * 60_000).toISOString());
+        db.logEvent(decision.urgent ? 'urgent_handoff' : 'handoff', number, { reason: decision.reason, minutes: decision.urgent ? 360 : config.behavior.handoffMinutes });
+      } catch {
+        /* pausing is best effort; the owner has already been told */
+      }
+      return;
+    }
+
+    // clarify / redirect, or a reply that is a fixed line (boundary, cool-down,
+    // ignore limit): the text is written, so no model is spent on it.
+    if (decision.text) {
+      try {
+        memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, decision: decision.reason });
+        const sentLine = await channel.say(decision.text, { incomingText: humanText });
+        memory.saveAssistantTurn(number, decision.text, 'text');
+        noteSent([sentLine?.key?.id]);
+        if (decision.action === 'redirect') db.logEvent('scope_refused', number, { kind: 'conversation_control', lang: langInfo.code });
+        db.logEvent('decision_fixed_line', number, { action: decision.action, reason: decision.reason });
+      } catch (err) {
+        db.logEvent('decision_line_error', number, err.message);
+      }
+      return;
+    }
   }
 
   // ── acknowledgements: a reaction, not a paragraph ───────
@@ -911,12 +1056,70 @@ async function runBatch(sock, jid, number, items, ctx) {
   }
 
   const explicitPriceQuestion = /\b(price|pricing|cost|charge|rate|quote|estimate|how much|kitna|kitne|budget)\b/i.test(humanText);
+  // What we knew before this message, so a correction can name what changed.
+  const fieldsBefore = { ...(getState(number).fields || {}) };
   let intake;
   try {
     intake = await ingest(number, modelText, { explicitPriceQuestion });
   } catch (err) {
     db.logEvent('intake_error', number, err.message);
     intake = { state: getState(number), readyToQuote: false, nextField: null };
+  }
+
+  // ── Conversation Control: no guessing ────────────────────
+  // A price the owner never published, or a policy they never wrote, becomes a
+  // question to the owner — with the customer told the truth — instead of a
+  // confident number from a model. This is the existing handoff: the chat is
+  // paused for the owner, who answers the customer directly.
+  if (controlEnabled() && humanText) {
+    const missingPolicy = unansweredPolicy(humanText);
+    const noPrice = asksPriceQuestion(humanText) && !hasPublishedPrices() && !intake?.readyToQuote;
+    if (noPrice || missingPolicy) {
+      const kind = noPrice ? 'price' : missingPolicy;
+      try {
+        memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, ownerTask: kind });
+        const line = noGuessLine(kind, langInfo.code);
+        const sentN = await channel.say(line, { incomingText: humanText });
+        memory.saveAssistantTurn(number, line, 'text');
+        noteSent([sentN?.key?.id]);
+      } catch (err) {
+        db.logEvent('no_guess_reply_error', number, err.message);
+      }
+      try {
+        db.logEvent('owner_task_created', number, { kind });
+        await notifyOwner(sock, ownerTaskText({ number, kind, question: humanText }));
+        db.setContactPaused(number, new Date(Date.now() + config.behavior.handoffMinutes * 60_000).toISOString());
+        await notifyOperator(sock, number, `❓ A question only you can answer (+${number}). The bot did not guess.`);
+      } catch (err) {
+        db.logEvent('owner_task_error', number, err.message);
+      }
+      return;
+    }
+  }
+
+  // ── Conversation Control: read the answers back ──────────
+  // Several fields in one message, or a correction to an earlier answer, get a
+  // short "here is what I understood … right?" instead of a model reply. The
+  // fields are the client's own words, so nothing can be invented — and one
+  // question per turn is kept, because the confirmation *is* the question.
+  if (controlEnabled() && intake?.updates && Object.keys(intake.updates).length && !asksPriceQuestion(humanText)) {
+    const collected = collectorTurn({ updates: intake.updates, previous: fieldsBefore, lang: langInfo.code, text: humanText });
+    const conflicted = collected ? null : conflictTurn({ updates: intake.updates, previous: fieldsBefore, lang: langInfo.code });
+    const turn = collected || conflicted;
+    if (turn) {
+      try {
+        memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, collector: turn.kind });
+        const sentC = await channel.say(turn.reply, { incomingText: humanText });
+        memory.saveAssistantTurn(number, turn.reply, 'text');
+        noteSent([sentC?.key?.id]);
+        db.logEvent(turn.kind === 'conflict' ? 'intake_conflict' : 'intake_confirmed', number, {
+          fields: turn.fields || [turn.field].filter(Boolean),
+        });
+      } catch (err) {
+        db.logEvent('collector_error', number, err.message);
+      }
+      return;
+    }
   }
 
   const features = {
