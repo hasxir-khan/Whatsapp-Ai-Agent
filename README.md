@@ -3193,6 +3193,249 @@ in this build: fields come from `business.intake` or the existing agency list.
 
 ---
 
+## Platform architecture — the control plane and the bot workers
+
+Phase 7 Part 1 adds a **customer platform**: people sign up with an email, run a
+setup wizard, connect a WhatsApp number, and get a bot. It is a separate layer
+in `platform/`, and it does not reimplement the bot. It calls what already
+exists: `createTenant()` from `scripts/tenant.js`, `profile.js` (the only
+validator), `templates.js`, the `learn` pipeline, the transport's QR and pairing
+code, and the supervisor in `adminPanel.js`.
+
+```
+                        ┌──────────────────────────────────────────────┐
+   browser ──HTTPS────► │  CONTROL PLANE  (platform/)                  │
+   (no CDN, no          │  accounts · sessions · wizard · plans        │
+    third-party JS)     │  usage rollups · audit · notifications       │
+                        │  own database: platform/data/platform.db     │
+                        └───────┬───────────────────────┬──────────────┘
+                                │ calls, never copies   │ loopback + Bearer
+                                ▼                       ▼
+                  ┌───────────────────────┐   ┌──────────────────────────┐
+                  │ bot services          │   │ BOT WORKER (one per      │
+                  │ createTenant,         │   │ tenant, supervisor:      │
+                  │ profile.js, templates,│   │ scripts/run-all.js)      │
+                  │ learn, adminPanel,    │   │ WhatsApp session, brain, │
+                  │ validation, webAuth   │   │ SQLite, dashboard, QR    │
+                  └───────────────────────┘   └──────────────────────────┘
+                                ▲                       │
+                                │ LLM call site         │ usage journal
+                                └──────── src/core/llm.js ┘
+```
+
+Three rules keep the layers apart:
+
+1. **Nothing in the bot imports `platform/`.** The one hook is
+   `src/services/usageEvents.js`: `llm.js` calls `recordUsage()` wherever a model
+   call succeeds, and the platform either registers a sink in the same process or
+   asks the worker for a local journal (`PLATFORM_USAGE_JOURNAL=1`).
+2. **The platform never writes a tenant file directly.** Profiles go through
+   `writeTenantProfile()` (which validates), uploads through `saveUpload()` +
+   `ingestUpload()`, `.env` values through `writeTenantEnvValue()`, process
+   control through `startTenant()` / `stopTenant()`.
+3. **Every request is scoped by `tenantForAccount()`.** There is one door to a
+   tenant's data and it takes both an account id and a slug; a stranger gets a
+   404, not a 403, so nothing leaks about who exists.
+
+### Switching it on (and off)
+
+| variable | default | what it does |
+|---|---|---|
+| `PLATFORM_ENABLED` | **off** | Without it the platform claims no route: `/platform` and `/api/platform/*` are whatever the bot says they are (404). The bot's behaviour is byte-identical. |
+| `PLATFORM_SECRET` | — | Signs session cookies, CSRF values and one-time codes. Enabled with no secret ⇒ 503, never an open door. |
+| `PLATFORM_DIR` | `platform/data` | The platform database. 0700 directory, 0600 file, outside every tenant folder. |
+| `PLATFORM_PORT` | `3200` | Used only when the platform runs as its own app. |
+| `PLATFORM_TERMS_VERSION` / `PLATFORM_PRIVACY_VERSION` | `2026-01` | Consent versions, stored with the time they were accepted. |
+| `PLATFORM_TRIAL_DAYS` | `14` | Free-trial length (a plan may override it). |
+| `PLATFORM_DEV_SHOW_CODES` | off | Returns the signup/reset code in the API answer, for local setup with no mail server. Never on in production. |
+| `PLATFORM_BLOCK_DISPOSABLE` | off | Refuse disposable mail domains outright instead of flagging them. |
+| `PLATFORM_DB_DIALECT` | `sqlite` | `postgres` rewrites `?` placeholders to `$1…` and uses the Postgres DDL. |
+
+### Run it locally
+
+```bash
+# 1. the platform alone (its own process, its own database)
+PLATFORM_ENABLED=1 \
+PLATFORM_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")" \
+PLATFORM_DEV_SHOW_CODES=1 \
+npm run platform
+# → http://localhost:3200/platform  (sign up, the code appears in the answer
+#   and in platform/data/outbox.jsonl)
+
+# 2. or mounted inside the bot's own server: same env vars, then
+npm start
+# → http://localhost:3000/platform, next to /admin and the dashboard
+```
+
+The mounted form inherits the bot's own exposure rules: on a public bind it
+needs `DASHBOARD_TOKEN` like the rest of the dashboard (otherwise the whole web
+UI is refused, platform included). For a real customer-facing deployment run the
+platform as its own app — `npm run platform` — which is what the diagram shows.
+
+Creating an assistant from the wizard runs `createTenant` for you, so the tenant
+appears under `tenants/<slug>/` exactly as if you had run
+`node scripts/tenant.js new`. `node scripts/run-all.js` then supervises every
+worker; the platform starts and stops them through the same functions.
+
+### What is in `platform/`
+
+| file | responsibility |
+|---|---|
+| `env.js` | flags, paths, consent versions, help texts from `owner.example.json` |
+| `db.js` + `schema.js` | the platform database: one schema, SQLite now, Postgres-ready SQL |
+| `crypto.js` | scrypt passwords, HMAC one-time codes, random ids |
+| `accounts.js` | signup → code → password, login, reset, consent, export, delete |
+| `session.js` | signed HttpOnly `wa_platform` cookie + `wa_platform_csrf` double submit |
+| `wizard.js` | the eight steps; every save goes through `profile.js` |
+| `provisioning.js` | idempotent, recorded, retryable tenant creation |
+| `connect.js` | QR, phone-number pairing, status polling, disconnect, Cloud API info |
+| `plans.js` | entitlements, trial expiry (pause, never delete) |
+| `usage.js` | `usage_events`, daily/monthly rollups, worker-journal import |
+| `audit.js` | sanitised audit trail and owner notifications |
+| `routes.js` + `http.js` + `views.js` | the HTTP surface, CSP, and the pages |
+| `public/` | `app.js`, `app.css`, `auth.js` — same-origin, no CDN |
+| `sandbox.js` + `scripts/sandboxChat.js` | the test chat: the real brain, a fake socket |
+
+### Accounts
+
+Email → six-digit code → password. The code lives **10 minutes**, allows **5
+attempts**, is single-use, replaced by a resend, rate limited per address and per
+IP, and stored as an **HMAC** — six digits is a million guesses, so the secret is
+what makes the stored value useless. Passwords are `crypto.scryptSync` with a
+per-user salt, stored as `scrypt$N$r$p$salt$hash`.
+
+Sessions are a signed cookie (`<id>.<expiry>.<signature>`, `hmacWith` from
+`adminPanel.js` with the label `platform`) **plus** a row in `sessions`, so
+logout and a password reset really end a session instead of waiting for an
+expiry. SameSite=Strict, HttpOnly, `Secure` behind HTTPS, `no-store` everywhere.
+Cookie-authenticated mutations need the `x-platform-csrf` header (or a
+same-origin `Origin`).
+
+Consent is captured with the terms and privacy versions and the time; a version
+bump makes the next request ask again. Roles are `owner` (everything) and
+`staff` (view only) — a staff account can read the setup and the numbers and can
+change nothing.
+
+### The wizard
+
+Eight steps: business type (the eight templates or your own) → details (name,
+city, languages, hours, tone) → catalogue, services, FAQs, payment details →
+optional documents → behaviour (handover words, intake fields, daily cap, reply
+timing) → connect WhatsApp → test chat → go live.
+
+Every step is saved as a draft (`wizard_drafts`) **and** written into the
+tenant's `config/owner.json` through `validateProfile()` — a step that the bot
+would refuse to load fails with the validator's own message and changes nothing.
+The help text under each field comes from `_help` in `config/owner.example.json`,
+so it lives with the example config the bot already ships.
+
+Documents use the existing pipeline unchanged: 5 MB ceiling, extension
+whitelist, `learn`.
+
+### Connecting WhatsApp
+
+The QR is fetched from the tenant's own process (the same `qrForTenant()` the
+admin panel uses: live `botState`, or the `qr-<slug>.png` the worker writes), is
+owner-only, rate limited to 20 a minute, sent with `no-store`, and is never
+stored by the platform.
+
+The phone-number route hands the work to Baileys: the platform writes
+`PAIRING_NUMBER` into the tenant's `.env` and restarts it, which is what makes
+`sock.requestPairingCode()` run. The code is then read from the worker's status
+and **shown exactly as the library produced it** (WhatsApp's own format, e.g.
+`ABCD-1234`). A six-digit code in this product is only ever the platform
+account's email code.
+
+Cloud API tenants get no QR: they get the webhook path, the public URL and a
+"verify token is set" flag. The token itself never leaves the server.
+
+Status polling is `waiting → connected → error`, and disconnect stops the worker
+and deletes its `sessions/` folder — the business profile stays.
+
+### Provisioning
+
+Steps: `allocate → create → secrets → profile → entitlements → finalise`. Each
+one is recorded in `tenants.provision_step`; a failure sets `status='failed'`,
+the failing step and the message, and `POST /api/platform/tenants/<slug>/provision`
+resumes from there without redoing anything. Creating twice is a no-op.
+
+Secrets (`DASHBOARD_TOKEN`, `PLATFORM_TENANT_TOKEN`) are generated once, written
+0600 into the tenant's `.env`, kept server-side for the platform's own loopback
+calls, and returned to the owner **once**, at creation. Every step is written to
+`platform_audit`.
+
+A number can belong to one assistant: a second account trying the same number
+gets `number_in_use`, and the files never collide because tenants are addressed
+by slug, always through `tenantDir()` (which refuses anything that could escape
+`tenants/`).
+
+### Plans (no payments)
+
+`plans` is a table with `limits` and `features`, seeded with `free`, `starter`
+and `growth`. A plan is applied by writing the values the bot already reads:
+
+| plan limit | written where | enforced by |
+|---|---|---|
+| `llm_calls_day` | `TENANT_DAILY_LLM_CALLS` | the bot's existing per-tenant budget (`llm.js`), which already answers the customer politely when it is hit |
+| `voice_minutes` | `VOICE_REPLY_MODE` | the existing voice switch; zero minutes means voice replies off |
+| premium `features` | `features.*` in `owner.json` | `featureOn()` |
+| `agents`, `numbers`, `conversations_month` | checked where a change is requested | the wizard and the create endpoint |
+
+Core flags are never turned off by a plan — a free tenant still has a working
+bot. Trial expiry **pauses** a tenant: the worker is stopped, `status='paused'`
+and `paused_reason='trial_expired'` are recorded, the owner is notified on the
+platform (the bot is off, so it cannot message itself), and the files stay.
+`expireTrials()` is idempotent and runs from the standalone app's timer and
+before any platform request.
+
+### Usage
+
+`usage_events` is written at the **single** `llm.js` call site and carries
+tenant, time (plus materialised `day`/`month`), provider, model, agent, kind
+(`chat`, `router`, `reasoning`, `tts`, `vision`, `embedding`), prompt/completion
+tokens, an `estimated` flag, latency, and a **hashed** conversation key. When a
+provider reports tokens they are believed; when it reports nothing,
+`estimateTokens()` fills in ~4 characters per token and the row is flagged
+`estimated=1`, so a dashboard can say which numbers are guesses.
+
+Rollups are SQL: per day, per month, per kind, per model, and distinct
+conversations per month — the last one is what a plan's `conversations_month`
+counts. A worker that is not the platform writes the same events to
+`data/usage-events.jsonl`; `ingestJournal()` imports them once, by uid.
+
+### Privacy and abuse
+
+- No customer message content in the platform: `audit.js` drops message-like
+  fields before storing, usage rows hold counts only, and the conversation key is
+  a truncated SHA-256.
+- Export first, then delete: `POST /api/platform/account/export` writes the JSON
+  and records `exported_at`; deletion is refused (`409 export_first`) until that
+  exists, then stops the workers, removes the folders, revokes sessions and
+  scrubs the account row.
+- One trial per WhatsApp number, tracked even after an account leaves; one
+  account per email; disposable domains are flagged (and can be blocked).
+- The test chat runs the tenant's real brain in a short-lived child process with
+  a scratch data directory, a fake transport that refuses every number except
+  `900000000000`, and no web server. Nothing is sent to WhatsApp.
+
+### What cannot be tested here
+
+These need a real phone or a real provider, and the tests deliberately do not
+pretend otherwise:
+
+- **Scanning a QR** against WhatsApp's servers, and the phone-number pairing
+  handshake with Meta. The tests cover the platform's side (owner-only,
+  rate-limited, no-store, verbatim code, disconnect) with the worker replaced by
+  a hook.
+- **A real Meta Cloud API webhook** — the verify-token challenge and delivery
+  receipts. The platform only reports the URL and whether the secrets are set.
+- **Live model billing numbers** from Groq/Gemini/OpenRouter. Both paths are
+  exercised with a fake fetch that either reports `usage` or omits it.
+- **Email delivery.** There is no provider wired up: codes go to
+  `platform/data/outbox.jsonl` until `setMailer()` is given one.
+
+---
+
 ## The golden eval — 68 conversations that must keep working
 
 `npm test` proves the code runs. The golden eval proves the *bot still behaves*:

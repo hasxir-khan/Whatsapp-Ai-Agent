@@ -1,0 +1,43 @@
+/* platform/public/app.css
+   Served from this origin. No webfonts, no CDN, no trackers — the auth pages
+   already carry the base rules; this file only adds the app's layout. */
+
+#app { display: block; }
+
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px; }
+.tabs button { padding: 7px 12px; font-size: 14px; border-radius: 999px; }
+.tabs button[aria-selected="true"] { background: var(--accent); color: #06120c; border-color: var(--accent); font-weight: 650; }
+
+.tenant-list { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.tenant-card { text-align: left; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
+.tenant-card[aria-current="true"] { border-color: var(--accent); }
+
+.grid2 { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.stat { border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.stat b { display: block; font-size: 22px; letter-spacing: -0.02em; }
+.stat span { color: var(--muted); font-size: 13px; }
+
+.steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.steps span { font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.steps span[data-state="current"] { color: var(--ink); border-color: var(--accent); }
+.steps span[data-state="done"] { color: var(--accent); border-color: var(--accent); }
+
+.qr { background: #fff; padding: 10px; border-radius: 12px; display: inline-block; }
+.qr img { display: block; width: 260px; height: 260px; image-rendering: pixelated; }
+.code { font: 700 26px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 2px; }
+
+.chat { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.chat .msg { max-width: 78%; padding: 9px 12px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
+.chat .me { align-self: flex-end; background: var(--accent); color: #06120c; }
+.chat .bot { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); }
+.chat .sys { align-self: center; color: var(--muted); font-size: 12px; }
+
+.table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.table th, .table td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+.table th { color: var(--muted); font-weight: 500; }
+
+.notice { border-left: 3px solid var(--warn); padding: 8px 12px; background: var(--panel); border-radius: 8px; font-size: 14px; margin: 10px 0; }
+.danger { border-color: var(--bad); }
+.danger button { border-color: var(--bad); color: var(--bad); }
+.doc { font-size: 14px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.small { font-size: 13px; color: var(--muted); }

@@ -251,7 +251,7 @@ function readTenantJson(slug) {
   }
 }
 
-function readTenantEnv(slug) {
+export function readTenantEnv(slug) {
   const file = path.join(tenantDir(slug), '.env');
   const out = {};
   if (!fs.existsSync(file)) return out;
@@ -262,7 +262,7 @@ function readTenantEnv(slug) {
   return out;
 }
 
-function writeTenantEnvValue(slug, key, value) {
+export function writeTenantEnvValue(slug, key, value) {
   const file = path.join(tenantDir(slug), '.env');
   if (!fs.existsSync(file)) throw new Error('no_env');
   const lines = fs.readFileSync(file, 'utf8').split('\n');

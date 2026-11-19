@@ -49,3 +49,7 @@ posters/
 # placeholders. Local by design: it is the one file that still lists the real
 # values, so it must never be committed.
 .replacements
+
+# The platform's own state: accounts, usage, audit. Never committed.
+platform/data/
+qr-*.png

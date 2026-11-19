@@ -30,6 +30,8 @@ import {
   webSecurityState,
 } from './services/webAuth.js';
 import { getTransport } from './transport/index.js';
+import { handlePlatformRoute } from '../platform/routes.js';
+import { initPlatform } from '../platform/index.js';
 import { growthSnapshot, SOURCE_LABELS } from './services/growthDashboard.js';
 import * as accuracyModule from './services/accuracy.js';
 import {
@@ -1191,6 +1193,12 @@ export function webSecurityStatus() {
 let startedServer = null;
 
 export function startServer() {
+  // The platform keeps its own state and, in a single-process install, receives
+  // usage events from this process's LLM client. Off unless PLATFORM_ENABLED.
+  if (process.env.PLATFORM_ENABLED) {
+    initPlatform().catch((err) => console.error('platform init failed:', err?.message || err));
+  }
+
   if (!config.server.enabled) {
     console.log('🌐 Dashboard disabled (ENABLE_WEB=false)');
     return null;
@@ -1256,6 +1264,11 @@ export function startServer() {
         res.end('Dashboard disabled: no DASHBOARD_TOKEN on a public bind. Webhooks and /health only.');
         return;
       }
+
+      // Phase 7: the customer platform is a separate layer. It answers only its
+      // own paths (/platform, /api/platform) and only when PLATFORM_ENABLED is
+      // set; otherwise this returns false at once and nothing below changes.
+      if (await handlePlatformRoute(req, res, url)) return;
 
       // The admin panel owns /admin and /api/admin, and answers 404 unless it is
       // switched on with a token. Routed first so nothing below can shadow it.

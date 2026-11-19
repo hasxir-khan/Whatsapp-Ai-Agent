@@ -10,6 +10,7 @@ import { config } from '../config/env.js';
 import { bumpUsage, getUsage, todayKey, logEvent, tenantUsage, bumpTenantUsage } from '../utils/db.js';
 import { GEMINI_BASE, geminiHeaders, isKeyError, explainGeminiError } from '../utils/gemini.js';
 import * as providerTrace from '../services/providerTrace.js';
+import { recordUsage, estimateTokens, isRecording } from '../services/usageEvents.js';
 
 let fetchImpl = globalThis.fetch;
 
@@ -220,7 +221,14 @@ async function openAiCompatible({ provider, model, system, messages, temperature
     args: safeParse(call.function?.arguments),
     raw: call.function?.arguments,
   }));
-  return { text, toolCalls, tokens: data.usage?.total_tokens || 0, model };
+  return {
+    text,
+    toolCalls,
+    tokens: data.usage?.total_tokens || 0,
+    promptTokens: data.usage?.prompt_tokens || 0,
+    completionTokens: data.usage?.completion_tokens || 0,
+    model,
+  };
 }
 
 // ── Gemini (native API) ─────────────────────────────────────
@@ -314,7 +322,14 @@ async function gemini({ model, system, messages, temperature, maxTokens, json, t
       args: safeParse(p.functionCall.args),
       raw: p.functionCall.args,
     }));
-  return { text, toolCalls, tokens: data.usageMetadata?.totalTokenCount || 0, model };
+  return {
+    text,
+    toolCalls,
+    tokens: data.usageMetadata?.totalTokenCount || 0,
+    promptTokens: data.usageMetadata?.promptTokenCount || 0,
+    completionTokens: data.usageMetadata?.candidatesTokenCount || 0,
+    model,
+  };
 }
 
 async function callProvider(provider, args) {
@@ -353,10 +368,14 @@ export async function chat({
   // answer over the top of the fallback that already replied.
   singleFlight = false,
   kind = null,
+  // Which agent asked (manager, booking, analyst…) — recorded with usage so a
+  // bill can say *what* was expensive. Optional and never used for routing.
+  agent = null,
 } = {}) {
   checkQuota();
 
   const mode = small ? 'small' : 'chat';
+  const agentName = agent ? String(agent).slice(0, 40) : null;
   const started = Date.now();
   let seq = null;
   if (chatKey && singleFlight) {
@@ -409,6 +428,33 @@ export async function chat({
         if (result.tokens) bumpUsage('llm_tokens', result.tokens);
 
         const ms = Date.now() - started;
+
+        // The one place a model call succeeds is the one place usage is
+        // recorded. A provider that reports tokens is believed; one that says
+        // nothing gets a flagged estimate instead of a silent zero. With the
+        // platform off, `isRecording()` is false and none of this runs.
+        if (isRecording()) {
+          const reported = Number(result.promptTokens) > 0 || Number(result.completionTokens) > 0;
+          const promptTokens = reported
+            ? Number(result.promptTokens) || 0
+            : estimateTokens(system || '') + estimateTokens(messages || []);
+          const completionTokens = reported
+            ? Number(result.completionTokens) || 0
+            : estimateTokens(result.text || '');
+          recordUsage({
+            tenant: tenantSlug(),
+            kind: kind || mode,
+            provider,
+            model,
+            agent: agentName,
+            chatKey,
+            promptTokens,
+            completionTokens,
+            totalTokens: result.tokens || promptTokens + completionTokens,
+            estimated: !reported,
+            latencyMs: ms,
+          });
+        }
         providerTrace.record({
           chat: chatKey,
           kind: kind || mode,

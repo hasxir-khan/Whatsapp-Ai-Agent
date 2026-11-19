@@ -32,7 +32,8 @@
     "restore": "node scripts/restore.js",
     "templates": "node scripts/tenant.js templates",
     "setup": "node scripts/tenant.js setup",
-    "index-images": "node scripts/index-images.js"
+    "index-images": "node scripts/index-images.js",
+    "platform": "node platform/index.js"
   },
   "keywords": [
     "whatsapp",
