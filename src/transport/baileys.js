@@ -55,13 +55,24 @@ import { config } from '../config/env.js';
 import { logEvent } from '../utils/db.js';
 import { botState, setQr, clearQr, setStatus } from '../state.js';
 import { registerCalls } from '../services/calls.js';
+import {
+  createAuditLogger,
+  noteInbound,
+  noteOutbound,
+  noteStatusUpdate,
+  noteTyping,
+  noteDecrypt,
+} from '../services/transportAudit.js';
 import { handleDeletedMessage } from '../services/deletedMessages.js';
 import * as media from '../services/media.js';
 import { describeMessage, downloadMedia, chatKind, resolveNumber, resolveJid } from '../services/media.js';
 import { createRequire } from 'node:module';
 import { Transport, normalizeIncoming, jidToNumber } from './base.js';
 
-const logger = pino({ level: process.env.BAILEYS_LOG === 'debug' ? 'debug' : 'silent' });
+// Wrapped, not replaced: Baileys reports Bad MAC and prekey-bundle session
+// resets through this logger, so it is where decryption failures are counted.
+// The wrapper passes every line through untouched and stores no text.
+const logger = createAuditLogger(pino({ level: process.env.BAILEYS_LOG === 'debug' ? 'debug' : 'silent' }));
 
 export const BAILEYS_CAPABILITIES = {
   text: true,
@@ -256,6 +267,17 @@ export class BaileysTransport extends Transport {
 
     // ── incoming messages ────────────────────────────────────
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      // Recorded before the filter on purpose: the JID shapes a contact writes
+      // from are what a presence update must be addressed to, and they arrive on
+      // every upsert, not only the ones we answer.
+      for (const msg of messages || []) {
+        noteInbound(msg);
+        const stub = Number(msg?.messageStubType || 0);
+        const params = msg?.messageStubParameters || [];
+        if (stub === 2 || params.some((param) => /absent from node/i.test(String(param)))) {
+          noteDecrypt('absentMessage', { id: msg?.key?.id || null });
+        }
+      }
       if (type !== 'notify') return;
       for (const msg of messages) {
         if (!msg?.message) {
@@ -267,11 +289,18 @@ export class BaileysTransport extends Transport {
     });
 
     sock.ev.on('messages.update', async (updates) => {
+      noteStatusUpdate(updates);
       try {
         await handleDeletedMessage(sock, updates);
       } catch (err) {
         console.error('Delete handler failed:', err.message);
       }
+    });
+
+    // Delivery/read receipts for our own messages. Observational: the handler
+    // only records the timestamp, it does not answer anything.
+    sock.ev.on('message-receipt.update', (receipts) => {
+      noteStatusUpdate(receipts);
     });
 
     // Contacts/groups/receipts: nothing to do, but don't let them bubble up
@@ -295,7 +324,11 @@ export class BaileysTransport extends Transport {
   // ── sending ───────────────────────────────────────────────
   async send(jid, payload = {}) {
     if (!this.sock) throw new Error('baileys: not connected');
-    return this.sock.sendMessage(jid, payload);
+    const sent = await this.sock.sendMessage(jid, payload);
+    // Remember the id so `messages.update` can be matched to a recipient and a
+    // send time later. The payload itself is not kept.
+    noteOutbound({ id: sent?.key?.id, jid, at: Date.now() });
+    return sent;
   }
 
   async sendVoice(jid, { buffer, mimetype = 'audio/ogg; codecs=opus', seconds = 0 } = {}) {
@@ -317,7 +350,9 @@ export class BaileysTransport extends Transport {
   async setPresence(jid, state = 'paused') {
     try {
       await this.sock?.sendPresenceUpdate(state, jid);
-    } catch {
+      noteTyping({ jid, state, via: 'setPresence', sock: this, ok: true });
+    } catch (err) {
+      noteTyping({ jid, state, via: 'setPresence', sock: this, ok: false, error: err?.message });
       /* presence is cosmetic */
     }
   }

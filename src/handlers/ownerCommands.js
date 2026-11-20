@@ -64,6 +64,8 @@ const HELP = `*Bot commands*
 .calls – recent incoming calls, with the rescue timeline
 .debug last – which model answered, and where the seconds went (reply timeline)
 .debug timing – the reply-timing settings in force
+.typing-test 92300… – send “typing…” four ways; tell me which your phone showed
+.typing-test use <n> – make that the default (a|b|c|d)
 .report – today's brief
 .usage – free-tier usage
 .status – system health
@@ -231,6 +233,7 @@ const OWNER_ONLY = new Set([
   'agents', 'agent',
   'marketing', 'plan', 'offer', 'promo', 'channels', 'adcopy', 'reply-review',
   'brain', 'impact', 'strategy', 'do', 'why', 'goal', 'experiment', 'proposals',
+  'typing-test',
 ]);
 
 /**
@@ -692,6 +695,14 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         ...(agentsEnabled() ? [`Agents: ${listAgents().filter((x) => x.enabled).length}/${listAgents().length} on · this chat: ${agentBadge(chatJid)?.name || 'default assistant'}`] : []),
         ...transportLines(),
       ];
+      // The three lines that answer "is the indicator actually going out, and
+      // did anything arrive?" — see `.typing-test` when it says it did not.
+      try {
+        const { summaryLines } = await import('../services/transportAudit.js');
+        lines.push('', ...summaryLines());
+      } catch {
+        /* the audit is diagnostic; it must never break .status */
+      }
       return { handled: true, reply: lines.join('\n') };
     }
 
@@ -1442,6 +1453,14 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       }
       const waiting = snap.checks.filter((c) => c.kind === 'sla');
       lines.push(waiting.length ? `🟠 ${waiting.length} chat(s) waiting for a reply` : '✅ no chat waiting');
+      // Presence and delivery are counted, not guessed: these lines are the
+      // difference between "the code called a function" and "WhatsApp took it".
+      try {
+        const { summaryLines } = await import('../services/transportAudit.js');
+        lines.push('', ...summaryLines());
+      } catch {
+        /* ignore */
+      }
       if (snap.open.length) {
         lines.push('');
         lines.push(`Open incidents: ${snap.open.length} (see .incidents)`);
@@ -1644,10 +1663,14 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       const { replyTiming } = await import('../core/timing.js');
       if (sub === 'last') {
         // The model trace says who answered; the timeline says where the
-        // seconds went between the customer's message and the reply.
+        // seconds went between the customer's message and the reply; the
+        // delivery lines say whether WhatsApp acknowledged it.
         const trace = formatLast({ limit: 5 });
         const tl = formatTimeline({ limit: 5 });
-        return { handled: true, reply: tl ? `${trace}\n\n${tl}` : trace };
+        const { deliveryLines } = await import('../services/transportAudit.js');
+        const delivery = deliveryLines({ limit: 5 });
+        const body = tl ? `${trace}\n\n${tl}` : trace;
+        return { handled: true, reply: delivery.length ? `${body}\n\n${delivery.join('\n')}` : body };
       }
       if (sub === 'timing') return { handled: true, reply: timingSummary(replyTiming()) };
       if (/^\+?\d{8,}$/.test(sub)) {
@@ -1662,6 +1685,67 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         return { handled: true, reply: chatLines ? `${lines.join('\n')}\n\n${chatLines}` : lines.join('\n') };
       }
       return { handled: true, reply: 'Usage: .debug last — or .debug 923001234567' };
+    }
+
+    case 'typing-test': {
+      // Diagnostic, owner-only, presence-only. It sends no text: a test that
+      // looks like a message to the customer is worse than no test.
+      const audit = await import('../services/transportAudit.js');
+      const typing = await import('../services/typingTest.js');
+      const sub = String(args[0] || '').toLowerCase();
+
+      if (sub === 'use') {
+        try {
+          const picked = typing.setStrategy(args[1]);
+          return {
+            handled: true,
+            reply: `✅ Typing strategy ${picked} — ${typing.STRATEGIES[picked].label}.\nEvery reply from now on uses it. Undo with .typing-test use 1.`,
+          };
+        } catch (err) {
+          return { handled: true, reply: err.message };
+        }
+      }
+
+      const effective = typing.strategy();
+      if (!args.length || ['show', 'status', 'info'].includes(sub)) {
+        const forms = audit.jidForms('');
+        return {
+          handled: true,
+          reply: [
+            '🐞 *Typing test* — presence only, no message is sent',
+            '',
+            ...audit.environmentLines(),
+            `Strategy: ${effective} — ${typing.STRATEGIES[effective].label}`,
+            forms.lastInboundJid ? `Last inbound JID: ${forms.lastInboundJid}${forms.lid ? ` (alt ${forms.lid})` : ''}` : 'No inbound message seen yet, so only the phone form is known.',
+            '',
+            'Usage: .typing-test 923001234567',
+            'Then say which number showed “typing…”: .typing-test use <number>',
+            `Variants: ${typing.STRATEGY_IDS.map((id) => `${id}=${typing.STRATEGIES[id].label}`).join(' · ')}`,
+          ].join('\n'),
+        };
+      }
+
+      const number = String(sub).replace(/[^\d]/g, '');
+      if (number.length < 8) {
+        return { handled: true, reply: 'Usage: .typing-test 923001234567 — or .typing-test use <number> after you pick one.' };
+      }
+
+      const transport = getTransport() || sock;
+      const live = transport?.sock || transport;
+      if (!live) {
+        return { handled: true, reply: 'No transport in this process, so there is nothing to send presence with.' };
+      }
+
+      const forms = audit.jidForms(number);
+      const report = await typing.runTypingTest({ target: live, number, forms });
+      const header = [
+        '🐞 *Typing test* — presence only, no message is sent',
+        ...audit.environmentLines(),
+        `Strategy currently: ${effective}`,
+        forms.lastInboundJid ? `Last inbound JID: ${forms.lastInboundJid}${forms.lid && forms.lid !== forms.lastInboundJid ? ` · alt ${forms.lid}` : ''}` : 'No inbound message from this number was seen in this process.',
+        '',
+      ];
+      return { handled: true, reply: [...header, typing.describeResults(report)].join('\n') };
     }
 
     case 'marketing': {

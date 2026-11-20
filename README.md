@@ -77,7 +77,8 @@ Everything the demo writes lives in `./demo` and is gitignored; delete the folde
 24. [Deploy for $0 — the whole guide](#deploy-for-0--the-whole-guide)
 25. [Security and privacy](#security-and-privacy)
 26. [Troubleshooting](#troubleshooting)
-27. [Honest limitations](#honest-limitations)
+27. [Typing and delivery — is WhatsApp taking it?](#typing-and-delivery--is-whatsapp-taking-it)
+28. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -2078,6 +2079,7 @@ Type in your own WhatsApp chat (message yourself):
 | Command | What it does |
 |---|---|
 | `.help` | everything below |
+| `.typing-test 92300…` | send "typing…" four ways, presence only; `.typing-test use 3` makes that the default |
 | `.chats` | recent conversations with local time |
 | `.leads [status]` | pipeline ranked by score, with next actions |
 | `.lead 92300…` | full dossier: score, reasons, memory, project, quote |
@@ -2434,6 +2436,94 @@ it is a placeholder, not a working mailbox).
 | Two users disconnect each other | They share a WhatsApp number — one number per user |
 | Bot talks over me | It pauses 45 min after your manual reply; check `.resume` |
 | Everything rate-limited | Free tiers reset daily; raise `DAILY_LLM_CALLS` only if your provider allows |
+| The customer never sees "typing…" | `.typing-test 92300…` — four ways of sending it, then tell the bot which one your phone showed |
+| A sent message sits on "Waiting for this message" | `.debug last` shows whether WhatsApp acknowledged it; `.health` counts the decryption failures |
+
+---
+
+## Typing and delivery — is WhatsApp taking it?
+
+Two complaints sound identical from inside the process and mean opposite things:
+
+- **"The typing indicator never shows."** The bot called a presence function; the
+  customer's phone decided not to draw a bubble. Nothing in the bot's own tests
+  can see the difference.
+- **"My message says *Waiting for this message*."** The recipient's client is
+  asking WhatsApp for the encrypted payload and not getting it — a decryption or
+  session problem on the way out, even though incoming messages decrypt fine.
+
+Rather than guess, the bot counts what it does and asks a human what the other
+screen showed. Nothing in this chapter changes message behaviour; it makes the
+two failures visible.
+
+### `.typing-test` — one command, four answers
+
+```
+.typing-test 923001234567
+```
+
+Presence only — **no message is sent**, so a diagnostic never looks like a reply
+to the customer. The bot sends "typing…" four ways, eight seconds apart, each
+held for six seconds and then taken down:
+
+| # | Variant | What it tests |
+|---|---|---|
+| 1 | composing only | the shape the bot has always used |
+| 2 | `presenceSubscribe`, then composing | a subscription is required before presence is honoured |
+| 3 | `available`, then composing | some accounts ignore presence until the device is "online" |
+| 4 | composing on the alternate JID | LID chats: the message arrives on one address, the phone shows the other |
+
+Watch the phone and reply with the number that worked:
+
+```
+.typing-test use 3
+```
+
+That is stored as `typing.strategy` in `config/owner.json` and survives restarts.
+If none of the four showed, that is a real answer too — the problem is not the
+call shape, and `.health` will say whether the presence call is reaching the
+socket at all. Add `TYPING_AUDIT=1` to see every presence line with a timestamp:
+
+```
+[typing] 14:02:11.418 composing → 923001234567@s.whatsapp.net via sendPresenceUpdate
+[typing] 14:02:17.421 paused    → 923001234567@s.whatsapp.net via sendPresenceUpdate
+```
+
+### What the audit counts
+
+`.status` and `.health` now carry three lines:
+
+```
+Typing: composing → 923001234567@s.whatsapp.net · 12 presence sent · ⚠️ 2 wrong argument order
+Delivery: 41 sent · 39 delivered · ⚠️ 1 unacked >60s
+Decrypt: 3 bad MAC · 1 session reset · 0 absent · 0 retry failed
+```
+
+- **wrong argument order** means presence was sent through a call shape whose
+  argument order does not match the method — the classic way a "composing"
+  update goes out addressed to a chat called *composing*.
+- **unacked >60s** is an outgoing message WhatsApp never acknowledged
+  (`messages.update` / receipts), which is what the recipient sees as
+  *Waiting for this message*.
+- **bad MAC**, **session reset**, **absent**, **retry failed** are counted from
+  the socket's own logger and message stubs. No message text is stored — only
+  the category and a count.
+
+`.debug last` adds the send → delivered latency for the last few messages:
+
+```
+*Delivery*
+✅ +923001234567: sent → delivered in 1.2s
+⏳ +923005551234: pending · 8s ago
+```
+
+### What a fake socket cannot prove
+
+Every test in `test/63-transport-audit.test.js` runs against a fake socket. It
+can prove the bot called `sendPresenceUpdate('composing', jid)` with the right
+JID, in the right order, and that it paused afterwards. It cannot prove
+WhatsApp accepted it, and it cannot prove the customer's phone drew anything —
+only the phone in your hand can. That is why the command asks.
 
 ---
 

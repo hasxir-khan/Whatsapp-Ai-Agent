@@ -19,6 +19,7 @@
 
 import { config } from '../config/env.js';
 import { business, tone as toneProfile } from '../services/profile.js';
+import { noteTyping } from '../services/transportAudit.js';
 
 export const DEFAULT_TIMING = {
   enabled: true,
@@ -279,18 +280,27 @@ function defaultPresence(sock, jid = null, { messageId = null } = {}) {
   return (state) => {
     try {
       let out = null;
+      let via = null;
       if (typeof sock?.sendTypingIndicator === 'function' && messageId) {
         // Cloud API: typing *is* the read receipt, and it needs the wamid.
+        via = 'typingIndicator';
         out = sock.sendTypingIndicator(messageId, { state });
       } else if (typeof sock?.sendPresenceUpdate === 'function') {
+        via = 'sendPresenceUpdate';
         out = sock.sendPresenceUpdate(state, jid);
       } else if (typeof sock?.setPresence === 'function') {
+        // NOTE (diagnosis, see `.typing-test`): the transport's method is
+        // setPresence(jid, state), so this call puts `state` where `jid` goes.
+        // It is left exactly as it was — the evidence layer counts it.
+        via = 'setPresence';
         out = sock.setPresence(state);
       }
+      noteTyping({ jid, state, via: via || 'none', sock, ok: true });
       // Some transports return a promise; nobody waits for a typing indicator,
       // but an unhandled rejection would crash the process.
-      if (out && typeof out.catch === 'function') out.catch(() => {});
-    } catch {
+      if (out && typeof out.catch === 'function') out.catch((err) => noteTyping({ jid, state, via: via || 'none', sock, ok: false, error: err?.message }));
+    } catch (err) {
+      noteTyping({ jid, state, via: 'unknown', sock, ok: false, error: err?.message });
       /* presence is cosmetic */
     }
   };
