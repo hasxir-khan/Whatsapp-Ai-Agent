@@ -16,6 +16,7 @@
 //     server-side, and returned to the caller exactly once;
 //   • one WhatsApp number belongs to one tenant, always.
 
+import { numberId } from './numberIdentity.js';
 import crypto from 'node:crypto';
 import { get, all, run, transaction } from './db.js';
 import { recordAudit, notify } from './audit.js';
@@ -76,10 +77,12 @@ export function allocateSlug(name, { taken = [] } = {}) {
 }
 
 /** Which tenant (if any) already claims this WhatsApp number. */
+export const businessNumberId = (digits) => numberId(digits, get('SELECT salt FROM number_identity_salt').salt);
+
 export function numberOwner(number, { ignoreSlug = null } = {}) {
   const digits = normaliseNumber(number);
   if (!digits) return null;
-  const row = get('SELECT slug, account_id, status FROM tenants WHERE number = ?', [digits]);
+  const row = get('SELECT slug, account_id, status FROM tenants WHERE number = ?', [businessNumberId(digits)]);
   if (row && row.slug !== ignoreSlug) return row;
   return null;
 }
@@ -160,7 +163,7 @@ export function beginProvisioning({ accountId, slug, name, number, template = nu
     run(
       `INSERT INTO tenants (slug, account_id, name, number, plan_id, status, provision_step, template, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 'provisioning', 0, ?, ?, ?)`,
-      [slug, accountId, name, normaliseNumber(number), planId, template, stamp, stamp],
+      [slug, accountId, name, businessNumberId(number), planId, template, stamp, stamp],
     );
     run('INSERT INTO memberships (account_id, slug, role, created_at) VALUES (?, ?, ?, ?)', [
       accountId, slug, 'owner', stamp,
@@ -199,7 +202,6 @@ export async function provisionTenant({
       ok: false,
       error: 'number_in_use',
       message: 'That WhatsApp number already belongs to another assistant on this platform.',
-      slug: conflict.slug,
     };
   }
 
@@ -215,6 +217,8 @@ export async function provisionTenant({
   if (!begun.ok) return begun;
   const tenant = begun.tenant;
   if (tenant.account_id !== accountId) return { ok: false, error: 'slug_taken' };
+  if (tenant.number !== businessNumberId(digits))
+    return { ok: false, error: 'bad_number', message: 'Use the original business number.' };
   if (['active', 'provisioned'].includes(tenant.status) && Number(tenant.provision_step) >= STEPS.length) {
     return { ok: true, tenant, alreadyProvisioned: true, secrets: [] };
   }
@@ -310,7 +314,9 @@ export async function provisionTenant({
         });
       }
     } catch (err) {
-      const message = String(err?.message || err).slice(0, 300);
+      // Validation/child errors may quote tenant profile values. Persist the
+      // bounded step, never the command output or user's field values.
+      const message = `Could not complete ${step}. Check the tenant files, then retry this step.`;
       setProgress(slug, { status: 'failed', step: index, error: `step ${step}: ${message}` });
       recordAudit({
         action: 'tenant_provision_failed',
@@ -328,14 +334,19 @@ export async function provisionTenant({
 }
 
 /** Retry a failed provisioning from where it stopped. */
-export async function retryProvisioning(slug, { accountId = null, ip = null } = {}) {
+export async function retryProvisioning(slug, { accountId = null, ip = null, number = null } = {}) {
   const tenant = getTenant(slug);
-  if (!tenant) return { ok: false, error: 'no_tenant' };
+  if (!tenant || (accountId && !isTenantOwner(accountId, slug))) return { ok: false, error: 'no_tenant' };
+  if (
+    number &&
+    (!/^\d{10,15}$/.test(normaliseNumber(number)) || businessNumberId(normaliseNumber(number)) !== tenant.number)
+  )
+    return { ok: false, error: 'bad_number' };
   if (tenant.status !== 'failed') return { ok: true, tenant, skipped: true };
   return provisionTenant({
-    accountId: accountId || tenant.account_id,
+    accountId: tenant.account_id,
     name: tenant.name,
-    number: tenant.number,
+    number: (await admin()).readTenantEnv(slug).MY_NUMBER || number,
     template: tenant.template,
     planId: tenant.plan_id,
     slug,
@@ -401,6 +412,7 @@ async function removeStoppedTenant(slug, accountId, ip, stop) {
   } catch (err) {
     if (err.message !== 'not_found') return { ok: false, error: 'tenant_cleanup_failed' };
   }
+  (await import('./reportStore.js')).eraseReports(slug);
   run('DELETE FROM tenants WHERE slug = ?', [slug]);
   run('DELETE FROM memberships WHERE slug = ?', [slug]);
   run('DELETE FROM wizard_drafts WHERE slug = ?', [slug]);

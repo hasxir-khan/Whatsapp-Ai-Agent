@@ -8,6 +8,10 @@
 //
 // Nothing here writes: it is a read of `events` and `reply_timeline`.
 
+import { guardBucket } from './reportArchive.js';
+import { period, localDateString } from './reportCalendar.js';
+import { business } from './profile.js';
+import { config } from '../config/env.js';
 import { all } from '../utils/db.js';
 
 const DAY_MS = 86_400_000;
@@ -19,10 +23,10 @@ function sinceIso(days, now) {
   return iso(now.getTime() - Math.max(1, Number(days) || 7) * DAY_MS);
 }
 
-function events(type, fromIso) {
-  return all('SELECT type, number, detail, created_at FROM events WHERE type = ? AND created_at >= ? ORDER BY id', [
+function events(type, fromIso, to) {
+  return all('SELECT type, number, detail, created_at FROM events WHERE type = ? AND created_at >= ? AND created_at < ? ORDER BY id', [
     type,
-    fromIso,
+    fromIso, to,
   ]);
 }
 
@@ -35,18 +39,11 @@ function parseDetail(row) {
 }
 
 /** Guard rejections, split by what the guard actually complained about. */
-function guardProblems(fromIso) {
-  const rows = events('reply_guard_rejected', fromIso);
+function guardProblems(fromIso, to) {
+  const rows = events('reply_guard_rejected', fromIso, to);
   const buckets = { price: [], language: [], cut: [], forbidden: [], other: [] };
   for (const row of rows) {
-    const problems = parseDetail(row).problems || [];
-    const text = Array.isArray(problems) ? problems.join(' | ') : String(problems || '');
-    const hit = (re) => re.test(text);
-    if (hit(/price range changed|is not in the catalogue|not in the catalogue/i)) buckets.price.push(row);
-    else if (hit(/^language: expected|language: expected/i)) buckets.language.push(row);
-    else if (hit(/cut off:/i)) buckets.cut.push(row);
-    else if (hit(/forbidden text/i)) buckets.forbidden.push(row);
-    else buckets.other.push(row);
+    buckets[guardBucket(row.detail)].push(row);
   }
   return buckets;
 }
@@ -65,22 +62,27 @@ export function weekKey(date) {
  * The whole report.
  * @param {{days?:number, now?:Date, weeks?:number}} opts
  */
-export function accuracyReport({ days = 7, now = new Date(), weeks = 4 } = {}) {
-  const from = sinceIso(days, now);
-  const guard = guardProblems(from);
+export function accuracyReport({ days = 7, now = new Date(), weeks = 4, from = null, to = null, trend = true } = {}) {
+  const window =
+    process.env.TENANT_DASHBOARD === '1'
+      ? period(now, business()?.timezone || config.timezone, Math.max(1, Math.min(3650, Number(days) || 7)))
+      : null;
+  from ??= window?.from || sinceIso(days, now);
+  to ??= window?.to || new Date(now.getTime() + 1).toISOString();
+  const guard = guardProblems(from, to);
 
-  const dupBlocked = events('duplicate_reply_blocked', from);
-  const superseded = events('reply_superseded', from);
+  const dupBlocked = events('duplicate_reply_blocked', from, to);
+  const superseded = events('reply_superseded', from, to);
   const handoffs = [
-    ...events('handoff', from),
-    ...events('closer_handoff', from),
-    ...events('complaint_handoff', from),
-    ...events('closer_discount_handoff', from),
+    ...events('handoff', from, to),
+    ...events('closer_handoff', from, to),
+    ...events('complaint_handoff', from, to),
+    ...events('closer_discount_handoff', from, to),
   ];
-  const ownerReplies = events('inbox_reply', from);
-  const disclosures = events('bot_disclosure', from);
-  const cuts = [...events(' reply_cut_detected'.trim(), from), ...events('reply_clipped_to_sentence', from)];
-  const timelines = events('reply_timeline', from);
+  const ownerReplies = events('inbox_reply', from, to);
+  const disclosures = events('bot_disclosure', from, to);
+  const cuts = [...events(' reply_cut_detected'.trim(), from, to), ...events('reply_clipped_to_sentence', from, to)];
+  const timelines = events('reply_timeline', from, to);
 
   const metric = (key, label, count, { target = null, source = null, status = 'ok', note = null } = {}) => ({
     key,
@@ -136,6 +138,19 @@ export function accuracyReport({ days = 7, now = new Date(), weeks = 4 } = {}) {
     }),
   ];
 
+  if (process.env.TENANT_DASHBOARD === '1') {
+    for (const row of all(
+      "SELECT a,SUM(n) n FROM report_signals WHERE metric='accuracy' AND at>=? AND at<? GROUP BY a",
+      [from, to]
+    )) {
+      const m = metrics.find((m) => m.key === row.a);
+      if (m) {
+        m.count += row.n;
+        m.red = m.target === 0 && m.count > 0;
+      }
+    }
+  }
+
   // Per provider, from the reply timeline (the only event that carries one).
   const byProvider = new Map();
   for (const row of timelines) {
@@ -160,14 +175,26 @@ export function accuracyReport({ days = 7, now = new Date(), weeks = 4 } = {}) {
   // Weekly trend: replies per ISO week, with the same three counters alongside.
   const weeksBack = Math.max(1, Number(weeks) || 4);
   const trendFrom = iso(now.getTime() - weeksBack * 7 * DAY_MS);
-  const weekRows = all(
-    "SELECT type, created_at FROM events WHERE created_at >= ? AND type IN ('reply_sent','handoff','duplicate_reply_blocked','reply_guard_rejected') ORDER BY id",
-    [trendFrom]
-  );
+  const weekRows = !trend
+    ? []
+    : all(
+        "SELECT type, created_at FROM events WHERE created_at >= ? AND created_at < ? AND type IN ('reply_sent','handoff','duplicate_reply_blocked','reply_guard_rejected') ORDER BY id",
+        [trendFrom, to]
+      );
   const weekly = new Map();
   for (const row of weekRows) {
-    const key = weekKey(new Date(row.created_at));
-    const entry = weekly.get(key) || { week: key, replies: 0, handoffs: 0, doubleRepliesBlocked: 0, guardRejections: 0 };
+    const key = weekKey(
+      new Date(
+        window ? localDateString(new Date(row.created_at), business()?.timezone || config.timezone) : row.created_at
+      )
+    );
+    const entry = weekly.get(key) || {
+      week: key,
+      replies: 0,
+      handoffs: 0,
+      doubleRepliesBlocked: 0,
+      guardRejections: 0,
+    };
     if (row.type === 'reply_sent') entry.replies += 1;
     if (row.type === 'handoff') entry.handoffs += 1;
     if (row.type === 'duplicate_reply_blocked') entry.doubleRepliesBlocked += 1;
@@ -180,8 +207,8 @@ export function accuracyReport({ days = 7, now = new Date(), weeks = 4 } = {}) {
   let decisionRows = [];
   try {
     decisionRows = all(
-      'SELECT action, COUNT(*) AS count FROM decisions WHERE created_at >= ? GROUP BY action ORDER BY count DESC',
-      [from]
+      'SELECT action, COUNT(*) AS count FROM decisions WHERE created_at >= ? AND created_at < ? GROUP BY action ORDER BY count DESC',
+      [from, to]
     );
   } catch {
     decisionRows = [];
@@ -189,7 +216,7 @@ export function accuracyReport({ days = 7, now = new Date(), weeks = 4 } = {}) {
   const decisions = decisionRows.map((r) => ({ action: r.action, count: Number(r.count) || 0 }));
 
   return {
-    window: { days, from, to: iso(now), weeks: weeksBack },
+    window: { days, from, to, weeks: weeksBack },
     metrics,
     decisions,
     providers,

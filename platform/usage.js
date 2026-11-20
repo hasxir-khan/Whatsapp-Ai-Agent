@@ -15,6 +15,8 @@
 // chat key, which is enough to count one conversation and useless for reading
 // one.
 
+import { dashboardEnabled } from './env.js';
+import { safeUsageLabels, bounds, replayIdentity } from './reportContext.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { get, all, run, lastId, flush } from './db.js';
@@ -26,13 +28,26 @@ export function conversationHash(chatKey) {
   return crypto.createHash('sha256').update(String(chatKey)).digest('hex').slice(0, 16);
 }
 
-export const KINDS = ['chat', 'router', 'reasoning', 'tts', 'vision', 'embedding'];
+export const KINDS = ['chat', 'router', 'reasoning', 'voice', 'tts', 'vision', 'embedding'];
 
 function normaliseKind(kind) {
   const value = String(kind || 'chat').toLowerCase();
   return KINDS.includes(value) ? value : 'chat';
 }
 
+// Cached legacy views use the same tenant-local dates and retention as the new pages.
+const ROLLUP = `SUM(calls) calls,SUM(tokens) total_tokens,SUM(prompt) prompt_tokens,
+ SUM(completion) completion_tokens,SUM(estimated) estimated_calls,SUM(ms) latency_ms`;
+const CACHE = ' FROM r_usage WHERE slug=? AND hour=-1 AND day BETWEEN ? AND ?';
+function retained(slug,{month,from,to}={}) {
+  const {earliest,today}=bounds(slug);
+  const first=[earliest,month?month+'-01':'',from||''].sort().at(-1);
+  const last=[today,month?month+'-31':today,to||today].sort()[0];
+  return [String(slug),first,last];
+}
+function cachedGroups(slug, group, opts, sort='total_tokens DESC') {
+  return all(`SELECT ${group},${ROLLUP}${CACHE} GROUP BY ${group} ORDER BY ${sort}`,retained(slug,opts));
+}
 function dayOf(iso) {
   return String(iso).slice(0, 10);
 }
@@ -49,7 +64,23 @@ function monthOf(iso) {
 export function record(event = {}) {
   const tenant = String(event.tenant || '').trim();
   if (!tenant) return { ok: false, error: 'no_tenant' };
-  const uid = String(event.uid || event.eventUid || '').slice(0, 40) || null;
+  const reporting = dashboardEnabled();
+  let uid = String(event.uid || event.eventUid || '').slice(0, 40) || null;
+  if (reporting) {
+    if (!get('SELECT 1 FROM tenants WHERE slug=?', [tenant])) return { ok: false, error: 'unknown_tenant' };
+    const id = replayIdentity(
+      tenant,
+      uid,
+      event.conversation,
+      event.errorCategory,
+      get('SELECT salt FROM number_identity_salt').salt
+    );
+    // A pre-dashboard batch may replay before its legacy row is backfilled.
+    if (uid && uid !== id.uid && get('SELECT id FROM usage_events WHERE tenant=? AND event_uid=?', [tenant, uid]))
+      return { ok: true, duplicate: true };
+    uid = id.uid;
+    event = { ...event, ...id, ...safeUsageLabels(tenant, event.provider, event.model, event.agent) };
+  }
   if (uid && get('SELECT id FROM usage_events WHERE tenant = ? AND event_uid = ?', [tenant, uid])) {
     return { ok: true, duplicate: true };
   }
@@ -141,6 +172,7 @@ const AGGREGATE = `COUNT(*) AS calls,
 
 /** Per-day rows for a month (or everything). `from`/`to` are ISO dates. */
 export function daily(slug, { from = null, to = null } = {}) {
+  if (dashboardEnabled()) return cachedGroups(slug, 'day', { from, to }, 'day').map((r) => ({ ...r, bucket: r.day }));
   const params = [String(slug)];
   let sql = `SELECT day, ${AGGREGATE} FROM usage_events WHERE tenant = ?`;
   if (from) {
@@ -156,6 +188,12 @@ export function daily(slug, { from = null, to = null } = {}) {
 }
 
 export function monthly(slug, { from = null, to = null } = {}) {
+  if (dashboardEnabled())
+    return cachedGroups(slug, 'substr(day,1,7)', { from, to }, '1').map(({ ['substr(day,1,7)']: month, ...r }) => ({
+      ...r,
+      month,
+      bucket: month,
+    }));
   const params = [String(slug)];
   let sql = `SELECT month, ${AGGREGATE} FROM usage_events WHERE tenant = ?`;
   if (from) {
@@ -171,6 +209,7 @@ export function monthly(slug, { from = null, to = null } = {}) {
 }
 
 export function byKind(slug, { month = null } = {}) {
+  if (dashboardEnabled()) return cachedGroups(slug, 'kind', { month });
   const params = [String(slug)];
   let sql = `SELECT kind, ${AGGREGATE} FROM usage_events WHERE tenant = ?`;
   if (month) {
@@ -182,6 +221,7 @@ export function byKind(slug, { month = null } = {}) {
 }
 
 export function byModel(slug, { month = null } = {}) {
+  if (dashboardEnabled()) return cachedGroups(slug, 'provider,model', { month });
   const params = [String(slug)];
   let sql = `SELECT provider, model, ${AGGREGATE} FROM usage_events WHERE tenant = ?`;
   if (month) {
@@ -193,26 +233,37 @@ export function byModel(slug, { month = null } = {}) {
 }
 
 /** Distinct conversations this month — what the plan's monthly cap counts. */
-export function conversations(slug, { month = new Date().toISOString().slice(0, 7) } = {}) {
+export function conversations(slug, { month = null } = {}) {
+  if (dashboardEnabled())
+    return get(
+      'SELECT COUNT(DISTINCT who) n FROM r_meter WHERE slug=? AND day BETWEEN ? AND ?',
+      retained(slug, { month: month || bounds(slug).today.slice(0, 7) })
+    ).n;
+  month ??= new Date().toISOString().slice(0, 7);
   const row = get(
     'SELECT COUNT(DISTINCT conversation) AS n FROM usage_events WHERE tenant = ? AND month = ? AND conversation IS NOT NULL',
-    [String(slug), String(month).slice(0, 7)],
+    [String(slug), String(month).slice(0, 7)]
   );
   return Number(row?.n || 0);
 }
 
 /** One object for the dashboard (and for the account export). */
-export function summary(slug, { month = new Date().toISOString().slice(0, 7), from = null, to = null } = {}) {
+export function summary(slug, { month = null, from = null, to = null } = {}) {
+  const cached = dashboardEnabled();
+  month ??= (cached ? bounds(slug).today : new Date().toISOString()).slice(0, 7);
   const totals = zeroTotals();
-  for (const row of byKind(slug, { month })) addRow(totals, row);
-  const events = Number(get('SELECT COUNT(*) AS n FROM usage_events WHERE tenant = ?', [String(slug)])?.n || 0);
+  const kinds = byKind(slug, { month });
+  for (const row of kinds) addRow(totals, row);
+  const events = cached
+    ? get('SELECT SUM(calls) n' + CACHE, retained(slug)).n || 0
+    : Number(get('SELECT COUNT(*) AS n FROM usage_events WHERE tenant = ?', [String(slug)])?.n || 0);
   return {
     tenant: slug,
     month,
     totals,
     conversations: conversations(slug, { month }),
-    kinds: byKind(slug, { month }),
-    daily: daily(slug, { from: from || `${month}-01`, to }),
+    kinds,
+    daily: daily(slug, { from: from || `${month}-01`, to: to || (cached ? `${month}-31` : null) }),
     monthly: monthly(slug, { from, to }),
     models: byModel(slug, { month }),
     keys: byKey(slug, { month }),
@@ -226,6 +277,15 @@ export function summary(slug, { month = new Date().toISOString().slice(0, 7), fr
  * records those when a call is refused, so the count is real traffic.
  */
 export function byKey(slug, { month = null } = {}) {
+  if (dashboardEnabled()) {
+    return all(
+      `SELECT provider,model,slot key_slot,version key_version,key_id,NULL key_last4,SUM(calls) calls,
+      SUM(tokens) tokens,SUM(estimated) estimated,SUM(errors) errors,MAX(last_error_at) last_error_at,
+      GROUP_CONCAT(DISTINCT NULLIF(category,'')) categories${CACHE}
+      GROUP BY provider,model,slot,version,key_id ORDER BY tokens DESC`,
+      retained(slug, { month })
+    ).map((r) => ({ ...r, error_categories: (r.categories || '').split(',').filter(Boolean) }));
+  }
   const params = [String(slug)];
   let sql = `SELECT provider, model, key_slot, key_last4, key_ref,
       COUNT(*) AS calls,

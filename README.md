@@ -4038,6 +4038,119 @@ pretend otherwise:
 
 ---
 
+## Dashboard metrics
+
+[What customers see](docs/customer-dashboard.md) · [Part 3 delivery and benchmark](docs/phase-7-part-3.md)
+
+**Enable on the control plane:** set `PLATFORM_ENABLED=1` and `PLATFORM_DASHBOARD=1`, keep the existing HTTPS, session and BYOK configuration, and restart the platform and its managed live workers. Open **Your assistants → Open customer dashboard**. No analytics routes, worker loop or operator login are added to an ordinary bot. No external scripts, provider calls, or LLM-generated counts are used to render reports.
+
+**How the numbers travel.** A live worker periodically reconciles its retained business dates (on startup, then every five minutes), yielding between dates. It atomically publishes a private, versioned `data/dashboard-v1.jsonl` beside the existing per-call journal. Only count/enum projections, numeric outcomes and tenant-keyed aliases cross the boundary. A single platform writer consumes closed batches every minute, committing before acknowledgement. A checksum and generation timestamp replace changed dates instead of adding duplicate totals. Model attempts use their original timestamp and a monotone insert-ID checkpoint. A new worker, missed import, late event or timezone change is reconciled from retained evidence. Backfill includes empty observed dates. Before the tenant’s normal 30-day event purge, only necessary counters are retained for longer reports; missing pre-install events cannot be reconstructed. Selections before archive coverage carry a lower-bound warning for event-based measures.
+
+**Retention and scope.** `limits.dashboard_days` on the assigned plan gates custom ranges immediately; free/starter/growth defaults are **31/60/90** calendar dates. The supported entitlement is 31–90 days (keeps a full quota month). The importer purges expired buckets, masked projections and the per-call replay ledger, even for paused tenants. Confirmed account deletion uses the existing supervisor cleanup and removes its reporting rows. Older backups remain governed by the host’s backup policy. Pages read indexed, cached hourly and daily rollups or bounded masked lists, not event tables. Lists have 25 rows per page; weekday/hour maps have a fixed 168 cells. `Updated` is the worker’s observation time, not the page-load time. A missing sample or denominator is shown as **—**, not a prediction. Local calendar endpoints handle DST; ISO timestamps identify exact instants. BYOK rate estimates are optional, owner-entered and never a platform price.
+
+**Authorization.** Customer HTML: `/platform/reports/<slug>/<section>`; matching JSON: `/api/platform/tenants/<slug>/reports/<section>`. Both check the same signed session, consent and membership. Owners alone see Payments and Export & data, can download aggregate/lead exports (POST with CSRF; audited; four/hour/account/tenant), or request a five-minute intake-brief grant. The collected values are served **only** by the tenant live inbox with its own credential. `PLATFORM_INBOX_ORIGIN` can be a tenant HTTPS origin template containing `{slug}`. Business-number/trial uniqueness uses blind lookup IDs, not stored phone numbers. Configuration and sensitive undo patches belong in tenant files, not analytics. On the first upgrade, mount existing tenant volumes before starting the writer: if a live customer’s previous undo patch cannot be moved, migration rolls back rather than losing it. Wizard resume stores only generic document labels, byte/chunk counts and timestamps.
+
+**Operations.** `/platform/operator` and `/api/platform/operator` have separate HTTPS Basic auth: username `operator`, independent random `PLATFORM_OPERATOR_TOKEN` of at least 32 characters. Unset disables the fleet view. A customer session is never an operator credential. Do not put operator credentials in tenant files or URLs. `npm run doctor -- platform` checks the reporting schema, credential separation and stale active workers. Share the existing tenant **data** volume with the single platform writer (same requirement as journal ingest); without it, reports cannot refresh. Do not open a second writable sql.js connection to the live database for cron or reporting.
+
+<!-- dashboard-definitions -->
+| Metric / section | Definition |
+|---|---|
+| Conversations | Distinct contacts with an inbound message in the selected business dates, counted once across midnight. |
+| Without an owner turn | Inbound conversations with no owner message in the range. This does not guarantee the bot replied. |
+| With an owner turn | Inbound conversations that also had an owner message in the range. |
+| Bot replied | Distinct contacts with an assistant reply in the range, even if their question preceded it. |
+| Automation (%) | 100 × without an owner turn / conversations; a small denominator is flagged. |
+| First response (min) | Mean time from each contact’s first inbound in range to its first assistant reply after that, excluding waits of 24 hours or more. No pair = unavailable. |
+| After-hours coverage | Contacts whose first assistant response came outside configured business opening hours; requires known hours. |
+| New leads | Lead rows first created in the selected range, not every returning contact. |
+| Bookings | Booking records created in the range. |
+| Attributed bookings | Bookings for contacts with no owner message in the selected range. Attribution is an estimate, not causality. |
+| Paid orders | Orders created in range now paid, delivered or completed. |
+| Attributed orders | Paid orders with no owner message in the range (estimated attribution). |
+| Paid order value | Sum of those order totals, in the business currency; not bank settlement. |
+| Attributed revenue | Value of paid orders without an owner message in the range (estimated attribution). |
+| Time saved · estimated (h) | Distinct conversations × configured minutes per conversation / 60; not measured labour time. |
+| Pending now | Open payment reviews marked pending or escalated; excludes rechecks. All queue counts are as of the snapshot. |
+| Recheck now | Open payment reviews explicitly marked recheck. |
+| Overdue now | Open payment reviews whose deadline was before the snapshot. |
+| Accepted today | Payments resolved on the snapshot’s local date as accepted or partial. |
+| Rejected today | Payment decisions resolved as rejected on the snapshot’s local date. |
+| Outstanding claims | Sum of unpaid order balances (or recorded due without an order) on open payment requests, including rechecks. Not money received. |
+| Decision time (min) | Mean elapsed minutes from opening to resolution across payment requests resolved in the last 30 business dates. |
+| Oldest pending | Time the oldest currently pending or escalated payment was opened. |
+| Proactive sends today | Successful growth-agent sends on the snapshot’s local date. |
+| Daily growth cap | Configured proactive-send cap used by .growth. |
+| Opt-outs now | Contacts currently opted out of proactive growth, not a period total. |
+| Monthly metered chats | Distinct masked conversations on model usage attempts this business month; not the inbound conversation metric. |
+| Chats left this month | Plan conversation limit minus distinct metered chats, floored at zero. Unlimited if plan limit is zero. |
+| Monthly chat allowance | Conversation entitlement of the assigned plan; zero means unlimited. |
+| Calls today | Journaled model attempts on the current local date, including recorded failures. |
+| Daily call budget left | The live worker’s enforced tenantBudget cap minus its successful LLM calls, at snapshot time. This pre-existing quota resets at UTC midnight; it is not the business-date attempt total. A zero cap is unlimited. |
+| Model calls | Recorded provider attempts, including failures and fallbacks. No provider billing statement is imported. |
+| Tokens | Input plus output tokens; estimated when token counts are missing. Voice minutes and image bytes are not tokens. |
+| Input tokens | Provider prompt tokens or the recorded estimate. |
+| Output tokens | Provider completion tokens or the recorded estimate. |
+| Estimated calls | Attempts whose usage is estimated or not supplied by the provider. Zero tokens may mean unreported. |
+| Provider errors | Recorded failed provider attempts, not necessarily failed customer conversations. |
+| Messages | Stored user, assistant and owner message rows in selected dates. |
+| Voice minutes | Transcribed seconds reported by speech-to-text / 60, since instrumentation. Not a TTS duration estimate. |
+| Voice allowance left | Monthly plan minutes less measured transcribed minutes this business month, floored at zero. |
+| Review queue now | Count of local review drafts awaiting approval. Notes and drafts never leave the worker. |
+| WhatsApp link | Last recorded tenant connection state, not a live device probe. |
+| Worker status | Current control-plane lifecycle state. |
+| Open incidents | Unresolved tenant incident rows at snapshot time. The dated list shows kind, severity and current status for incidents opened in range. |
+| Last message | Latest stored message timestamp, without sender or content. |
+| Bad decrypt MACs | Worker transport counter since process start; a restart resets the count. |
+| Session resets | Worker transport counter since process start; a restart resets the count. |
+| Absent messages | Worker transport counter since process start; a restart resets the count. |
+| Failed retries | Worker transport counter since process start; a restart resets the count. |
+| Outbound sent | Worker transport counter since process start; a restart resets the count. |
+| Delivery acknowledgements | Worker transport counter since process start; a restart resets the count. |
+| Awaiting acknowledgement | Tracked sends without delivery acknowledgement for at least 60 seconds. |
+| Retention (days) | Plan entitlement in business calendar dates, including today. Older materialisations and usage-event replay rows are purged. |
+| Earliest allowed date | Beginning of the plan retention window. |
+| Published dates | Number of selected business dates published by the worker, including observed empty dates. |
+| Follow-ups sent | Sent followup, follow-up, rebook, reactivation or quote sends in range. |
+| Follow-ups answered | Those sends followed by a customer reply within 72 hours. |
+| Review asks | Review asks created in range now asked or rated. |
+| Reviews received | Review asks created in range now rated. |
+| Goal progress | Active goals at the latest snapshot: actual DB count since creation, target, and capped percent complete. |
+| Week over week | Trailing 7 local dates ending on the selection end, versus 7 immediately before. Change = (current − previous) / previous. No baseline or incomplete history = unavailable. |
+| Growth outcomes | Counts of proactive attempts by sending agent and recorded result. |
+| Agent performance | Distinct routed contacts; handoffs count as escalations; order/booking completions count as resolutions. Latency = average observed first-reply duration in seconds; errors = provider failures attributed to agent. |
+| Conversation decisions | Decisions grouped by recorded action and allowlisted reason. |
+| Activity feed | Hourly groups by type, agent, tenant-masked contact and outcome; timestamp is last occurrence, count includes repeated items. |
+| Weekly analyst archive | Numeric facts saved when the weekly report was sent. Older reports only recorded conversations. No generated prose. |
+| Lead pipeline | Current stage of leads created in range. Paid outranks ordered, then cold/lost, quoted, engaged (qualified/negotiating/won), otherwise new. |
+| Lead directory | Current score (0–100), first-touch source, tags, recorded next action/why and assignee. Unrecognised advice is not exported. Unknown free-form labels get tenant-scoped aliases. |
+| Payment transitions | Recorded opens, decisions, escalations, reversals and expiries, on their original event dates and hours. Notifications are not decisions. |
+| Rejections today | Counts by fixed rejection reason on the snapshot date; free-text reasons are never included. |
+| Decision states | Requests opened in the selected range, grouped by current state and fixed reason code. |
+| Payment & decision register | Current state of each request opened in range. Amount is outstanding balance, minutes is elapsed opening-to-resolution time. |
+| Per-order history | Recorded decision transitions and order status changes in range. Filter by order; no actors’ numbers, proofs or notes. |
+| Usage by day | Attempts, input/output/total tokens, estimated attempts and failures, grouped by business date. |
+| Usage by month | Same measures grouped by business month within the selection. An incomplete month is not extrapolated. |
+| By provider | Calls, tokens, estimated calls and failures grouped by this recorded dimension over the selected dates. |
+| By model | Calls, tokens, estimated calls and failures grouped by this recorded dimension over the selected dates. |
+| By key generation | Provider slot, masked key ID and version. Different keys can reuse a slot and start at version 1. No key material; zero slot/version means unknown. |
+| By calling agent | Calls, tokens, estimated calls and failures grouped by this recorded dimension over the selected dates. |
+| By call kind | Chat, router, reasoning, voice (speech-to-text and TTS), vision and embeddings. Missing dimensions mean uninstrumented, not free. |
+| Conversion funnel | Distinct inbound contacts → new leads → quote_sent/quote_built events → non-cancelled orders → paid/delivered orders → rated review asks. Independent stage counts, not a tracked cohort; rates can exceed 100%. A zero denominator has no rate. |
+| Acquisition sources | First source tag, then referral, tracked link or contact category. Count distinct inbound contacts, new leads, paid/delivered/completed orders and their value by source. |
+| Busiest hours | Inbound message count by local weekday and wall-clock hour; the repeated DST hour combines both occurrences. |
+| Top question topics | Deterministic topic buckets for inbound messages with a question mark. Estimated topic classification, not question transcripts. |
+| Unanswered topics | Topic buckets for recorded rag_miss events. Estimated categories; a retrieval miss is not proof no reply was sent. |
+| Routed intents | Counts by the intent recorded by the tenant router; unrecognised labels become “other”. |
+| Repeated objections | Objection attempts by fixed category (price, trust, timing, comparison); only categories occurring more than once in range. |
+| Experiment results | A/B sends and replies, sample target per arm, and the existing experimentResult verdict. Fewer than the target in either arm = too early. |
+| Accuracy scorecard | Price mismatch, wrong language, forbidden text and cuts are guard detections; target zero. Blocked duplicates include superseded replies, not two messages sent. Handoffs, inbox owner replies and honesty disclosures count their recorded events. Owner edits/corrections are not instrumented. |
+| Reply review votes | Up/down vote rows in the selected range, separate from the current draft queue. |
+| Key state | Active slot’s last recorded health and last use. No key or fingerprint. |
+| Active tenants | Count of tenant rows in active lifecycle state. |
+| Fleet health | Per assistant: plan, lifecycle, latest message or model attempt, monthly conversations left, unhealthy active keys, open incidents and trial end. Tenant handles cannot identify contacts. |
+| Fleet usage | Sum of retained tenant-local daily usage rollups by provider. Retention may differ by tenant. |
+<!-- /dashboard-definitions -->
+
 ## The golden eval — 110 conversations that must keep working
 
 `npm test` proves the code runs. The golden eval proves the *bot still behaves*:

@@ -25,7 +25,7 @@ import { recordAudit } from './audit.js';
 import { planForTenant } from './plans.js';
 import { tenantForAccount } from './provisioning.js';
 import {
-  readTenantProfile, writeTenantProfile, readTenantEnv, writeTenantEnvValue, validateTenantProfile,
+  readTenantUndo, writeTenantUndo, readTenantProfile, writeTenantProfile, readTenantEnv, writeTenantEnvValue, validateTenantProfile,
 } from '../src/services/adminPanel.js';
 import { SCOPES, OFF_TOPIC_MODES, DEFAULTS } from '../src/services/conversation.js';
 import { MAX_INTAKE_FIELDS, validateIntake, defaultIntakeFor } from '../src/core/projectIntake.js';
@@ -347,11 +347,17 @@ export function applySettings({ slug, accountId = null, patch = {}, ip = null, n
     for (const id of next.business?.intake?.required || []) if (!Array.isArray(fields) || !fields.some((f) => f?.id === id)) errors.push({ field: 'intake.required', message: `Unknown question: ${id}` });
   }
   if (errors.length) return { ok: false, status: 400, error: 'invalid', errors };
+  const token = randomId(12),
+    applied = edits.map((e) => e.id);
+  try {
+    writeTenantUndo(slug, token, JSON.stringify(edits));
+  } catch {
+    return { ok: false, status: 409, error: 'tenant_files_unavailable' };
+  }
   const written = persist(slug, current, next, edits);
   if (!written.ok) return written;
-  const token = randomId(12), applied = edits.map((e) => e.id);
   run('INSERT INTO settings_undo (id,slug,token,before,changed,account_id,created_at) VALUES (?,?,?,?,?,?,?)',
-    [randomId(12), slug, token, JSON.stringify(edits), JSON.stringify(applied), accountId, new Date(now).toISOString()]);
+    [randomId(12), slug, token, 'tenant-backup', JSON.stringify(applied), accountId, new Date(now).toISOString()]);
   pruneUndo(slug);
   recordAudit({ action: 'settings_changed', accountId, tenant: slug, ip, detail: { fields: applied } });
   return { ok: true, applied, warnings: written.warnings, backup: written.backup, undoToken: token, restartRequired: true };
@@ -382,7 +388,12 @@ export function undoSettings({ slug, accountId, token, ip = null } = {}) {
   const row = get('SELECT * FROM settings_undo WHERE slug = ? AND undone_at IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1', [slug]);
   if (!row || (token && token !== row.token)) return { ok: false, status: 409, error: 'not_latest_change' };
   const current = profileOrEmpty(slug), next = clone(current), env = readTenantEnv(slug), ent = entitlement(slug);
-  const edits = JSON.parse(row.before);
+  let edits;
+  try {
+    edits = row.before === 'tenant-backup' ? readTenantUndo(slug, row.token) : JSON.parse(row.before);
+  } catch {
+    return { ok: false, status: 409, error: 'backup_unavailable' };
+  }
   for (const e of edits) {
     const gate = gateFor(settingById(e.id) || { requires: 'multiAgent' }, ent);
     if (gate) return { ok: false, status: 403, error: 'plan_disallowed', ...gate };

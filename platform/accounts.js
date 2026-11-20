@@ -1,3 +1,4 @@
+import {numberId} from './numberIdentity.js';
 // platform/accounts.js
 // Who a customer of the platform is.
 //
@@ -19,7 +20,7 @@ import {
   hashPassword, verifyPassword, passwordProblem, randomId, sixDigitCode, hashOtp, otpMatches,
 } from './crypto.js';
 import { ensureOpen, get, all, run } from './db.js';
-import { OTP, CONSENT, platformSecret, trialDays } from './env.js';
+import { OTP, CONSENT, platformSecret, trialDays, dashboardEnabled } from './env.js';
 import { recordAudit } from './audit.js';
 import { rateLimit } from '../src/services/adminPanel.js';
 import { sendMail, showCodesInResponse } from './mailer.js';
@@ -392,13 +393,14 @@ export function claimTrial({ accountId, number, now = Date.now() }) {
   ensureOpen();
   const digits = String(number || '').replace(/\D/g, '');
   if (!digits) return { ok: false, trialing: false, reason: 'no_number' };
-  const seen = get('SELECT * FROM trial_numbers WHERE number = ?', [digits]);
+  const handle = numberId(digits, get('SELECT salt FROM number_identity_salt').salt);
+  const seen = get('SELECT * FROM trial_numbers WHERE number = ?', [handle]);
   if (seen && seen.account_id !== accountId) {
     return { ok: false, trialing: false, reason: 'number_already_trialed' };
   }
   if (!seen) {
     run('INSERT INTO trial_numbers (number, account_id, granted_at) VALUES (?, ?, ?)', [
-      digits, accountId, new Date(Number(now)).toISOString(),
+      handle, accountId, new Date(Number(now)).toISOString(),
     ]);
   }
   run('UPDATE accounts SET trial_seen = 1 WHERE id = ?', [accountId]);
@@ -428,12 +430,18 @@ export function exportAccount(accountId, { now = Date.now() } = {}) {
     },
     consents: all('SELECT kind, version, accepted_at FROM consents WHERE account_id = ?', [accountId]),
     tenants: tenants.map((t) => ({
-      slug: t.slug, name: t.name, number: t.number, plan_id: t.plan_id, status: t.status,
-      created_at: t.created_at, trial_ends_at: t.trial_ends_at,
+      slug: t.slug,
+      name: t.name,
+      plan_id: t.plan_id,
+      status: t.status,
+      created_at: t.created_at,
+      trial_ends_at: t.trial_ends_at,
     })),
     usage: all(
-      'SELECT tenant, month, kind, SUM(total_tokens) AS tokens, COUNT(*) AS calls FROM usage_events WHERE tenant IN (SELECT slug FROM tenants WHERE account_id = ?) GROUP BY tenant, month, kind',
-      [accountId],
+      dashboardEnabled()
+        ? 'SELECT slug tenant,substr(day,1,7) month,kind,SUM(tokens) tokens,SUM(calls) calls FROM r_usage WHERE hour=-1 AND slug IN (SELECT slug FROM tenants WHERE account_id=?) GROUP BY slug,month,kind'
+        : 'SELECT tenant, month, kind, SUM(total_tokens) AS tokens, COUNT(*) AS calls FROM usage_events WHERE tenant IN (SELECT slug FROM tenants WHERE account_id = ?) GROUP BY tenant, month, kind',
+      [accountId]
     ),
     audit: all('SELECT created_at, action, tenant, ok FROM platform_audit WHERE account_id = ?', [accountId]),
   };

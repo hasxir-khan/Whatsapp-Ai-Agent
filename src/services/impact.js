@@ -12,11 +12,12 @@
 import { featureOn, business, profile } from './profile.js';
 import { config } from '../config/env.js';
 import * as db from '../utils/db.js';
+import { impactTotals, savedHours } from './impactMetrics.js';
+import { shiftDay, midnight, localDateString } from './reportCalendar.js';
 import { parseHours, isOpen } from './hours.js';
 
 const DAY = 24 * 3600 * 1000;
 const str = (v) => (typeof v === 'string' ? v.trim() : '');
-const num = (v) => Number(v) || 0;
 
 export const THIN_DATA_CONVERSATIONS = 20;
 export const DEFAULT_MINUTES_PER_CONVERSATION = 6;
@@ -46,6 +47,19 @@ const arr = (v) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
 
 /** Monday 00:00 UTC of the week containing `now`. */
 export function weekWindow(now = new Date()) {
+  if (process.env.TENANT_DASHBOARD === '1') {
+    const zone = business()?.timezone || config.timezone || 'UTC';
+    const today = localDateString(now, zone),
+      monday = shiftDay(today, -((new Date(today).getUTCDay() + 6) % 7));
+    const from = midnight(monday, zone);
+    return {
+      from,
+      to: midnight(shiftDay(monday, 7), zone),
+      prevFrom: midnight(shiftDay(monday, -7), zone),
+      prevTo: from,
+      label: `${monday} → ${shiftDay(monday, 6)}`,
+    };
+  }
   const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const day = (d.getUTCDay() + 6) % 7; // Monday = 0
   d.setUTCDate(d.getUTCDate() - day);
@@ -60,32 +74,25 @@ export function weekWindow(now = new Date()) {
   };
 }
 
-const chatsInWindow = (from, to) =>
-  db.all(
-    `SELECT m.number AS number, MIN(m.created_at) AS first_at
-       FROM messages m
-      WHERE m.role = 'user' AND m.created_at >= ? AND m.created_at < ?
-      GROUP BY m.number`,
-    [from, to]
-  );
-
-const ownerTouchedChats = (from, to) =>
-  new Set(
-    db
-      .all(
-        `SELECT DISTINCT number FROM messages
-          WHERE role = 'owner' AND created_at >= ? AND created_at < ?`,
-        [from, to]
-      )
-      .map((r) => r.number)
-  );
-
-const botChats = (from, to) =>
-  new Set(
-    db
-      .all(`SELECT DISTINCT number FROM messages WHERE role = 'assistant' AND created_at >= ? AND created_at < ?`, [from, to])
-      .map((r) => r.number)
-  );
+// One sufficient-statistics row per participant. No message content is read.
+export function impactRelation() {
+  const hours = parseHours(business()?.hours || '');
+  const zone = business()?.timezone || profile()?.owner?.timezone || config.timezone || 'UTC';
+  db.getDB().create_function('report_closed', (at) => at && hours.known && !isOpen(new Date(at), {hours,timeZone:zone}).open ? 1 : 0);
+  return `WITH span(start,end) AS (VALUES (?,?)), activity AS (
+    SELECT number who, MIN(CASE WHEN role='user' THEN created_at END) first_at,
+      MAX(role='owner') owner, MAX(role='assistant') bot, 0 bookings,0 orders,0 revenue
+      FROM messages,span WHERE created_at>=start AND created_at<end GROUP BY number
+    UNION ALL SELECT substr(chat,1,instr(chat || '@','@')-1),NULL,0,0,COUNT(*),0,0 FROM bookings,span
+      WHERE created_at>=start AND created_at<end GROUP BY chat
+    UNION ALL SELECT substr(chat,1,instr(chat || '@','@')-1),NULL,0,0,0,COUNT(*),SUM(total) FROM orders,span
+      WHERE created_at>=start AND created_at<end AND status IN ('paid','delivered','completed') GROUP BY chat
+  ), people AS (SELECT who, MIN(first_at) first_at, MAX(owner) owner,MAX(bot) bot,SUM(bookings) bookings,
+    SUM(orders) orders,SUM(revenue) revenue FROM activity GROUP BY who), answers AS MATERIALIZED (
+    SELECT *, (SELECT MIN(created_at) FROM messages WHERE number=who AND role='assistant' AND created_at>=first_at) reply FROM people
+  ) SELECT who, first_at, owner, bot, bookings, orders, revenue, report_closed(reply) outside,
+    CASE WHEN julianday(reply)-julianday(first_at)<1 THEN ROUND((julianday(reply)-julianday(first_at))*86400000) END response_ms FROM answers`;
+}
 
 /**
  * Everything the dashboard reports, for one window.
@@ -97,57 +104,28 @@ export function impactNumbers({ now = new Date(), from = null, to = null } = {})
   const end = to || w.to;
   const cfg = impactConfig();
 
-  const chats = chatsInWindow(start, end);
-  const conversations = chats.length;
-  const owners = ownerTouchedChats(start, end);
-  const bots = botChats(start, end);
-  const handled = chats.filter((c) => !owners.has(c.number));
+  const reports = process.env.TENANT_DASHBOARD === '1';
+  const totals = impactTotals(db.get, impactRelation(), [start, end], {
+    hoursKnown: !reports || parseHours(business()?.hours || '').known,
+    emptyRate: reports ? null : 0,
+  });
+  const { conversations } = totals;
+  const leadCount = db.get('SELECT COUNT(*) AS n FROM leads WHERE created_at>=? AND created_at<?', [start, end]).n;
 
-  // First response: the first assistant message after each chat's first
-  // customer message. Paired in SQL so a slow reply cannot hide behind a fast one.
-  const firstRows = db.all(
-    `SELECT m.number AS number, MIN(m.created_at) AS first_at FROM messages m
-      WHERE m.role = 'user' AND m.created_at >= ? AND m.created_at < ? GROUP BY m.number`,
-    [start, end]
-  );
-  let firstSum = 0;
-  let firstCount = 0;
-  const afterHours = [];
-  const tz = business()?.timezone || profile()?.owner?.timezone || config.timezone || 'UTC';
-  const hours = parseHours(business()?.hours || '');
+  return {
+    from: start,
+    to: end,
+    ...totals,
+    leads: leadCount,
+    hoursSaved: savedHours(conversations, cfg.minutesPerConversation),
+    minutesPerConversation: cfg.minutesPerConversation,
+    ...impactFollowThrough(start, end),
+    thin: conversations < cfg.thinData,
+    thinDataThreshold: cfg.thinData,
+  };
+}
 
-  for (const row of firstRows) {
-    const reply = db.get(
-      `SELECT created_at FROM messages
-        WHERE number = ? AND role = 'assistant' AND created_at >= ?
-        ORDER BY created_at ASC LIMIT 1`,
-      [row.number, row.first_at]
-    );
-    if (!reply) continue;
-    const ms = Date.parse(reply.created_at) - Date.parse(row.first_at);
-    if (Number.isFinite(ms) && ms >= 0 && ms < 24 * 3600 * 1000) {
-      firstSum += ms;
-      firstCount += 1;
-    }
-    if (hours.known) {
-      const open = isOpen(new Date(reply.created_at), { hours, timeZone: tz });
-      if (!open.open) afterHours.push(row.number);
-    }
-  }
-
-  const leads = db.get(`SELECT COUNT(*) AS n FROM leads WHERE created_at >= ? AND created_at < ?`, [start, end]);
-  const leadCount = leads?.n ?? countFallback('leads', start, end);
-
-  const bookingRows = db.all(`SELECT chat FROM bookings WHERE created_at >= ? AND created_at < ?`, [start, end]);
-  const orderRows = db.all(
-    `SELECT chat, total, status FROM orders WHERE created_at >= ? AND created_at < ?`,
-    [start, end]
-  );
-  const paidStatuses = new Set(['paid', 'delivered', 'completed']);
-  const paid = orderRows.filter((o) => paidStatuses.has(String(o.status || '')));
-  const botOrders = paid.filter((o) => !owners.has(chatNumber(o.chat)));
-  const botBookings = bookingRows.filter((b) => !owners.has(chatNumber(b.chat)));
-
+export function impactFollowThrough(start, end) {
   // Follow-ups: a proactive send, and a customer message from the same number
   // within 72 hours of it.
   const followUps = db.all(
@@ -177,47 +155,12 @@ export function impactNumbers({ now = new Date(), from = null, to = null } = {})
     [start, end]
   );
 
-  const revenue = paid.reduce((sum, o) => sum + num(o.total), 0);
-  const botRevenue = botOrders.reduce((sum, o) => sum + num(o.total), 0);
-
   return {
-    from: start,
-    to: end,
-    conversations,
-    handledByBot: handled.length,
-    ownerTouched: conversations - handled.length,
-    automationRate: conversations ? Math.round((handled.length / conversations) * 100) : 0,
-    botReplied: bots.size,
-    firstResponseMinutes: firstCount ? Math.round((firstSum / firstCount / 60000) * 10) / 10 : null,
-    afterHoursCovered: afterHours.length,
-    leads: Number(leadCount) || 0,
-    bookings: bookingRows.length,
-    botBookings: botBookings.length,
-    orders: paid.length,
-    botOrders: botOrders.length,
-    revenue,
-    botRevenue,
-    hoursSaved: Math.round(((conversations * cfg.minutesPerConversation) / 60) * 10) / 10,
-    minutesPerConversation: cfg.minutesPerConversation,
     followUpsSent: followUps.length,
     followUpsAnswered,
     reviewAsks: asks?.n || 0,
     reviewsReceived: ratings?.n || 0,
-    thin: conversations < cfg.thinData,
-    thinDataThreshold: cfg.thinData,
   };
-}
-
-function countFallback(table, from, to) {
-  try {
-    return db.get(`SELECT COUNT(*) AS n FROM ${table} WHERE created_at >= ? AND created_at < ?`, [from, to])?.n || 0;
-  } catch {
-    return 0;
-  }
-}
-
-function chatNumber(chat) {
-  return String(chat || '').replace(/@.*$/, '');
 }
 
 /** Week-over-week percentage change, or null when there is no base. */
@@ -248,13 +191,13 @@ export function impactReport({ now = new Date() } = {}) {
     );
   }
 
-  lines.push(`Automation: *${current.automationRate}%* — ${current.handledByBot} of ${current.conversations} chats had no message from you${arrow('automationRate')}`);
+  lines.push(`Automation: *${current.automationRate==null?'—':`${current.automationRate}%`}* — ${current.handledByBot} of ${current.conversations} chats had no message from you${arrow('automationRate')}`);
   lines.push(
-    `First response: ${current.firstResponseMinutes === null ? '—' : `${current.firstResponseMinutes} min`}${arrow('firstResponseMinutes')} · after-hours covered: ${current.afterHoursCovered}`
+    `First response: ${current.firstResponseMinutes === null ? '—' : `${current.firstResponseMinutes} min`}${arrow('firstResponseMinutes')} · after-hours covered: ${current.afterHoursCovered??'—'}`
   );
   lines.push(`Leads: ${current.leads}${arrow('leads')} · bookings: ${current.bookings} (${current.botBookings} by the bot)`);
   lines.push(
-    `Orders: ${current.orders} (${current.botOrders} by the bot) · revenue: ${current.revenue} PKR (${current.botRevenue} attributable)${arrow('revenue')}`
+    `Orders: ${current.orders} (${current.botOrders} by the bot) · revenue: ${current.revenue} ${business()?.currency || 'PKR'} (${current.botRevenue} attributable)${arrow('revenue')}`
   );
   lines.push(
     `Follow-ups: ${current.followUpsSent} sent · ${current.followUpsAnswered} answered · review asks: ${current.reviewAsks} · reviews: ${current.reviewsReceived}`

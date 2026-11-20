@@ -143,7 +143,7 @@ import { tenantControls } from './controls.js';
 
     app.appendChild(tenantList());
     app.appendChild(newTenantCard());
-    if (state.slug) app.appendChild(paymentsCard());
+    if (state.detail?.canEdit && !state.detail.reports) app.appendChild(paymentsCard());
     if (state.slug) app.appendChild(detailCard());
     app.appendChild(accountCard());
   }
@@ -297,6 +297,10 @@ import { tenantControls } from './controls.js';
       retry.addEventListener('click', async function () {
         retry.disabled = true;
         var res = await call('/api/platform/tenants/' + state.slug + '/provision', { body: {} });
+        if (res.data.error === 'bad_number') {
+          var number = prompt('Re-enter the business WhatsApp number to retry setup:');
+          if (number) res = await call('/api/platform/tenants/' + state.slug + '/provision', { body: { number } });
+        }
         retry.disabled = false;
         say(res.status === 200 ? 'Setup resumed.' : errText(res.data, 'Retry failed.'), res.status === 200 ? 'ok' : 'bad');
         await loadTenant();
@@ -305,6 +309,15 @@ import { tenantControls } from './controls.js';
       card.appendChild(el('div', { class: 'row' }, [retry]));
     }
 
+    if (d.reports)
+      card.appendChild(
+        el('p', {}, [
+          el('a', {
+            href: '/platform/reports/' + encodeURIComponent(d.tenant.slug) + '/overview',
+            text: 'Open customer dashboard →',
+          }),
+        ])
+      );
     card.appendChild(controls.overview(d));
     card.appendChild(
       tabs(state.tab, [
@@ -314,7 +327,7 @@ import { tenantControls } from './controls.js';
         ...(d.canEdit ? [{ id: 'test', label: 'Test chat' }] : []),
         { id: 'usage', label: 'Usage' },
         { id: 'plan', label: 'Plan' },
-        { id: 'settings', label: 'Settings' },
+        ...(d.canEdit ? [{ id: 'settings', label: 'Settings' }] : []),
       ])
     );
 
@@ -323,7 +336,7 @@ import { tenantControls } from './controls.js';
     if (state.tab === 'test') card.appendChild(testPanel());
     if (state.tab === 'usage') card.appendChild(usagePanel(d));
     if (state.tab === 'plan') card.appendChild(planPanel(d));
-    if (state.tab === 'settings') card.appendChild(controls.settingsPanel(d));
+    if (state.tab === 'settings' && d.canEdit) card.appendChild(controls.settingsPanel(d));
     if (state.tab === 'keys' && d.canEdit) card.appendChild(controls.keyPanel(d));
     return card;
   }
@@ -701,7 +714,7 @@ import { tenantControls } from './controls.js';
     if (d.usage?.keys?.length) {
       box.appendChild(el('h3', { text: 'Usage by key this month' }));
       for (const k of d.usage.keys) box.appendChild(el('p', { class: 'small', text:
-        `${k.provider || 'unknown'} / ${k.model || '—'} · ${k.key_slot ? `slot ${k.key_slot} ••••${k.key_last4}${k.key_version ? ` v${k.key_version}` : ''}` : 'unattributed'} · ${k.calls} calls · ${k.tokens} tokens · ${k.errors} errors ${k.error_categories.join(', ')}` }));
+        `${k.provider || 'unknown'} / ${k.model || '—'} · ${k.key_slot ? `slot ${k.key_slot}${k.key_last4 ? ' ••••'+k.key_last4 : ''}${k.key_version ? ` v${k.key_version}` : ''}` : 'unattributed'} · ${k.calls} calls · ${k.tokens} tokens · ${k.errors} errors ${k.error_categories.join(', ')}` }));
     }
     box.appendChild(el('p', { class: 'small', text: 'No message text is stored here — only counts, kinds, model names and latency.' }));
     return box;
@@ -744,7 +757,7 @@ import { tenantControls } from './controls.js';
   }
 
   function accountCard() {
-    var card = el('div', { class: 'card' });
+    var card = el('div', { class: 'card', id: 'account-data' });
     card.appendChild(el('h2', { text: 'Your account' }));
     card.appendChild(el('p', { class: 'small', text: 'Terms v' + state.me.consent.versions.terms + ' · privacy v' + state.me.consent.versions.privacy }));
     var exportButton = el('button', { type: 'button', text: 'Export my data' });

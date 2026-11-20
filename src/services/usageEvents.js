@@ -11,6 +11,7 @@
 // later. The journal never holds a phone number: the chat key is hashed before
 // it is written.
 
+import { dimension } from './reportContract.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -91,7 +92,10 @@ export function recordUsage(event = {}) {
     tenant: event.tenant || config.tenant?.slug || 'default',
     provider: event.provider || null,
     model: event.model || null,
-    agent: event.agent || null,
+    agent:
+      process.env.TENANT_DASHBOARD === '1' && process.env.PLATFORM_TENANT_TOKEN
+        ? dimension('agent', event.agent || 'unknown', process.env.PLATFORM_TENANT_TOKEN)
+        : event.agent || null,
     kind: event.kind || 'chat',
     conversation: event.conversation || conversationHash(event.chatKey),
     promptTokens: Math.max(0, Number(event.promptTokens) || 0),
@@ -138,8 +142,8 @@ export function recordUsage(event = {}) {
 
 /** Atomically take a closed batch for import. A writer appending after the
  * rename opens the original path. A failed import leaves the batch for retry. */
-export function consumeUsageJournal(dir, importBatch, { keepFile = false } = {}) {
-  const source = path.join(dir, 'usage-events.jsonl');
+export function consumeUsageJournal(dir, importBatch, { keepFile = false, filename = 'usage-events.jsonl' } = {}) {
+  const source = path.join(dir, filename);
   const batch = keepFile ? source : source + '.importing';
   if (!fs.existsSync(batch)) {
     if (!fs.existsSync(source)) return { ok: true, imported: 0, duplicates: 0, missing: true };

@@ -239,7 +239,7 @@ export const PLAN_SEEDS = [
     name: 'Free trial',
     trial_days: 14,
     price: 0,
-    limits: { conversations_month: 200, agents: 2, numbers: 1, voice_minutes: 0, llm_calls_day: 100 },
+    limits: { dashboard_days: 31, conversations_month: 200, agents: 2, numbers: 1, voice_minutes: 0, llm_calls_day: 100 },
     features: ['liveInbox'],
   },
   {
@@ -247,7 +247,7 @@ export const PLAN_SEEDS = [
     name: 'Starter',
     trial_days: 14,
     price: 2500,
-    limits: { conversations_month: 1500, agents: 4, numbers: 1, voice_minutes: 60, llm_calls_day: 600 },
+    limits: { dashboard_days: 60, conversations_month: 1500, agents: 4, numbers: 1, voice_minutes: 60, llm_calls_day: 600 },
     features: ['liveInbox', 'bookingAgent', 'followUpAgent', 'pdfInvoices', 'growthApproval'],
   },
   {
@@ -255,7 +255,7 @@ export const PLAN_SEEDS = [
     name: 'Growth',
     trial_days: 14,
     price: 6000,
-    limits: { conversations_month: 6000, agents: 8, numbers: 2, voice_minutes: 300, llm_calls_day: 2000 },
+    limits: { dashboard_days: 90, conversations_month: 6000, agents: 8, numbers: 2, voice_minutes: 300, llm_calls_day: 2000 },
     features: [
       'liveInbox', 'bookingAgent', 'followUpAgent', 'pdfInvoices', 'growthApproval',
       'analystAgent', 'closerAgent', 'reviewAgent', 'visualSearch', 'selfHealing',

@@ -11,6 +11,7 @@
 // returns false for every path, so the bot's own routes answer exactly as they
 // did before.
 
+import { startReportImporter, stopReportImporter } from './reportStore.js';
 import http from 'node:http';
 import { platformEnabled, platformMisconfigured, platformPort, platformSecret, platformDir, transportProblem } from './env.js';
 import { ensurePlatformDb, flush } from './db.js';
@@ -35,10 +36,12 @@ export async function initPlatform() {
   await ensurePlatformDb();
   seedPlans();
   attachUsageSink();
+  startReportImporter();
   return { ok: true, enabled: true, dir: platformDir(), secretSet: !!platformSecret() };
 }
 
 export function shutdownPlatform() {
+  stopReportImporter();
   detachUsageSink();
   flush();
 }

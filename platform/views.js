@@ -48,7 +48,7 @@ code, .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
 .hr { height:1px; background:var(--line); margin:18px 0; }
 `;
 
-function page({ title, body, style = '', head = '', script = '' }) {
+export function page({ title, body, style = '', head = '', script = '' }) {
   return `<!doctype html>
 <html lang="en">
 <head>

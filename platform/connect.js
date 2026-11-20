@@ -20,7 +20,7 @@ import { deliverKeysAtStart, withWorker } from './keys.js';
 import path from 'node:path';
 import { sessionHealth, sessionConnectedAt } from '../src/utils/sessionBackup.js';
 import { get, run } from './db.js';
-import { tenantForAccount, isTenantOwner, getTenantSecret } from './provisioning.js';
+import { tenantForAccount, isTenantOwner, getTenantSecret, businessNumberId } from './provisioning.js';
 import { recordAudit } from './audit.js';
 import { rateLimit } from '../src/services/adminPanel.js';
 
@@ -213,12 +213,12 @@ async function pairLocked(slug, { accountId, number = null, ip = null, now = Dat
     return { ok: false, status: 400, error: 'cloud_transport', message: 'Cloud API numbers do not use a pairing code.' };
   }
 
-  const digits = String(number || tenant.number || '').replace(/\D/g, '');
-  if (!/^\d{10,15}$/.test(digits)) return { ok: false, status: 400, error: 'bad_number' };
-
   if (!Object.keys(env).length || !['provisioned','active'].includes(tenant.status) || Date.parse(tenant.trial_ends_at) <= Date.now()) {
     return { ok: false, status: 409, error: 'not_ready', message: 'Finish provisioning and resume the assistant before linking.' };
   }
+  const digits = String(number || env.MY_NUMBER || '').replace(/\D/g, '').replace(/^00/,'');
+  if (!/^\d{10,15}$/.test(digits) || businessNumberId(digits)!==tenant.number) return { ok: false, status: 400, error: 'bad_number' };
+
   try {
     (await admin()).writeTenantEnvValue(slug, 'PAIRING_NUMBER', digits);
     if (connectHooks.restart) await connectHooks.restart(slug);
@@ -299,7 +299,7 @@ export async function startTenantViaHook(slug) {
 export function numberInUseElsewhere(number, { accountId, slug = null } = {}) {
   const digits = String(number || '').replace(/\D/g, '');
   if (!digits) return null;
-  const row = get('SELECT slug, account_id FROM tenants WHERE number = ?', [digits]);
+  const row = get('SELECT slug, account_id FROM tenants WHERE number = ?', [businessNumberId(digits)]);
   if (!row) return null;
   if (row.account_id === accountId || row.slug === slug) return null;
   return { slug: row.slug };

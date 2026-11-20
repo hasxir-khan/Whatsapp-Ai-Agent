@@ -9,6 +9,7 @@
 // A draft is written after *every* step (the customer can close the tab), and
 // the step number is kept so the browser can resume where it left off.
 
+import { draftMetadata } from './draftMetadata.js';
 import { get, run, flush } from './db.js';
 import { tenantForAccount, isTenantOwner, mergeWizardIntoProfile } from './provisioning.js';
 import { readTenantProfile, writeTenantProfile, saveUpload, ingestUpload, validateTenantProfile, tenantRunning } from '../src/services/adminPanel.js';
@@ -62,7 +63,7 @@ export function readDraft(slug) {
   if (!row) return { step: 1, data: {}, updated_at: null };
   let data = {};
   try {
-    data = JSON.parse(row.data || '{}');
+    data = draftMetadata(JSON.parse(row.data || '{}'));
   } catch {
     data = {};
   }
@@ -84,20 +85,6 @@ export function fieldsForStep(stepId) {
     6: [], 7: [], 8: [],
   };
   return map[Number(stepId)] || [];
-}
-
-function mergeDraft(current, stepId, patch) {
-  const next = { ...(current || {}) };
-  const allowed = fieldsForStep(stepId);
-  for (const [key, value] of Object.entries(patch || {})) {
-    if (!allowed.includes(key)) continue;
-    if (value && typeof value === 'object' && !Array.isArray(value) && next[key] && typeof next[key] === 'object' && !Array.isArray(next[key])) {
-      next[key] = { ...next[key], ...value };
-    } else {
-      next[key] = value;
-    }
-  }
-  return next;
 }
 
 /**
@@ -146,12 +133,13 @@ export function saveStep(slug, accountId, { step, patch = {}, now = Date.now() }
   if (patch.payment?.bank !== undefined && (!patch.payment.bank || typeof patch.payment.bank !== 'object' || Array.isArray(patch.payment.bank) || Object.values(patch.payment.bank).some((v) => typeof v !== 'string'))) return invalid('payment.bank.number','Enter the bank account details as text.');
   if (patch.services?.some((r) => typeof r.name !== 'string' || !r.name.trim())) return invalid('services','Each service needs a name.');
   if (patch.business?.tone !== undefined && typeof patch.business.tone !== 'string' && typeof patch.business.tone?.style !== 'string') return invalid('business.tone','Enter a tone description.');
-  const data = mergeDraft(current.data, stepDef.id, patch);
+  // The profile is the source of truth, not a duplicate of payment details in the control database.
+  const data = draftMetadata(current.data);
   let base;
   try { base = readTenantProfile(slug); } catch { return invalid('business', 'Finish provisioning the profile first.'); }
   if (stepDef.id === 1 && !patch.template && membership.template && 'template' in patch) return invalid('template', 'To keep this profile, leave its current template selected.');
   if (stepDef.id === 1 && patch.template && patch.template !== membership.template) {
-    const template = buildProfileFromTemplate(patch.template, { name: base.business?.name || membership.name, number: membership.number, city: base.business?.city });
+    const template = buildProfileFromTemplate(patch.template, { name: base.business?.name || membership.name, number: base.owner?.number, city: base.business?.city });
     // Replacing a starter is only safe before people edit it; keep plan flags.
     if (current.step > 2 || membership.status === 'active') return invalid('template', 'Setup is already under way. Edit the business details instead.');
     base = { ...base, ...template, features: base.features };
@@ -245,7 +233,7 @@ async function learnWhileStopped(slug, accountId, { name, buffer, now = Date.now
   }
 
   const documents = [...sofar, { name: saved.name, bytes: saved.bytes, at: new Date(Number(now)).toISOString(), chunks: ingested.chunks || null }];
-  const data = { ...draft.data, documents };
+  const data = draftMetadata({documents});
   const existing = draftRow(slug);
   const stamp = new Date(Number(now)).toISOString();
   if (existing) run('UPDATE wizard_drafts SET data = ?, updated_at = ? WHERE slug = ?', [JSON.stringify(data), stamp, slug]);
@@ -337,7 +325,7 @@ export function wizardState(slug, accountId) {
   return {
     ok: true,
     tenant: {
-      slug: tenant.slug, name: tenant.name, number: tenant.number, status: tenant.status,
+      slug: tenant.slug, name: tenant.name, status: tenant.status,
       plan_id: tenant.plan_id, link_status: tenant.link_status, provision_step: tenant.provision_step,
       provision_error: tenant.provision_error, trial_ends_at: tenant.trial_ends_at,
     },
@@ -345,7 +333,7 @@ export function wizardState(slug, accountId) {
     steps: STEPS,
     step: draft.step,
     draft: { template: tenant.template, business: { name: b.name, type: b.type, hours: b.hours, city: b.city, languages: b.languages, tone: p.tone?.style },
-      catalog: p.catalog?.items || [], faqs: p.faqs || [], payment: b.payment || {}, documents: draft.data.documents || [] },
+      catalog: p.catalog?.items || [], faqs: p.faqs || [], payment: membership.member_role === 'owner' ? b.payment || {} : {}, documents: membership.member_role === 'owner' ? draft.data.documents || [] : [] },
     updated_at: draft.updated_at,
     templates,
     help: helpTexts(),

@@ -12,14 +12,16 @@
 // Every refusal is the same shape, and none of them leak whether an account or
 // tenant exists.
 
+import { reportRoute, operatorRoute } from './reportRoutes.js';
+import { dashboardEnabled } from './env.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platformEnabled, platformMisconfigured, platformPublicUrl, CONSENT } from './env.js';
 import { ensurePlatformDb, get, all, run } from './db.js';
-import { rateLimit } from '../src/services/adminPanel.js';
+import { rateLimit, safeEqual } from '../src/services/adminPanel.js';
 import {
-  isPlatformPath, sendJson, sendHtml, sendText, redirect, readJsonBody, readRawBody, clientIp, userAgent,
+  PLATFORM_HEADERS, isPlatformPath, sendJson, sendHtml, sendText, redirect, readJsonBody, readRawBody, clientIp, userAgent,
 } from './http.js';
 import { diagnostics } from './diagnostics.js';
 import * as views from './views.js';
@@ -75,7 +77,6 @@ function tenantPayload(row) {
   return {
     slug: row.slug,
     name: row.name,
-    number: row.number,
     status: row.status,
     plan_id: row.plan_id,
     link_status: row.link_status,
@@ -98,6 +99,7 @@ function serveStatic(res, file) {
   }
   const type = TYPES[path.extname(resolved)] || 'application/octet-stream';
   res.writeHead(200, {
+    ...PLATFORM_HEADERS,
     'Content-Type': type,
     'Cache-Control': 'no-cache',
     'X-Content-Type-Options': 'nosniff',
@@ -122,7 +124,11 @@ export async function handlePlatformRoute(req, res, url) {
   if (!isPlatformPath(url?.pathname)) return false;
   if (!platformEnabled()) return false; // not ours: the server answers 404
 
-  const pathname = url.pathname;
+  const html = /^\/platform\/reports\/([a-z0-9-]{2,40})\/([a-z]+)$/.exec(url.pathname);
+  const operator = ['/platform/operator', '/api/platform/operator'].includes(url.pathname);
+  if ((html || operator || /\/reports(?:\/|\.(?:js|css)$)/.test(url.pathname)) && !dashboardEnabled())
+    return (sendJson(res, 404, { error: 'not_found' }), true);
+  const pathname = html ? `/api/platform/tenants/${html[1]}/reports/${html[2]}` : url.pathname;
   const isApi = pathname.startsWith('/api/platform');
   const method = String(req.method || 'GET').toUpperCase();
   const ip = clientIp(req);
@@ -140,6 +146,11 @@ export async function handlePlatformRoute(req, res, url) {
 
   await ensurePlatformDb();
   seedPlans();
+
+  if (operator) {
+    operatorRoute(req, res, url);
+    return true;
+  }
 
   // ── public pages ─────────────────────────────────────────
   if (!isApi) {
@@ -164,7 +175,7 @@ export async function handlePlatformRoute(req, res, url) {
     }
     if (pathname.startsWith('/platform/') && TYPES[path.extname(pathname)]) {
       const name = path.basename(pathname);
-      if (['app.js', 'controls.js', 'app.css', 'auth.js'].includes(name)) return serveStatic(res, path.join(PUBLIC, name)), true;
+      if (['app.js', 'controls.js', 'app.css', 'auth.js','reports.js','reports.css'].includes(name)) return serveStatic(res, path.join(PUBLIC, name)), true;
     }
     return sendHtml(res, 404, views.notFoundPage()), true;
   }
@@ -233,7 +244,7 @@ export async function handlePlatformRoute(req, res, url) {
 
   // Everything below needs a session.
   const who = session.readSession(req);
-  if (!who.ok) return unauthenticated(res, true), true;
+  if (!who.ok) return unauthenticated(res, !html), true;
   const account = getAccount(who.accountId);
   if (!account || account.status !== 'active') {
     return sendJson(res, 401, { error: 'unauthorised' }, { 'Set-Cookie': session.clearCookies() }), true;
@@ -278,6 +289,10 @@ export async function handlePlatformRoute(req, res, url) {
   }
 
   if (pathname === '/api/platform/account/export' && method === 'POST') {
+    if (dashboardEnabled() && (!who.csrf || !safeEqual(req.headers['x-platform-csrf'] || '', who.csrf)))
+      return (sendJson(res, 403, { error: 'csrf' }), true);
+    if (!rateLimit(`account-export:${account.id}`, { max: 4, windowMs: 3600000 }).ok)
+      return (sendJson(res, 429, { error: 'export_limit' }), true);
     const result = exportAccount(account.id);
     if (!result.ok) return sendJson(res, 404, result), true;
     recordAudit({ action: 'account_exported', accountId: account.id, ip });
@@ -379,6 +394,11 @@ export async function handlePlatformRoute(req, res, url) {
     const membership = tenantForAccount(account.id, slug);
     if (!membership) return sendJson(res, 404, { error: 'not_found' }), true;
     const owner = membership.member_role === 'owner';
+    if (rest.startsWith('/reports/')) {
+      await reportRoute(req, res, url, { slug, rest, owner, html, accountId: account.id, who, ip });
+      return true;
+    }
+    if (!owner && method !== 'GET') return (sendJson(res, 403, { error: 'owner_only' }), true);
     // A queued request can outlive a role change or tenant deletion. Check
     // again inside the per-worker lock, immediately before the mutation.
     const applyOwnerChange = (change) => keys.applyToWorker(slug, () => {
@@ -392,23 +412,35 @@ export async function handlePlatformRoute(req, res, url) {
       const state = wizardState(slug, account.id);
       if (!state.ok) return sendJson(res, state.status || 404, state), true;
       try {
-        await ingestJournal({ slug });
+        if (!dashboardEnabled()) await ingestJournal({ slug });
       } catch {
         /* no journal is normal */
       }
-      return sendJson(res, 200, {
-        ...state,
-        ...onboardingState(slug),
-        usage: usageSummary(slug),
-        plans: listPlans().map((p) => ({ id: p.id, name: p.name, limits: p.limits })),
-        entitlements: planForTenant(slug),
-      }), true;
+      return (
+        sendJson(res, 200, {
+          ...state,
+          reports: dashboardEnabled(),
+          ...onboardingState(slug),
+          usage: usageSummary(slug),
+          plans: listPlans().map((p) => ({ id: p.id, name: p.name, limits: p.limits })),
+          entitlements: { plan: planForTenant(slug)?.plan },
+        }),
+        true
+      );
     }
 
     // Payments review, read-only. In mounted mode the bot writes a small
     // counts-only snapshot into the tenant's data folder; in hosted mode there
     // is no shared filesystem, so the answer says so instead of pretending.
     if (rest === '/payments' && method === 'GET') {
+      if (!owner) return (sendJson(res, 403, { error: 'owner_only' }), true);
+      if (dashboardEnabled()) {
+        const r = get('SELECT current FROM r_state WHERE slug=?', [slug]);
+        return (
+          sendJson(res, 200, { ok: true, available: !!r, summary: r ? JSON.parse(r.current).payments : null }),
+          true
+        );
+      }
       const { readPaymentsSnapshot } = await import('../src/services/paymentReview.js');
       const root = process.env.TENANTS_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'tenants');
       const dir = path.join(root, slug, 'data');
@@ -424,7 +456,9 @@ export async function handlePlatformRoute(req, res, url) {
 
     if (rest === '/provision' && method === 'POST') {
       if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
-      const result = await retryProvisioning(slug, { accountId: account.id, ip });
+      const body = await readJsonBody(req);
+      if (!body.ok) return (sendJson(res, 400, { error: 'bad_json' }), true);
+      const result = await retryProvisioning(slug, { accountId: account.id, ip, number: body.body.number });
       return sendJson(res, result.ok ? 200 : 400, result), true;
     }
 
@@ -587,6 +621,7 @@ export async function handlePlatformRoute(req, res, url) {
 
     // ── settings ────────────────────────────────────────────
     if (rest === '/settings' && method === 'GET') {
+      if (!owner) return (sendJson(res, 403, { error: 'owner_only' }), true);
       return sendJson(res, 200, readSettings(slug)), true;
     }
 

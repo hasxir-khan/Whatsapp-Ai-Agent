@@ -10,6 +10,7 @@
 import { config } from '../config/env.js';
 import { business, featureOn, analystSchedule, effectiveCatalog } from './profile.js';
 import { agentStats as agentReport } from './agents.js';
+import { period, shiftDay, midnight } from './reportCalendar.js';
 import { partsInTz } from './hours.js';
 import { sendToOwner } from './growth.js';
 import { formatMoney } from './geo.js';
@@ -32,6 +33,11 @@ export function analystAgentEnabled() {
  * comparison. Both are plain instants so a fake clock in a test works.
  */
 export function weekWindow(now = new Date()) {
+  if (process.env.TENANT_DASHBOARD === '1') {
+    const zone = business()?.timezone || config.timezone,
+      w = period(now, zone, 7);
+    return { from: w.from, to: w.to, prevFrom: midnight(shiftDay(w.first, -7), zone), prevTo: w.from };
+  }
   const to = new Date(now.getTime());
   const from = new Date(to.getTime() - 7 * DAY_MS);
   const prevFrom = new Date(from.getTime() - 7 * DAY_MS);
@@ -502,7 +508,11 @@ export async function runWeeklyReport({ transport, now = new Date(), force = fal
 
   if (outcome.sent) {
     setSetting('analyst_last_report', now.toISOString());
-    logEvent('analyst_report_sent', null, { conversations: report.numbers.conversations });
+    const fields =
+      process.env.TENANT_DASHBOARD === '1'
+        ? ['conversations', 'newLeads', 'bookings', 'orders', 'revenue']
+        : ['conversations'];
+    logEvent('analyst_report_sent', null, Object.fromEntries(fields.map((k) => [k, report.numbers[k]])));
   }
   return { ...outcome, report };
 }

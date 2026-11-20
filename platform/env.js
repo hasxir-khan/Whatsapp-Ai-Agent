@@ -18,6 +18,9 @@ export function platformEnabled() {
   return TRUTHY.has(String(process.env.PLATFORM_ENABLED || '').trim().toLowerCase());
 }
 
+export const dashboardEnabled = () =>
+  platformEnabled() && TRUTHY.has(String(process.env.PLATFORM_DASHBOARD || '').toLowerCase());
+
 /**
  * Where the platform keeps its own state. Deliberately outside every tenant
  * folder: the platform database must never be reachable from a bot process.

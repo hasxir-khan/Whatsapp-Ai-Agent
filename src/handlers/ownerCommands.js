@@ -485,7 +485,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     }
 
     case 'growth': {
-      const summary = growthSummary();
+      const summary = growthSummary(nowDate);
       const lines = [`*Growth today* — ${summary.sent}/${summary.cap} proactive sent`];
       lines.push(`Transport: ${summary.transport} · quiet ${summary.quiet}${summary.inQuiet ? ' (now)' : ''}`);
       lines.push('');
@@ -742,8 +742,8 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     }
 
     case 'payments': {
-      const { paymentsStrip } = await import('../services/paymentReview.js');
-      return { handled: true, reply: paymentsStrip() };
+      const { paymentsStrip, paymentsSummary } = await import('../services/paymentReview.js');
+      return { handled: true, reply: paymentsStrip(paymentsSummary({now: nowDate})) };
     }
 
     case 'requests': {
@@ -785,11 +785,11 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       // Metrics from the event log only; anything we do not measure says so.
       const { accuracyReport, accuracyText } = await import('../services/accuracy.js');
       const days = /^\d+$/.test(String(args[0] || '')) ? Number(args[0]) : 7;
-      const body = accuracyText(accuracyReport({ days }));
+      const body = accuracyText(accuracyReport({ days, now: nowDate }));
       // The payment side of the same question: how fast did a person answer?
-      const { ownerDecisionsOn, paymentsStrip } = await import('../services/paymentReview.js');
+      const { ownerDecisionsOn, paymentsStrip, paymentsSummary } = await import('../services/paymentReview.js');
       if (!ownerDecisionsOn()) return { handled: true, reply: body };
-      return { handled: true, reply: `${body}\n\n${paymentsStrip()}` };
+      return { handled: true, reply: `${body}\n\n${paymentsStrip(paymentsSummary({ now: nowDate }))}` };
     }
 
     case 'review': {
@@ -1817,7 +1817,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     case 'goal':
     case 'experiment':
     case 'proposals': {
-      return handleBrainCommand({ sub: cmd, args, raw: input });
+      return handleBrainCommand({ sub: cmd, args, raw: input, now: nowDate });
     }
 
     case 'plan': {

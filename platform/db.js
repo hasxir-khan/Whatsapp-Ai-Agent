@@ -8,6 +8,10 @@
 // Postgres by `toDialect()`, so moving to a server database is a config change
 // plus a connection object, not a rewrite of every call site.
 
+import { draftMetadata } from './draftMetadata.js';
+import { writeTenantUndo } from '../src/services/adminPanel.js';
+import { migrateNumbers } from './numberIdentity.js';
+import { migrateReports } from './reportSchema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import initSqlJs from 'sql.js';
@@ -73,26 +77,72 @@ export async function initPlatformDb({ file: target = platformDbFile() } = {}) {
   }
   file = target;
   const version = Number(db.exec('PRAGMA user_version')[0]?.values[0][0]) || 0;
+  db.run('PRAGMA secure_delete=ON');
+  let compact = false;
   db.run('BEGIN');
   try {
     for (const statement of schemaStatements(dialect())) db.run(statement);
     if (version < 2) {
       for (const statement of MIGRATIONS) {
-        try { db.run(statement); }
-        catch (err) { if (!/duplicate column name/i.test(err.message)) throw err; }
+        try {
+          db.run(statement);
+        } catch (err) {
+          if (!/duplicate column name/i.test(err.message)) throw err;
+        }
       }
       // Upgrade the bundled Growth seed, not an operator's customised plan.
       const growth = PLAN_SEEDS.find((p) => p.id === 'growth').features;
-      db.run("UPDATE plans SET features = ? WHERE id = 'growth' AND features = ?",
-        [JSON.stringify(growth), JSON.stringify(growth.filter((f) => f !== 'conversationControl'))]);
+      db.run("UPDATE plans SET features = ? WHERE id = 'growth' AND features = ?", [
+        JSON.stringify(growth),
+        JSON.stringify(growth.filter((f) => f !== 'conversationControl')),
+      ]);
       // Pre-BYOK active rows cannot attest a key, compatibility run or sandbox turn.
       db.run("UPDATE tenants SET status = 'provisioned' WHERE status = 'active' AND test_chat_at IS NULL");
       db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     }
+    compact = migrateReports(db);
+    migrateNumbers(db);
+    for (const r of all(
+      "SELECT slug,token,before FROM settings_undo WHERE before!='tenant-backup' ORDER BY created_at"
+    )) {
+      try {
+        writeTenantUndo(r.slug, r.token, r.before);
+      } catch (err) {
+        if (err.message !== 'missing_profile') throw err;
+        // An absent mount is not evidence that the customer was deleted.
+        // Roll the upgrade back until their durable volume is available.
+        if (get('SELECT 1 FROM tenants WHERE slug=?', [r.slug]))
+          throw new Error('restore_tenant_volume_before_undo_migration');
+        run('DELETE FROM settings_undo WHERE slug=? AND token=?', [r.slug, r.token]);
+        compact = true;
+        continue;
+      }
+      compact = true;
+      run("UPDATE settings_undo SET before='tenant-backup' WHERE slug=? AND token=?", [r.slug, r.token]);
+    }
+    // Wizard values are already in the atomically written business profile.
+    for (const r of all('SELECT slug,data FROM wizard_drafts')) {
+      let old;
+      try {
+        old = JSON.parse(r.data);
+      } catch {
+        old = {};
+      }
+      const data = JSON.stringify(draftMetadata(old));
+      if (r.data !== data) {
+        run('UPDATE wizard_drafts SET data=? WHERE slug=?', [data, r.slug]);
+        compact = true;
+      }
+    }
     db.run('COMMIT');
   } catch (err) {
-    db.run('ROLLBACK'); db.close(); db = file = null; throw err;
+    db.run('ROLLBACK');
+    db.close();
+    db = file = null;
+    throw err;
   }
+  // Rebuild legacy pages once; removed values must not persist on the freelist.
+  if (compact) db.run('VACUUM');
   save(true);
   if (!saveTimer) {
     saveTimer = setInterval(() => save(), 5000);
@@ -117,6 +167,8 @@ function save(force = false) {
   if (!db || !file) return false;
   try {
     const bytes = Buffer.from(db.export());
+    // sql.js reopens its connection on export, resetting connection pragmas.
+    db.run('PRAGMA secure_delete=ON');
     fs.writeFileSync(file + '.tmp', bytes, { mode: 0o600 });
     fs.renameSync(file + '.tmp', file);
     try {

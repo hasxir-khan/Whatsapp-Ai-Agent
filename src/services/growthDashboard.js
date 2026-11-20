@@ -11,6 +11,8 @@
 // still counts as an order), so the funnel answers "how far do people get",
 // not "how tidy is the data".
 
+import { normaliseSource } from './reportArchive.js';
+import { alias } from './reportContract.js';
 import { get, all, logEvent } from '../utils/db.js';
 import { agentStats as _agentStats } from './agents.js';
 import { featureOn } from './profile.js';
@@ -20,14 +22,25 @@ const count = (sql, params = []) => get(sql, params)?.c || 0;
 const sum = (sql, params = []) => get(sql, params)?.s || 0;
 
 // ── the funnel ─────────────────────────────────────────────
-export function funnel() {
-  const conversations = count("SELECT COUNT(DISTINCT number) AS c FROM messages WHERE role = 'user'");
-  const leads = count('SELECT COUNT(*) AS c FROM leads');
-  const quotes = count("SELECT COUNT(*) AS c FROM events WHERE type IN ('quote_sent','quote_built')");
-  const orders = count("SELECT COUNT(*) AS c FROM orders WHERE status != 'cancelled'");
-  const paid = count("SELECT COUNT(*) AS c FROM orders WHERE status IN ('paid','delivered')");
-  const reviewed = count("SELECT COUNT(*) AS c FROM review_asks WHERE status = 'rated'");
-
+export function funnel({ from = '', to = '9999' } = {}) {
+  const span = ' AND created_at>=? AND created_at<?',
+    p = [from, to];
+  const n = (table, where = '1', value = '*') =>
+    count(`SELECT COUNT(${value}) AS c FROM ${table} WHERE ${where}${span}`, p);
+  const archivedQuotes =
+    process.env.TENANT_DASHBOARD === '1'
+      ? count("SELECT SUM(n) c FROM report_signals WHERE metric='funnel' AND a='quotes' AND at>=? AND at<?", p)
+      : 0;
+  return funnelSteps({
+    conversations: n('messages', "role='user'", 'DISTINCT number'),
+    leads: n('leads'),
+    quotes: archivedQuotes + n('events', "type IN ('quote_sent','quote_built')"),
+    orders: n('orders', "status!='cancelled'"),
+    paid: n('orders', "status IN ('paid','delivered')"),
+    reviewed: n('review_asks', "status='rated'"),
+  });
+}
+export function funnelSteps({ conversations, leads, quotes, orders, paid, reviewed }) {
   const steps = [
     { key: 'conversations', label: 'Conversations', value: conversations },
     { key: 'leads', label: 'Leads', value: leads },
@@ -121,10 +134,17 @@ export const SOURCE_LABELS = {
  * us — that is the stronger claim.
  */
 export function sourceOf(number) {
+  let archived = [];
+  if (process.env.TENANT_DASHBOARD === '1' && process.env.PLATFORM_TENANT_TOKEN)
+    archived = all('SELECT type,source FROM report_sources WHERE who=?', [
+      alias(number, process.env.PLATFORM_TENANT_TOKEN),
+    ]);
+  const firstTag = archived.find((r) => r.type === 'source_tag');
+  if (firstTag) return firstTag.source;
   const tag = get("SELECT detail FROM events WHERE type = 'source_tag' AND number = ? ORDER BY id LIMIT 1", [number]);
   if (tag?.detail) return normaliseSource(tag.detail);
   const referred = get("SELECT 1 AS c FROM events WHERE type = 'referral_attributed' AND number = ? LIMIT 1", [number]);
-  if (referred) return 'referral';
+  if (referred || archived.length) return 'referral';
   const tracked = get('SELECT source FROM contact_sources WHERE number = ?', [number]);
   if (tracked?.source) return tracked.source;
   const contact = get('SELECT category FROM contacts WHERE number = ?', [number]);
@@ -136,15 +156,6 @@ function labelFor(key) {
   if (SOURCE_LABELS[key]) return SOURCE_LABELS[key];
   const tracked = get('SELECT label FROM tracked_sources WHERE source = ?', [key]);
   return tracked?.label || key;
-}
-
-function normaliseSource(raw) {
-  const s = String(raw || '').toLowerCase().trim();
-  if (/^(qr|qrcode|qr_code|sticker)$/.test(s)) return 'qr';
-  if (/^(link|bio|website|ig_bio|tiktok_bio)$/.test(s)) return 'link';
-  if (/^(referral|ref)$/.test(s)) return 'referral';
-  if (/^(ads?|ad|facebook|fb|instagram|ig|meta|google|tiktok)$/.test(s)) return 'ads';
-  return 'direct';
 }
 
 /**

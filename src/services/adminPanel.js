@@ -465,6 +465,23 @@ export function validateTenantProfile(slug, profile) {
     limit: Math.max(1, Math.round(Number(env.TEAM_MAX_MEMBERS) || DEFAULT_TEAM_LIMIT)) });
 }
 
+// An undo patch can contain an old team number, bank setting or instructions.
+// Keep the patch alongside the existing private profile backups. The control
+// plane only keeps the token, edited field names and audit metadata.
+function undoFile(slug,token) {
+  if(!/^[A-Za-z0-9_-]{8,64}$/.test(token))throw new Error('invalid_undo');
+  return path.join(tenantDir(slug),'data','backups',`change-${token}.json`);
+}
+export function writeTenantUndo(slug,token,data) {
+  const file=undoFile(slug,token),dir=path.dirname(file);
+  if(!fs.existsSync(path.join(tenantDir(slug),'config','owner.json')))throw new Error('missing_profile');
+  fs.mkdirSync(dir,{recursive:true,mode:0o700});
+  fs.writeFileSync(file+'.tmp',data,{mode:0o600});fs.renameSync(file+'.tmp',file);
+  const patches=fs.readdirSync(dir).filter(n=>/^change-[A-Za-z0-9_-]+\.json$/.test(n)).map(n=>({n,at:fs.statSync(path.join(dir,n)).mtimeMs}));
+  for(const old of patches.sort((a,b)=>b.at-a.at).slice(20))fs.rmSync(path.join(dir,old.n),{force:true});
+}
+export function readTenantUndo(slug,token){return JSON.parse(fs.readFileSync(undoFile(slug,token),'utf8'));}
+
 /**
  * Writes only through validateProfile(), so the panel cannot save a profile the
  * bot would refuse to load. The file is replaced atomically.

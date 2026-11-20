@@ -149,6 +149,7 @@ export async function boot({ handleRoute = null } = {}) {
 
   await initDB();
   startAutoSave();
+  if (process.env.TENANT_DASHBOARD === '1') (await import('./services/tenantReports.js')).startReportLoop();
   // Only applies WA_SESSION when the local login is missing or corrupt; a
   // healthy session is never overwritten by an older blob.
   const restored = await restoreSession();

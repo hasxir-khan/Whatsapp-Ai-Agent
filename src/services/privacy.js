@@ -21,6 +21,7 @@
 // counts stay, so the owner keeps their numbers and loses the transcripts.
 
 import crypto from 'node:crypto';
+import { alias } from './reportContract.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config, normalizePhone } from '../config/env.js';
@@ -322,7 +323,7 @@ export function forgetContact(rawNumber, { reason = 'owner_request', now = new D
   }
   // Phase 6: the agent that answered, and its event trail, are about this
   // person as well.
-  if (featureOn('multiAgent')) {
+  if (featureOn('multiAgent') || process.env.TENANT_DASHBOARD==='1') {
     for (const table of ['agent_chats', 'agent_events']) {
       const where = 'chat = ? OR chat = ?';
       const before = countRows(table, where, [number, jid]);
@@ -399,6 +400,9 @@ export function forgetContact(rawNumber, { reason = 'owner_request', now = new D
     }
   }
 
+  if (process.env.PLATFORM_TENANT_TOKEN && get("SELECT 1 FROM sqlite_master WHERE name='report_sources'")) {
+    run('DELETE FROM report_sources WHERE who=?', [alias(number, process.env.PLATFORM_TENANT_TOKEN)]);
+  }
   // The contact row itself becomes a shell: blocked, paused for a century, and
   // empty. The number stays so the bot can recognise them and stay quiet.
   const pausedUntil = new Date(now.getTime() + 3650 * 86_400_000).toISOString();

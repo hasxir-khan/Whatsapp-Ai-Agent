@@ -18,6 +18,7 @@
 // requested (wizard step, extra number, extra agent) so an account cannot step
 // over its plan silently.
 
+import {retention} from '../src/services/reportContract.js';
 import { run, get, all } from './db.js';
 import { PLAN_SEEDS } from './schema.js';
 import { trialDays } from './env.js';
@@ -72,6 +73,7 @@ function hydrate(row) {
   } catch {
     features = [];
   }
+  limits.dashboard_days = retention({ id: row.id, limits });
   return { ...row, limits, features, trial_days: Number(row.trial_days) || 0, price: Number(row.price) || 0 };
 }
 
@@ -105,6 +107,7 @@ export function applyEntitlements(slug, planId = null) {
   const current = readTenantEnv(slug);
   const writes = {
     PLAN_ID: plan.id,
+    TENANT_REPORT_DAYS: String(retention(plan)),
     TENANT_DAILY_LLM_CALLS: String(plan.limits.llm_calls_day || 0),
     TENANT_MAX_CONVERSATIONS: String(plan.limits[CONVERSATION_LIMIT_KEY] || 0),
     TENANT_MAX_AGENTS: String(plan.limits.agents || 0),

@@ -1,3 +1,6 @@
+import { dashboardEnabled } from './env.js';
+import { retention, alias } from '../src/services/reportContract.js';
+import { planForTenant } from './plans.js';
 // platform/keys.js
 // The customer's own AI keys: store, test, rotate, deliver, and never show.
 //
@@ -432,6 +435,7 @@ export async function deliverKeysAtStart(slug, { start = false, linkOnly = false
   const fn = start ? keyHooks.startTenant || adminHooks.start : keyHooks.restartTenant || adminHooks.restart;
   try {
     const res = await fn(slug, { isolated: true, extraEnv: { ...built.env, PAIRING_NUMBER: pairingNumber,
+      TENANT_DASHBOARD: dashboardEnabled() && !linkOnly ? '1' : '0', TENANT_REPORT_DAYS: String(retention(planForTenant(slug)?.plan)),
       TENANT_WORKER_MODE: linkOnly ? 'link' : 'live' } });
     if (res?.ok === false) throw new Error();
     return { ok: true, delivered: built.delivered };
@@ -479,11 +483,36 @@ export function applyToWorker(slug, mutate) {
  */
 export function healthFor(slug) {
   const keys = listKeys(slug);
-  const counts = all(`SELECT k.id, COUNT(u.id) AS calls, SUM(u.total_tokens) AS tokens,
+  let counts;
+  if (dashboardEnabled()) {
+    const salt = get('SELECT salt FROM number_identity_salt').salt + '\0' + slug;
+    const recent = platformKeyUsage(slug);
+    counts = keys.map((k) => {
+      const id = alias(k.id, salt, 'key');
+      return recent
+        .filter(
+          (r) => r.provider === k.provider && r.key_slot === k.slot && r.key_version === k.version && r.key_id === id
+        )
+        .reduce(
+          (s, r) => ({
+            id: k.id,
+            calls: s.calls + r.calls,
+            tokens: s.tokens + r.tokens,
+            errors: s.errors + r.errors,
+            lastErrorAt: [s.lastErrorAt, r.last_error_at].filter(Boolean).sort().at(-1) || null,
+          }),
+          { id: k.id, calls: 0, tokens: 0, errors: 0, lastErrorAt: null }
+        );
+    });
+  } else
+    counts = all(
+      `SELECT k.id, COUNT(u.id) AS calls, SUM(u.total_tokens) AS tokens,
       COUNT(u.error_category) AS errors, MAX(CASE WHEN u.error_category IS NOT NULL THEN u.created_at END) AS lastErrorAt
     FROM tenant_keys k LEFT JOIN usage_events u ON u.tenant = k.slug AND u.provider = k.provider AND u.key_slot = k.slot
       AND u.key_last4 = k.fingerprint AND u.key_ref = (k.id || ':' || k.key_version)
-      AND (k.revoked_at IS NULL OR u.created_at < k.revoked_at) WHERE k.slug = ? GROUP BY k.id`, [slug]);
+      AND (k.revoked_at IS NULL OR u.created_at < k.revoked_at) WHERE k.slug = ? GROUP BY k.id`,
+      [slug]
+    );
   const byId = new Map(counts.map((r) => [r.id,r]));
   const chain = keys.map((key) => {
     const r = byId.get(key.id);

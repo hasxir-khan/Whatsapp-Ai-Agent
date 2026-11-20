@@ -1068,6 +1068,10 @@ async function handleInboxRoute(req, res, url) {
   const pathname = url.pathname;
   if (pathname !== '/inbox' && !pathname.startsWith('/api/inbox')) return false;
 
+  if (pathname.startsWith('/api/inbox/brief/') && process.env.TENANT_DASHBOARD !== '1') {
+    sendJson(res, 404, { error: 'not_found' });
+    return true;
+  }
   if (!liveInboxEnabled()) {
     if (pathname === '/inbox') {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -1078,14 +1082,65 @@ async function handleInboxRoute(req, res, url) {
     return true;
   }
 
+  const isBrief = pathname.startsWith('/api/inbox/brief/');
+  const wantsBriefHtml = isBrief && /text\/html/.test(req.headers?.accept || '');
+  async function sendBriefPage(status, data = null) {
+    const { briefHtml } = await import('./services/reportBrief.js');
+    res.writeHead(status, {
+      ...SECURITY_HEADERS,
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Security-Policy':
+        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    });
+    res.end(briefHtml(data));
+  }
   const auth = authenticate(req);
   if (!auth.ok) {
+    if (wantsBriefHtml) {
+      await sendBriefPage(401);
+      return true;
+    }
     if (pathname === '/inbox') {
       res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end('<!doctype html><title>Locked</title><p>The inbox needs <code>?token=…</code> (DASHBOARD_TOKEN).</p>');
     } else {
       sendJson(res, 401, { error: 'unauthorised' });
     }
+    return true;
+  }
+
+  if (pathname.startsWith('/api/inbox/brief/')) {
+    if (process.env.TENANT_DASHBOARD !== '1' || req.method !== 'GET') {
+      sendJson(res, 404, { error: 'not_found' });
+      return true;
+    }
+    const { validBriefGrant } = await import('./services/reportBrief.js');
+    const id = pathname.slice('/api/inbox/brief/'.length),
+      secret = process.env.PLATFORM_TENANT_TOKEN;
+    if (
+      auth.via === 'local' ||
+      !validBriefGrant(id, url.searchParams.get('until'), url.searchParams.get('grant'), secret)
+    ) {
+      sendJson(res, 403, { error: 'owner_grant_required' });
+      return true;
+    }
+    const { get } = await import('./utils/db.js');
+    const row = get('SELECT l.number FROM report_lead_index i JOIN leads l USING(number) WHERE i.who=?', [id]);
+    if (!row) {
+      sendJson(res, 404, { error: 'not_found' });
+      return true;
+    }
+    const { briefFor } = await import('./services/brief.js');
+    const brief = briefFor(row.number);
+    const data = {
+      contact: id,
+      percent: brief.percent,
+      collected: brief.fields.filter((f) => f.value !== null).map(({ label, value }) => ({ label, value })),
+      missing: brief.missing.map((f) => f.label),
+    };
+    if (wantsBriefHtml) await sendBriefPage(200, data);
+    else sendJson(res, 200, data);
     return true;
   }
 

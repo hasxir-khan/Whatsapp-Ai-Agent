@@ -158,9 +158,9 @@ export function tenantSlug() {
  * separately and capped on their own.
  * @returns {{used:number, cap:number, exceeded:boolean}}
  */
-export function tenantBudget(tenant = tenantSlug()) {
+export function tenantBudget(tenant = tenantSlug(), day = todayKey()) {
   const cap = config.limits.tenantDailyLlmCalls;
-  const used = Number(tenantUsage(todayKey(), tenant)?.llm_calls || 0);
+  const used = Number(tenantUsage(day, tenant)?.llm_calls || 0);
   return { used, cap, exceeded: cap > 0 && used >= cap, tenant };
 }
 
@@ -509,9 +509,48 @@ export async function chat({
       const budget = Math.max(64, Math.min(Number(maxTokens) || config.llm.maxTokens, 4000));
       const signal = AbortSignal.timeout(timeoutMs);
       try {
-        const result = await callWithKeyChain(provider, {
-          model, system, messages, temperature, maxTokens: budget, json, tools, toolChoice, signal,
-        }, { kind: kind || mode, agent: agentName, chatKey });
+        const result = await callWithKeyChain(
+          provider,
+          {
+            model,
+            system,
+            messages,
+            temperature,
+            maxTokens: budget,
+            json,
+            tools,
+            toolChoice,
+            signal,
+          },
+          { kind: kind || mode, agent: agentName, chatKey }
+        );
+        // An opted-in report counts a provider answer even if a newer turn
+        // supersedes it. The pre-existing success budget below does not.
+        const reportResult = () => {
+          const reported = Number(result.promptTokens) > 0 || Number(result.completionTokens) > 0;
+          const promptTokens = reported
+            ? Number(result.promptTokens) || 0
+            : estimateTokens(system || '') + estimateTokens(messages || []);
+          const completionTokens = reported ? Number(result.completionTokens) || 0 : estimateTokens(result.text || '');
+          recordUsage({
+            tenant: tenantSlug(),
+            kind: kind || mode,
+            provider,
+            model,
+            agent: agentName,
+            chatKey,
+            keySlot: result.keySlot || null,
+            keyLast4: result.keyLast4 || null,
+            promptTokens,
+            completionTokens,
+            totalTokens: result.tokens || promptTokens + completionTokens,
+            estimated: !reported,
+            latencyMs: Date.now() - started,
+            errorCategory: !result.text && !result.toolCalls?.length ? 'provider_error' : null,
+          });
+        };
+        const meterAttempt = process.env.TENANT_DASHBOARD === '1' && isRecording();
+        if (meterAttempt) reportResult();
         // An empty text is fine when the model asked for a tool instead.
         if (!result.text && !result.toolCalls?.length) {
           throw new Error(`${provider}/${model}: empty response`);
@@ -529,35 +568,8 @@ export async function chat({
         if (result.tokens) bumpUsage('llm_tokens', result.tokens);
 
         const ms = Date.now() - started;
+        if (!meterAttempt && isRecording()) reportResult();
 
-        // The one place a model call succeeds is the one place usage is
-        // recorded. A provider that reports tokens is believed; one that says
-        // nothing gets a flagged estimate instead of a silent zero. With the
-        // platform off, `isRecording()` is false and none of this runs.
-        if (isRecording()) {
-          const reported = Number(result.promptTokens) > 0 || Number(result.completionTokens) > 0;
-          const promptTokens = reported
-            ? Number(result.promptTokens) || 0
-            : estimateTokens(system || '') + estimateTokens(messages || []);
-          const completionTokens = reported
-            ? Number(result.completionTokens) || 0
-            : estimateTokens(result.text || '');
-          recordUsage({
-            tenant: tenantSlug(),
-            kind: kind || mode,
-            provider,
-            model,
-            agent: agentName,
-            chatKey,
-            keySlot: result.keySlot || null,
-            keyLast4: result.keyLast4 || null,
-            promptTokens,
-            completionTokens,
-            totalTokens: result.tokens || promptTokens + completionTokens,
-            estimated: !reported,
-            latencyMs: ms,
-          });
-        }
         providerTrace.record({
           chat: chatKey,
           kind: kind || mode,

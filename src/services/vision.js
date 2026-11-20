@@ -1,3 +1,4 @@
+import { mediaUsage } from './mediaUsage.js';
 // src/services/vision.js
 // Image + video understanding on a $0 budget.
 //
@@ -65,6 +66,11 @@ async function geminiGenerate({ model, parts, system, temperature = 0.4, maxToke
   const data = JSON.parse(raw);
   const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
   if (!text) throw new Error('gemini vision: empty response');
+  mediaUsage('vision', 'gemini', model, {
+    input: data.usageMetadata?.promptTokenCount,
+    output: data.usageMetadata?.candidatesTokenCount,
+    estimated: !data.usageMetadata,
+  });
   return text;
 }
 
@@ -150,6 +156,7 @@ async function withGeminiModels(kind, fn) {
         return out;
       }
     } catch (err) {
+      mediaUsage('vision', 'gemini', model, { error: 'provider_error' });
       lastError = err;
       if (err.keyInvalid) {
         logEvent('vision_bad_key', null, { status: err.status });
@@ -220,6 +227,11 @@ async function openAiVision({ provider, model, images, prompt, maxTokens = 900 }
   const data = JSON.parse(raw);
   const text = (data.choices?.[0]?.message?.content || '').toString().trim();
   if (!text) throw new Error(`${provider} vision: empty response`);
+  mediaUsage('vision', provider, model, {
+    input: data.usage?.prompt_tokens,
+    output: data.usage?.completion_tokens,
+    estimated: !data.usage,
+  });
   return text;
 }
 
@@ -235,6 +247,7 @@ async function withOpenAiVision(provider, images, prompt, kind) {
       sticky[kind] = { provider, model };
       return text;
     } catch (err) {
+      mediaUsage('vision', provider, model, { error: 'provider_error' });
       lastError = err;
       if (err.status === 429) await new Promise((r) => setTimeout(r, 2000));
       continue;

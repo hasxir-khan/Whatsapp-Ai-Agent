@@ -1,3 +1,4 @@
+import { mediaUsage } from './mediaUsage.js';
 // src/services/tts.js
 // Voice replies ("send me a voice note") for $0.
 //
@@ -64,10 +65,12 @@ async function groqSpeech(text) {
 
   if (!res.ok) {
     const raw = await res.text();
+    mediaUsage('voice', 'groq', model, { error: 'provider_error' });
     logEvent('tts_groq_error', null, `${res.status} ${raw.slice(0, 160)}`);
     return null;
   }
   const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length <= 1000) mediaUsage('voice', 'groq', model, { error: 'provider_error' });
   return buffer.length > 1000 ? { buffer, ext: 'wav', provider: 'groq', model } : null;
 }
 
@@ -94,8 +97,10 @@ export async function synthesize(text, { langInfo } = {}) {
         const buffer = await synthesizeEdge(chunk, { voice });
         if (buffer?.length > 1000) {
           bumpUsage('tts_chars', chunk.length);
+          mediaUsage('voice', 'edge', voice, { estimated: true });
           return { buffer, ext: 'mp3', provider: 'edge', model: voice };
         }
+        mediaUsage('voice', 'edge', voice, { error: 'provider_error' });
       }
 
       if (provider === 'groq') {
@@ -104,10 +109,12 @@ export async function synthesize(text, { langInfo } = {}) {
         const result = await groqSpeech(chunk);
         if (result) {
           bumpUsage('tts_chars', chunk.length);
+          mediaUsage('voice', 'groq', result.model, { estimated: true });
           return result;
         }
       }
     } catch (err) {
+      mediaUsage('voice', provider, null, { error: 'provider_error' });
       logEvent('tts_error', null, `${provider}: ${err.message}`);
     }
   }

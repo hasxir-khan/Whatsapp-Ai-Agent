@@ -1,3 +1,4 @@
+import { mediaUsage } from './mediaUsage.js';
 // src/services/transcription.js
 // Speech-to-text with Groq Whisper (free tier).
 // Language auto-detection is ON by default so a Spanish, Arabic or Urdu voice
@@ -49,7 +50,10 @@ export async function transcribe(buffer, { mimetype = 'audio/ogg', language = co
 
     for (const model of models) {
       const result = await callWhisper(tmp, model, language, filename);
+      mediaUsage('voice', 'groq', model, { error: result ? null : 'provider_error', estimated: !!result });
       if (result) {
+        if (process.env.TENANT_DASHBOARD === '1' && result.duration)
+          logEvent('report_voice_seconds', null, { seconds: result.duration });
         if (result.duration) bumpUsage('stt_seconds', result.duration);
         return { ...result, model };
       }

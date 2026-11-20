@@ -1,5 +1,6 @@
 // Readiness is derived from the same profile, key store and link state the worker
 // uses. Documents and sandbox turns are attested by the server, not wizard JSON.
+import {dashboardEnabled} from './env.js';
 import { get, run } from './db.js';
 import { readTenantProfile, readTenantEnv, validateTenantProfile } from '../src/services/adminPanel.js';
 import { keySecretProblem } from './crypto.js';
@@ -54,7 +55,9 @@ export function checklist(slug, f = facts(slug)) {
 export function connectionCard(slug, f = facts(slug)) {
   if (!f) return { ok: false, error: 'not_found' };
   const { tenant, env, keys, model, chain } = f;
-  const latest = get('SELECT MAX(created_at) AS at FROM usage_events WHERE tenant = ? AND error_category IS NULL', [slug]);
+  const latest = dashboardEnabled()
+    ? get('SELECT last_success at FROM r_cursor WHERE slug=?', [slug])
+    : get('SELECT MAX(created_at) AS at FROM usage_events WHERE tenant = ? AND error_category IS NULL', [slug]);
   return { ok: true, status: tenant.status, pausedReason: tenant.paused_reason || null,
     whatsapp: { state: tenant.link_status, transport: env.TRANSPORT || 'baileys', updatedAt: tenant.link_updated_at },
     ai: { provider: model.provider || null, model: model.model || null, blocked: model.blocked,

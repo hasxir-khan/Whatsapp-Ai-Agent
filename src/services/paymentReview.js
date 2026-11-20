@@ -1,3 +1,4 @@
+import { period } from './reportCalendar.js';
 /**
  * Owner decisions + payment review.
  *
@@ -1215,13 +1216,20 @@ export async function runPaymentReview({ transport = null, now = new Date() } = 
 const dayKey = (date) => iso(date).slice(0, 10);
 
 export function paymentsSummary({ now = new Date() } = {}) {
-  const today = dayKey(now);
-  const pending = listDecisions({ status: 'pending', limit: 200 });
-  const recheck = listDecisions({ status: 'recheck', limit: 200 });
-  const escalated = listDecisions({ status: 'escalated', limit: 200 });
+  const reports = process.env.TENANT_DASHBOARD === '1';
+  const zone = reports ? profile()?.business?.timezone || config.timezone : 'UTC';
+  const today = period(new Date(now), zone, 1);
+  const open = reports
+    ? all("SELECT * FROM decision_requests WHERE type='payment' AND status IN ('pending','escalated','recheck')").map(
+        hydrate
+      )
+    : ['pending', 'recheck', 'escalated'].flatMap((status) => listDecisions({ status, limit: 200 }));
+  const pending = open.filter((d) => d.status === 'pending'),
+    recheck = open.filter((d) => d.status === 'recheck'),
+    escalated = open.filter((d) => d.status === 'escalated');
   const decidedToday = all(
-    "SELECT * FROM decision_requests WHERE type = 'payment' AND resolved_at IS NOT NULL AND resolved_at >= ?",
-    [`${today}T00:00:00.000Z`]
+    "SELECT * FROM decision_requests WHERE type = 'payment' AND resolved_at IS NOT NULL AND resolved_at >= ? AND resolved_at < ?",
+    [today.from, today.to]
   ).map(hydrate);
   const acceptedToday = decidedToday.filter((d) => ['accepted', 'partial'].includes(d.status));
   const rejectedToday = decidedToday.filter((d) => d.status === 'rejected');
@@ -1238,8 +1246,11 @@ export function paymentsSummary({ now = new Date() } = {}) {
 
   // Average time from opening to a decision, over the last 30 days.
   const recent = all(
-    "SELECT created_at, resolved_at FROM decision_requests WHERE type = 'payment' AND resolved_at IS NOT NULL AND resolved_at >= ?",
-    [iso(new Date(new Date(now).getTime() - 30 * 24 * 3600_000))]
+    "SELECT created_at, resolved_at FROM decision_requests WHERE type = 'payment' AND resolved_at IS NOT NULL AND resolved_at >= ? AND resolved_at < ?",
+    [
+      reports ? period(new Date(now), zone, 30).from : iso(new Date(+new Date(now) - 30 * 86400000)),
+      reports ? today.to : '9999',
+    ]
   );
   const avgMinutes = recent.length
     ? Math.round(recent.reduce((sum, r) => sum + (new Date(r.resolved_at).getTime() - new Date(r.created_at).getTime()) / 60_000, 0) / recent.length)

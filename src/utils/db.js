@@ -3,6 +3,7 @@
 // no native modules, works on any free host). Everything the assistant learns
 // about a client lives here, so memory survives restarts and redeploys.
 
+import { initArchive, archiveBeforePurge } from '../services/reportArchive.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import initSqlJs from 'sql.js';
@@ -792,6 +793,12 @@ export async function initDB({ file = DB_FILE } = {}) {
 
   db.run('PRAGMA journal_mode = MEMORY;');
   db.run(SCHEMA);
+  if (process.env.TENANT_DASHBOARD === '1') initArchive(db);
+  else if (db.exec("SELECT 1 FROM sqlite_master WHERE name='report_coverage'").length) {
+    // A disabled worker can prune raw events without archiving them. Re-arm
+    // coverage at the next opted-in boot instead of claiming an unobserved gap.
+    db.run('DELETE FROM report_coverage');
+  }
   migrate();
   saveDB(true);
 
@@ -1402,7 +1409,13 @@ export function logEvent(type, number = null, detail = null) {
     typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : null,
     new Date().toISOString(),
   ]);
-  run(`DELETE FROM events WHERE created_at < datetime('now', '-30 days')`);
+  if (process.env.TENANT_DASHBOARD === '1' && process.env.PLATFORM_TENANT_TOKEN) {
+    const cutoff = new Date(Date.now() - 30 * 86400000).toISOString();
+    if (get('SELECT 1 FROM events WHERE created_at<? LIMIT 1', [cutoff])) {
+      const days = Math.min(90, Math.max(31, Number(process.env.TENANT_REPORT_DAYS) || 31));
+      archiveBeforePurge(db, all, new Date(Date.now() - (days + 1) * 86400000).toISOString(), cutoff);
+    }
+  } else run(`DELETE FROM events WHERE created_at < datetime('now', '-30 days')`);
 }
 
 export function recentEvents(limit = 20) {

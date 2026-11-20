@@ -1,3 +1,4 @@
+import { period } from './reportCalendar.js';
 // src/services/growth.js
 // The shared safety layer for every proactive message this bot ever sends.
 //
@@ -134,6 +135,7 @@ export function dailyCapFor(transportKind = config.transport) {
 }
 
 export function dayStartIso(now = new Date()) {
+  if (process.env.TENANT_DASHBOARD === '1') return period(now, business()?.timezone || config.timezone, 1).from;
   const { timeZone } = quietWindow();
   // Local midnight → ISO, without pulling in a date library.
   const p = partsInTz(now, timeZone);
