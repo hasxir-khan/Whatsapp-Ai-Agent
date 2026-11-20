@@ -158,9 +158,12 @@ export function jidForms(number = '') {
  * A mismatch counter above zero means someone called the second one with the
  * first one's arguments — presence goes out addressed to "composing".
  */
-export function noteTyping({ jid = null, state: presenceState = null, via = 'unknown', sock = null, ok = true, error = null, at = Date.now() } = {}) {
+export function noteTyping({ jid = null, state: presenceState = null, via = 'unknown', sock = null, ok = true, error = null, order = null, at = Date.now() } = {}) {
   const setPresenceArity = typeof sock?.setPresence === 'function' ? Number(sock.setPresence.length) || 0 : 0;
-  const mismatch = via === 'setPresence' && setPresenceArity >= 2;
+  // `order` is the authoritative answer when the caller supplies it. Without it
+  // (older call sites, the transport's own method) fall back to the signature:
+  // a two-argument setPresence called with one argument is the swapped call.
+  const mismatch = order === 'broken' || (order === null && via === 'setPresence' && setPresenceArity >= 2);
   if (ok) state.counters.presenceSent += 1;
   else state.counters.presenceFailed += 1;
   if (mismatch) state.counters.presenceMismatch += 1;
@@ -170,6 +173,7 @@ export function noteTyping({ jid = null, state: presenceState = null, via = 'unk
     jid: jid || null,
     state: presenceState || null,
     via,
+    order,
     ok: !!ok,
     error: error ? String(error).slice(0, 120) : null,
     mismatch,

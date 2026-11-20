@@ -20,6 +20,8 @@
 import { config } from '../config/env.js';
 import { business, tone as toneProfile } from '../services/profile.js';
 import { noteTyping } from '../services/transportAudit.js';
+import { presenceChannel } from '../transport/contract.js';
+import { strategy as storedStrategy } from '../services/typingTest.js';
 
 export const DEFAULT_TIMING = {
   enabled: true,
@@ -38,6 +40,11 @@ export const DEFAULT_TIMING = {
   voiceMatch: true,
   voiceMaxSeconds: 20,
   scale: 1,
+  // Announce "available" to the chat before the first "composing": a device
+  // that never said hello is one WhatsApp may not draw a bubble for.
+  goOnline: true,
+  // The presence call-shape fix. Off = the old (broken) calls, unchanged.
+  fix: true,
 };
 
 const ENV_KEYS = {
@@ -53,6 +60,8 @@ const ENV_KEYS = {
   hardCapMs: 'TYPING_HARD_CAP_MS',
   holdingAfterMs: 'HOLDING_AFTER_MS',
   maxSentences: 'REPLY_MAX_SENTENCES',
+  goOnline: 'TYPING_GO_ONLINE',
+  fix: 'TYPING_FIX',
 };
 
 /** Keys the profile sets on purpose (so they escape the default floors). */
@@ -88,6 +97,11 @@ export function replyTiming() {
     if (process.env[envName] !== undefined && process.env[envName] !== '') {
       out[key] = typeof DEFAULT_TIMING[key] === 'boolean' ? Boolean(env[key]) : Number(env[key]);
     }
+  }
+  // Booleans that the profile may also set (a config file is not an env var, so
+  // the loop above leaves them alone).
+  for (const key of ['goOnline', 'fix']) {
+    if (env[key] !== undefined) out[key] = Boolean(env[key]);
   }
 
   // A pre-existing install (and every test harness) tunes the old single delay
@@ -203,18 +217,64 @@ export function planReplyDelay({ text = '', voice = false, receivedAt, readyAt, 
  * `refreshMs` so WhatsApp never drops it, and stopped after `hardCapMs` so a
  * dead provider cannot leave "typing…" on the customer's screen all evening.
  */
-export function createTypingSession(sock, jid, { voice = false, timing = replyTiming(), setPresence = null, messageId = null } = {}) {
-  const presence = setPresence || defaultPresence(sock, jid, { messageId });
+export function createTypingSession(
+  sock,
+  jid,
+  { voice = false, timing = replyTiming(), setPresence = null, messageId = null, altJid = null, strategy = null } = {}
+) {
+  // (strategy = null means "use the owner's stored choice".)
+  // Which of the four shapes the owner saw working in `.typing-test`. The default
+  // is "a" — composing only — so nobody gets a different behaviour by accident.
+  const shape = strategy || storedStrategy();
+  const target = shape === 'd' && altJid ? altJid : jid;
+  const presence = setPresence || defaultPresence(sock, target, { messageId });
   const state = voice ? 'recording' : 'composing';
   const startedAt = Date.now();
   let timer = null;
   let cap = null;
   let stopped = false;
   let refreshes = 0;
+  let announced = false;
+
+  /**
+   * Before the first `composing`: subscribe (shape b) and/or say `available`
+   * (shape c, or the goOnline default). Sent to this chat only — the bot does
+   * not announce itself to every contact on the account.
+   */
+  const announce = () => {
+    if (announced) return;
+    announced = true;
+    if (!typingFixOn(timing)) return;
+    const channel = presenceChannel(sock);
+    if (shape === 'b') {
+      const subscribe = typeof sock?.presenceSubscribe === 'function' ? sock.presenceSubscribe.bind(sock) : null;
+      if (subscribe) {
+        try {
+          const out = subscribe(target);
+          if (out && typeof out.catch === 'function') out.catch(() => {});
+        } catch {
+          /* subscription is best-effort */
+        }
+      }
+    }
+    // A partial timing object (tests, older callers) that says nothing about
+    // going online gets the default, not "off".
+    const goOnline = timing.goOnline === undefined ? Boolean(config.timing?.goOnline ?? true) : Boolean(timing.goOnline);
+    if ((shape === 'c' || goOnline) && channel && !voice) {
+      try {
+        const out = channel.send('available', target);
+        if (out && typeof out.catch === 'function') out.catch(() => {});
+        noteTyping({ jid: target, state: 'available', via: channel.via, order: channel.order, sock, ok: true });
+      } catch (err) {
+        noteTyping({ jid: target, state: 'available', via: channel.via, order: channel.order, sock, ok: false, error: err?.message });
+      }
+    }
+  };
 
   const ping = () => {
     if (stopped) return;
     try {
+      announce();
       presence(state);
     } catch {
       /* presence is cosmetic */
@@ -281,29 +341,55 @@ function defaultPresence(sock, jid = null, { messageId = null } = {}) {
     try {
       let out = null;
       let via = null;
+      let order = null;
+
       if (typeof sock?.sendTypingIndicator === 'function' && messageId) {
         // Cloud API: typing *is* the read receipt, and it needs the wamid.
         via = 'typingIndicator';
+        order = 'message-id';
         out = sock.sendTypingIndicator(messageId, { state });
+      } else if (typingFixOn()) {
+        // One place knows the argument order. `presenceChannel` calls
+        // setPresence(jid, state) on a transport and sendPresenceUpdate(state,
+        // jid) on a raw socket — never the other way round.
+        const channel = presenceChannel(sock);
+        if (channel) {
+          via = channel.via;
+          order = channel.order;
+          out = channel.send(state, jid);
+        }
       } else if (typeof sock?.sendPresenceUpdate === 'function') {
+        // Rollback path (TYPING_FIX=0): unchanged, bug and all.
         via = 'sendPresenceUpdate';
+        order = 'state-first';
         out = sock.sendPresenceUpdate(state, jid);
       } else if (typeof sock?.setPresence === 'function') {
-        // NOTE (diagnosis, see `.typing-test`): the transport's method is
-        // setPresence(jid, state), so this call puts `state` where `jid` goes.
-        // It is left exactly as it was — the evidence layer counts it.
         via = 'setPresence';
+        order = 'broken';
         out = sock.setPresence(state);
       }
-      noteTyping({ jid, state, via: via || 'none', sock, ok: true });
+
+      noteTyping({ jid, state, via: via || 'none', order, sock, ok: true });
       // Some transports return a promise; nobody waits for a typing indicator,
       // but an unhandled rejection would crash the process.
-      if (out && typeof out.catch === 'function') out.catch((err) => noteTyping({ jid, state, via: via || 'none', sock, ok: false, error: err?.message }));
+      if (out && typeof out.catch === 'function') {
+        out.catch((err) => noteTyping({ jid, state, via: via || 'none', order, sock, ok: false, error: err?.message }));
+      }
     } catch (err) {
-      noteTyping({ jid, state, via: 'unknown', sock, ok: false, error: err?.message });
+      noteTyping({ jid, state, via: 'unknown', order: 'broken', sock, ok: false, error: err?.message });
       /* presence is cosmetic */
     }
   };
+}
+
+/** Is the presence call-shape fix on? `TYPING_FIX=0` restores the old calls. */
+export function typingFixOn(timing = null) {
+  if (timing && typeof timing.fix === 'boolean') return timing.fix;
+  // Env wins over the config snapshot, so a running process (and a test) can
+  // roll the fix back without a restart.
+  const raw = process.env.TYPING_FIX;
+  if (raw !== undefined && raw !== '') return !['0', 'false', 'off', 'no'].includes(String(raw).toLowerCase());
+  return Boolean(config.timing?.fix);
 }
 
 /**
@@ -325,10 +411,13 @@ export function holdingLine(lang = 'en') {
 }
 
 /** "available" on the owner's own account while the bot is working. */
-export function markAvailable(sock) {
+export function markAvailable(sock, jid = null) {
   try {
-    if (typeof sock?.sendPresenceUpdate === 'function') sock.sendPresenceUpdate('available');
-    else if (typeof sock?.setPresence === 'function') sock.setPresence('available');
+    const channel = presenceChannel(sock);
+    if (!channel) return;
+    const out = channel.send('available', jid || undefined);
+    if (out && typeof out.catch === 'function') out.catch(() => {});
+    noteTyping({ jid: jid || null, state: 'available', via: channel.via, order: channel.order, sock, ok: true });
   } catch {
     /* ignore */
   }

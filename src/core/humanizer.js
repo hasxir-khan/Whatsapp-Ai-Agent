@@ -9,6 +9,8 @@ import { replyTiming, planReplyDelay, createTypingSession, typingCapabilities, r
 import * as timeline from '../services/timeline.js';
 import * as providerTrace from '../services/providerTrace.js';
 import { isNumberHeavy } from './brevity.js';
+import { presenceChannel } from '../transport/contract.js';
+import { noteTyping } from '../services/transportAudit.js';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -107,9 +109,14 @@ export function humanDelay({ replyText = '', incomingText = '', isVoice = false 
 
 export async function setPresence(sock, jid, state) {
   try {
-    if (typeof sock?.sendPresenceUpdate === 'function') await sock.sendPresenceUpdate(state, jid);
-    else if (typeof sock?.setPresence === 'function') await sock.setPresence(state);
-  } catch {
+    // One place knows the argument order (see src/transport/contract.js): the
+    // transport's method is (jid, state), a raw socket's is (state, jid).
+    const channel = presenceChannel(sock);
+    if (!channel) return;
+    await channel.send(state, jid);
+    noteTyping({ jid, state, via: channel.via, order: channel.order, sock, ok: true });
+  } catch (err) {
+    noteTyping({ jid, state, via: 'unknown', order: 'broken', sock, ok: false, error: err?.message });
     /* presence is cosmetic — never fail a message because of it */
   }
 }

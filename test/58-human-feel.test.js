@@ -182,7 +182,11 @@ test('timing: read receipt comes before typing, and typing outlasts a slow provi
     },
   };
   const session = timing.createTypingSession(sock, 'x@s.whatsapp.net', { timing: timing.replyTiming() });
-  assert.equal(seen[0], 'composing');
+  // Since the typing fix, a session says "available" to this chat before it
+  // starts composing: a device that never announced itself is one WhatsApp may
+  // not draw a bubble for. TYPING_GO_ONLINE=0 restores composing-first.
+  assert.equal(seen[0], 'available');
+  assert.equal(seen[1], 'composing');
   await wait(40); // > 2 refreshes at 15 ms
   assert.ok(seen.filter((s) => s === 'composing').length >= 2, 'the indicator must be refreshed, not sent once');
   session.pause();

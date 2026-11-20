@@ -143,14 +143,40 @@ test('the transport sends presence in the state-first order', async () => {
 
 const { createTypingSession } = await import('../src/core/timing.js');
 
-test('the timing session records what it actually sent, including a wrong call shape', async () => {
+test('the timing session records what it actually sent, and the fixed shape is not a mismatch', async () => {
   const target = transportOnlyTarget();
   const session = createTypingSession(target, '923001112223@s.whatsapp.net', { timing: { refreshMs: 100000, hardCapMs: 100000 } });
   session.pause();
   await session.stop({ paused: false });
-  assert.equal(target.calls.length, 2);
-  assert.equal(audit.counters().presenceMismatch, 2, 'both composing and paused go through setPresence(state)');
+  // available → composing → paused, all jid-first, all on the right address.
+  assert.deepEqual(target.calls.map((c) => c.state), ['available', 'composing', 'paused']);
+  assert.equal(target.calls[1].jid, '923001112223@s.whatsapp.net');
+  assert.equal(audit.counters().presenceMismatch, 0);
   assert.equal(audit.lastTyping().state, 'paused');
+});
+
+test('TYPING_FIX=0 reproduces the old call shape, and it is counted as a mismatch', async () => {
+  process.env.TYPING_FIX = '0';
+  try {
+    const { createTypingSession: legacySession } = await import('../src/core/timing.js');
+    // A transport with a two-argument setPresence, called with one argument —
+    // exactly the bug: sendPresenceUpdate('paused', 'composing').
+    const calls = [];
+    const transportish = {
+      setPresence(jid, state) {
+        calls.push({ jid, state });
+      },
+    };
+    const session = legacySession(transportish, '923001112223@s.whatsapp.net', {
+      timing: { refreshMs: 100000, hardCapMs: 100000, fix: false },
+    });
+    await session.stop({ paused: true });
+    assert.equal(calls[0].jid, 'composing', 'the rollback path still swaps the arguments');
+    assert.equal(calls[0].state, undefined);
+    assert.ok(audit.counters().presenceMismatch >= 1);
+  } finally {
+    delete process.env.TYPING_FIX;
+  }
 });
 
 // ── 4. outbound delivery tracking ───────────────────────────

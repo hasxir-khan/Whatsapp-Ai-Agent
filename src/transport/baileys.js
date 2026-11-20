@@ -347,6 +347,16 @@ export class BaileysTransport extends Transport {
     await this.sock.readMessages(keys);
   }
 
+  /**
+   * Some accounts only honour presence for a chat the device is subscribed to.
+   * `.typing-test` variant b exists because of that; this is the method it (and
+   * `typing.strategy = b`) calls.
+   */
+  async presenceSubscribe(jid) {
+    if (typeof this.sock?.presenceSubscribe !== 'function') return null;
+    return this.sock.presenceSubscribe(jid);
+  }
+
   async setPresence(jid, state = 'paused') {
     try {
       await this.sock?.sendPresenceUpdate(state, jid);

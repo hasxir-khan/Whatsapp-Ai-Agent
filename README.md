@@ -2479,7 +2479,8 @@ Watch the phone and reply with the number that worked:
 .typing-test use 3
 ```
 
-That is stored as `typing.strategy` in `config/owner.json` and survives restarts.
+That is stored as `typing.strategy` in `config/owner.json` and used by every reply
+from the next message on — no restart.
 If none of the four showed, that is a real answer too — the problem is not the
 call shape, and `.health` will say whether the presence call is reaching the
 socket at all. Add `TYPING_AUDIT=1` to see every presence line with a timestamp:
@@ -2517,11 +2518,39 @@ Decrypt: 3 bad MAC · 1 session reset · 0 absent · 0 retry failed
 ⏳ +923005551234: pending · 8s ago
 ```
 
+### The fix, and the switches that control it
+
+The bot used to call presence with the arguments in the wrong order: the
+transport's method is `setPresence(jid, state)`, and it was called as
+`setPresence(state)`. Every "typing" update therefore went out as a *pause*
+addressed to a chat called `composing` — nothing threw, and the customer never
+saw a bubble. Presence now goes through one function that knows the order
+(`src/transport/contract.js`), and the contract test compares the real
+transports and the test fakes against the same interface, so a fake cannot be
+easier to satisfy than reality again.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `TYPING_FIX` | `1` | The call-order fix. `0` restores the old calls exactly (one-release rollback; `.health` then counts the mismatch). |
+| `TYPING_GO_ONLINE` | `1` | Say `available` **to that chat** before the first `composing`. A device that never announced itself is one WhatsApp may ignore presence from. It is per-chat, not a broadcast: the account does not appear online to everyone. `0` disables it. |
+| `TYPING_STRATEGY` | `a` | The same choice `.typing-test use <n>` stores. `a` composing only · `b` subscribe then composing · `c` available then composing · `d` composing on the alternate JID form |
+| `TYPING_REFRESH_MS` | `8000` | How often "typing…" is re-sent while a reply is pending |
+| `TYPING_HARD_CAP_MS` | `30000` | When the bot stops claiming to type, whatever the provider is doing |
+
+Whatever happens — a provider error, a guard refusal, a failed send — `paused`
+is sent before the message and again on the way out. A customer never sees
+"typing…" after the reply has arrived.
+
+Stop the bot, delete the stale value from `config/owner.json` (`typing.strategy`)
+or set `TYPING_STRATEGY=a` to go back to the plain shape.
+
 ### What a fake socket cannot prove
 
-Every test in `test/63-transport-audit.test.js` runs against a fake socket. It
-can prove the bot called `sendPresenceUpdate('composing', jid)` with the right
-JID, in the right order, and that it paused afterwards. It cannot prove
+Every test in `test/63-transport-audit.test.js` and `test/65-typing-fix.test.js`
+runs against a fake socket, and those fakes have the *real* shapes:
+`setPresence(jid, state)` on a transport, `sendPresenceUpdate(state, jid)` on a
+socket. They can prove the bot called the right method with the right JID, in the
+right order, and that it paused afterwards. It cannot prove
 WhatsApp accepted it, and it cannot prove the customer's phone drew anything —
 only the phone in your hand can. That is why the command asks.
 

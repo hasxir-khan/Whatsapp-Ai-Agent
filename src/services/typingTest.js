@@ -110,6 +110,19 @@ export function planVariants(forms = {}) {
   return plan;
 }
 
+/**
+ * The other address this contact is known by, if any: the LID when we wrote to
+ * the phone form, or the phone form when the message came from a LID. Nothing
+ * to try means null — a presence update to an address we invented is worse than
+ * no presence at all.
+ */
+export function alternateJid(forms = {}, jid = null) {
+  const primary = jid || forms.replyJid || forms.phone || null;
+  if (forms.lid && forms.lid !== primary) return forms.lid;
+  if (forms.phone && forms.phone !== primary) return forms.phone;
+  return null;
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -253,6 +266,7 @@ export default {
   testTiming,
   presenceSender,
   planVariants,
+  alternateJid,
   runTypingTest,
   describeResults,
   strategy,

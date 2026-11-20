@@ -29,6 +29,8 @@ import {
 } from '../services/privacy.js';
 import { isOrderQuestion, orderStatusAnswer, orderTrackingEnabled } from '../services/orders.js';
 import { bookingAgentEnabled, handleBookingTurn } from '../services/bookingAgent.js';
+import { jidForms } from '../services/transportAudit.js';
+import { alternateJid } from '../services/typingTest.js';
 import { cancelFor as cancelFollowUpDrafts } from '../services/followUpAgent.js';
 import { closerAgentEnabled, handleCloserTurn, readyToBuy, startOrder, handleReceipt } from '../services/closerAgent.js';
 import { reviewAgentEnabled, handleRating, attributeReferral } from '../services/reviewAgent.js';
@@ -652,6 +654,18 @@ export function startPendingFlusher(sock) {
   return timer;
 }
 
+/**
+ * The other JID form this contact has written from, for `typing.strategy = d`.
+ * Unknown contacts simply have none.
+ */
+function alternateJidFor(number, jid) {
+  try {
+    return alternateJid(jidForms(number), jid);
+  } catch {
+    return null;
+  }
+}
+
 // ════════════════════════════════════════════════════════════
 // The batch pipeline
 // ════════════════════════════════════════════════════════════
@@ -669,7 +683,13 @@ async function processBatch(sock, jid, number, items, clock = realClock) {
     // The newest inbound id: on the Cloud API the typing indicator *is* the
     // read receipt for that message.
     session: timing.enabled
-      ? createTypingSession(sock, jid, { timing, messageId: items[items.length - 1]?.incoming?.id || null })
+      ? createTypingSession(sock, jid, {
+          timing,
+          messageId: items[items.length - 1]?.incoming?.id || null,
+          // If this contact has written from a LID as well, that is the other
+          // address a presence update can be tried on (`typing.strategy = d`).
+          altJid: alternateJidFor(number, jid),
+        })
       : null,
     // The pause that existed when the batch started is the pipeline's own
     // business; a pause that appears *during* the batch is the owner taking

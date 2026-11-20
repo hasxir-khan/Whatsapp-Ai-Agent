@@ -437,6 +437,12 @@ export const config = {
     hardCapMs: toInt(process.env.TYPING_HARD_CAP_MS, 30000),
     holdingAfterMs: toInt(process.env.HOLDING_AFTER_MS, 30000),
     maxSentences: toInt(process.env.REPLY_MAX_SENTENCES, 2),
+    // Show "available" to the chat before the first "composing". A device that
+    // never announced itself is a device WhatsApp may ignore presence from.
+    goOnline: toBool(process.env.TYPING_GO_ONLINE, true),
+    // The call shape fix. Off restores the pre-fix behaviour exactly, for a
+    // one-release rollback.
+    fix: toBool(process.env.TYPING_FIX, true),
   },
 
   behavior: {
