@@ -96,9 +96,30 @@ const isPaused = (contact) =>
   !!(contact?.bot_paused_until && new Date(contact.bot_paused_until) > new Date());
 
 // ════════════════════════════════════════════════════════════
+// The clock
+// ════════════════════════════════════════════════════════════
+/**
+ * The time a turn happens at. Production never passes anything, so this is the
+ * real clock and nothing changes. Tests and the eval harness pass a fixed
+ * instant so a conversation that says "tomorrow at 11" means the same thing
+ * every day the suite runs.
+ *
+ * @param {Date|number|string|null} now  a fixed instant, or null for the real clock
+ * @returns {() => Date} a clock; a fixed one returns the same instant every call
+ */
+export function makeClock(now = null) {
+  if (now === null || now === undefined) return () => new Date();
+  const fixed = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  return () => new Date(fixed);
+}
+
+const realClock = makeClock(null);
+
+// ════════════════════════════════════════════════════════════
 // Entry point — called for every upserted message
 // ════════════════════════════════════════════════════════════
-export async function handleIncoming(transport, rawIncoming) {
+export async function handleIncoming(transport, rawIncoming, { now = null } = {}) {
+  const clock = makeClock(now);
   try {
     // The handler only ever sees the internal shape. A Baileys message handed
     // in directly (tests, older callers) is normalised at the door, exactly
@@ -127,7 +148,7 @@ export async function handleIncoming(transport, rawIncoming) {
     // ── the owner's own messages ───────────────────────────
     if (incoming.fromMe) {
       if (ownSentIds.has(msgId)) return; // our own send echoed back
-      return await handleOwnerSide(transport, { jid, number, info, incoming });
+      return await handleOwnerSide(transport, { jid, number, info, incoming, clock });
     }
 
     if (number === config.owner.number) {
@@ -256,7 +277,7 @@ export async function handleIncoming(transport, rawIncoming) {
     // a quantity, not a score.
     if (reviewAgentEnabled() && said) {
       try {
-        const rated = await handleRating({ number, text: said, transport, now: new Date() });
+        const rated = await handleRating({ number, text: said, transport, now: clock() });
         if (rated.handled) {
           memory.saveUserTurn(number, said, info.kind, { lang: detectLanguage(said).code, rating: rated.rating });
           memory.saveAssistantTurn(number, rated.reply, 'text');
@@ -365,7 +386,7 @@ export async function handleIncoming(transport, rawIncoming) {
       db.logEvent('new_contact', number, { country: geo.country });
     }
 
-    enqueue(transport, jid, number, { incoming, receivedAt: timeline.received(number).receivedAt });
+    enqueue(transport, jid, number, { incoming, receivedAt: timeline.received(number).receivedAt }, clock);
   } catch (err) {
     console.error('❌ handleIncoming:', err.message);
     db.logEvent('handler_error', null, err.message);
@@ -378,7 +399,7 @@ export async function handleIncoming(transport, rawIncoming) {
 const SAFE_IN_CLIENT_CHAT = new Set(['pause', 'resume', 'block', 'unblock', 'reset', 'quote', 'ping']);
 const TARGET_COMMANDS = new Set(['pause', 'resume', 'block', 'unblock', 'reset', 'quote']);
 
-async function handleOwnerSide(sock, { jid, number, info, incoming }) {
+async function handleOwnerSide(sock, { jid, number, info, incoming, clock = realClock }) {
   const text = (info.text || '').trim();
   const isSelfChat = number === config.owner.number;
 
@@ -403,9 +424,9 @@ async function handleOwnerSide(sock, { jid, number, info, incoming }) {
 
     // Shorthand: `.pause` inside a chat applies to that chat
     if (!isSelfChat && TARGET_COMMANDS.has(cmd) && !/\+?\d{8,}/.test(text)) {
-      return runCommand(sock, jid, `${text} ${number}`);
+      return runCommand(sock, jid, `${text} ${number}`, undefined, clock);
     }
-    return runCommand(sock, jid, text);
+    return runCommand(sock, jid, text, undefined, clock);
   }
 
   if (isSelfChat) {
@@ -416,7 +437,7 @@ async function handleOwnerSide(sock, { jid, number, info, incoming }) {
 
   // Owner replied manually to a client → step back for a while
   const minutes = config.behavior.handoffMinutes;
-  const until = new Date(Date.now() + minutes * 60000).toISOString();
+  const until = new Date(clock().getTime() + minutes * 60000).toISOString();
   db.setContactPaused(number, until);
   memory.saveOwnerTurn(number, text);
   db.logEvent('handoff', number, { minutes });
@@ -428,7 +449,7 @@ async function handleOwnerSide(sock, { jid, number, info, incoming }) {
   try {
     const { selfHealingEnabled, observeOwnerReply } = await import('../services/selfHealing.js');
     if (selfHealingEnabled()) {
-      const seen = observeOwnerReply({ number, text, transport: sock, now: new Date() });
+      const seen = observeOwnerReply({ number, text, transport: sock, now: clock() });
       if (seen?.handled) console.log(`🧠 Rule #${seen.rule?.id} proposed from the owner's own reply`);
     }
   } catch (err) {
@@ -543,10 +564,10 @@ async function notifyOperator(sock, number, text) {
   }
 }
 
-async function runCommand(sock, jid, text, from = config.owner.number) {
+async function runCommand(sock, jid, text, from = config.owner.number, clock = realClock) {
   if (!config.behavior.ownerCommands) return;
   try {
-    const result = await handleOwnerCommand(sock, jid, text, from);
+    const result = await handleOwnerCommand(sock, jid, text, from, { now: clock() });
     if (result?.reply) await sendTyping(sock, jid, result.reply, { delay: 250 });
   } catch (err) {
     console.error('Command error:', err.message);
@@ -557,9 +578,9 @@ async function runCommand(sock, jid, text, from = config.owner.number) {
 // ════════════════════════════════════════════════════════════
 // Debounce: wait for the client to finish typing their burst
 // ════════════════════════════════════════════════════════════
-function enqueue(sock, jid, number, item) {
+function enqueue(sock, jid, number, item, clock = realClock) {
   const key = number;
-  const entry = buffers.get(key) || { jid, number, items: [], timer: null };
+  const entry = buffers.get(key) || { jid, number, items: [], timer: null, clock };
   entry.items.push(item);
   entry.jid = jid;
   if (entry.timer) clearTimeout(entry.timer);
@@ -567,7 +588,7 @@ function enqueue(sock, jid, number, item) {
   entry.timer = setTimeout(() => {
     buffers.delete(key);
     const items = entry.items;
-    const task = processBatch(sock, entry.jid, number, items)
+    const task = processBatch(sock, entry.jid, number, items, entry.clock || realClock)
       .catch((err) => {
         console.error('Batch error:', err.message);
         db.logEvent('batch_error', number, err.message);
@@ -634,7 +655,7 @@ export function startPendingFlusher(sock) {
 // ════════════════════════════════════════════════════════════
 // The batch pipeline
 // ════════════════════════════════════════════════════════════
-async function processBatch(sock, jid, number, items) {
+async function processBatch(sock, jid, number, items, clock = realClock) {
   // The indicator is owned here, so it is cleared on every exit path: a reply,
   // a guard refusal, an error, a handoff. Nothing can leave "typing…" behind.
   const receivedAt = items[0]?.receivedAt || timeline.received(number).receivedAt || Date.now();
@@ -642,6 +663,9 @@ async function processBatch(sock, jid, number, items) {
   const ctx = {
     receivedAt,
     lang: 'en',
+    // The clock this turn runs on: the real one in production, the harness's
+    // pinned instant in the eval.
+    clock,
     // The newest inbound id: on the Cloud API the typing indicator *is* the
     // read receipt for that message.
     session: timing.enabled
@@ -989,7 +1013,7 @@ async function runBatch(sock, jid, number, items, ctx) {
         const receipt = await handleReceipt({
           number,
           transport: sock,
-          now: new Date(),
+          now: ctx.clock(),
           // No second vision call: the description already exists.
           reader: async () => ({ description: picture.text }),
         });
@@ -1016,7 +1040,7 @@ async function runBatch(sock, jid, number, items, ctx) {
   // tokens are spent and no slot can be invented.
   if (bookingAgentEnabled()) {
     try {
-      const turn = await handleBookingTurn({ number, text: humanText, lang: langInfo.code, now: new Date() });
+      const turn = await handleBookingTurn({ number, text: humanText, lang: langInfo.code, now: ctx.clock() });
       if (turn.handled) {
         memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, booking: true });
         const sentB = await channel.say(turn.reply, { delay: 500 });
@@ -1037,8 +1061,8 @@ async function runBatch(sock, jid, number, items, ctx) {
   if (closerAgentEnabled() && humanText) {
     try {
       const ready = readyToBuy(humanText);
-      const turn = ready ? null : handleCloserTurn({ number, text: humanText, lang: langInfo.code, now: new Date() });
-      const out = turn?.handled ? turn : ready ? startOrder({ number, text: humanText, lang: langInfo.code, now: new Date() }) : null;
+      const turn = ready ? null : handleCloserTurn({ number, text: humanText, lang: langInfo.code, now: ctx.clock() });
+      const out = turn?.handled ? turn : ready ? startOrder({ number, text: humanText, lang: langInfo.code, now: ctx.clock() }) : null;
       if (out) {
         memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, closer: true });
         memory.saveAssistantTurn(number, out.reply, 'text');
@@ -1277,7 +1301,7 @@ async function runBatch(sock, jid, number, items, ctx) {
       const { reasonAboutTurn, planAddendum, reasoningConfig, holdingReply } = R;
       const cfgR = reasoningConfig();
       const history = (dossier?.recent || []).map((m) => ({ role: m.role, content: m.content }));
-      const pass = reasonAboutTurn({ text: humanText, langInfo, history, now: new Date(), chat: number });
+      const pass = reasonAboutTurn({ text: humanText, langInfo, history, now: ctx.clock(), chat: number });
       const raced = await Promise.race([
         pass.then((v) => ({ done: true, value: v })).catch(() => ({ done: true, value: null })),
         new Promise((resolve) => setTimeout(() => resolve({ done: false }), cfgR.turnLatencyMs)),

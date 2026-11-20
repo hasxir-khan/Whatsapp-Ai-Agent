@@ -118,9 +118,9 @@ function countTable(db, table) {
   }
 }
 
-/** YYYY-MM-DD, `days` from now, in the business's timezone. */
-function localDatePlus(days = 0) {
-  const shifted = new Date(Date.now() + days * 86_400_000);
+/** YYYY-MM-DD, `days` from `now`, in the business's timezone. */
+function localDatePlus(days = 0, now = new Date()) {
+  const shifted = new Date(now.getTime() + days * 86_400_000);
   try {
     return shifted.toLocaleDateString('en-CA', { timeZone: config.timezone || 'UTC' });
   } catch {
@@ -205,11 +205,12 @@ function seedScenario({ db, scenario, number, now, tenant = null }) {
   }
 
   for (const booking of seed.bookings || []) {
-    // "Tomorrow" is relative to the real clock, because the booking agent reads
-    // the real clock too. It has to be tomorrow *in the business's timezone*:
-    // after midnight in Karachi (but still yesterday in UTC) a UTC-based date
-    // lands on the wrong day and the seeded slot never collides.
-    const tomorrow = localDatePlus(1);
+    // "Tomorrow" is relative to the *scenario* clock, because the pipeline is
+    // handed that clock with the message. It has to be tomorrow in the
+    // business's timezone: after midnight in Karachi (but still yesterday in
+    // UTC) a UTC-based date lands on the wrong day and the seeded slot never
+    // collides with the one the customer asks for.
+    const tomorrow = localDatePlus(1, now);
     db.run('INSERT INTO bookings (chat, service, date, time, name, status) VALUES (?,?,?,?,?,?)', [
       jid,
       booking.service || 'Table',
@@ -516,7 +517,9 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
           // text, not the placeholder audio.
           transport.nextMedia = { buffer: Buffer.from(String(turn.document.text || '')), mimetype: 'text/plain' };
         }
-        await handleIncoming(transport, messageFor({ scenario, turn, number, index, nonce, tag }));
+        // The pinned clock goes in with the message: "tomorrow at 11" must mean
+        // the same date on every run, not whatever day the suite happens to run.
+        await handleIncoming(transport, messageFor({ scenario, turn, number, index, nonce, tag }), { now: fixedDate(turn) });
       } else if (turn.owner !== undefined) {
         // The scenario's clock, not the wall clock: an owner command that
         // messages a customer must not change its answer with the hour the eval

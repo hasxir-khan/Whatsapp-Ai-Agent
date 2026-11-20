@@ -3119,14 +3119,14 @@ only thing standing between you and your free tier.
 ## Tests
 
 ```bash
-npm test                 # 889 tests, ~90s, no network, no keys, no config/owner.json
-npm run eval             # 68 recorded conversations, ~11s, no keys either
+npm test                 # 1089 tests, ~2min, no network, no keys, no config/owner.json
+npm run eval             # 100 recorded conversations, ~19s, no keys either
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys
 ```
 
-The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening, `37`–`38` for PDF documents and the learning loop, `39` for the live inbox, `51` for named assistants, `52` for the industry packs, `53` for the marketing team and `54`–`55` for the
+The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. The eval also pins the clock: `handleIncoming(transport, message, { now })` is handed `2026-11-17T08:00Z` with every turn, so "book me tomorrow at 11" means the same date on every run — the default is the real clock, which is what production gets. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening, `37`–`38` for PDF documents and the learning loop, `39` for the live inbox, `51` for named assistants, `52` for the industry packs, `53` for the marketing team and `54`–`55` for the
 business brain (services and commands).
 
 ---
