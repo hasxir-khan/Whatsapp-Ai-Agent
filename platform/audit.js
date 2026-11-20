@@ -12,8 +12,27 @@ import { get, all, run, lastId } from './db.js';
 const MAX_TEXT = 200;
 const MAX_KEYS = 20;
 
-/** Keys whose value could be a message. Never stored, whatever the caller sends. */
+/**
+ * Keys whose value could be a message. Never stored, whatever the caller sends.
+ */
 const FORBIDDEN = /(^|_)(text|message|msg|body|content|reply|prompt|completion|transcript|conversation_text|note)($|_)/i;
+
+/**
+ * Keys whose value could be a credential. Also never stored: the audit trail may
+ * say *that* a key was added, never what it was. `apiKey` and `api_key` both land
+ * on the same test because the key is camel-split before matching.
+ */
+const CREDENTIAL = /(^|_)(api_?key|key|secret|token|password|passwd|credential|credentials|authorization|auth_header|private_key|bearer|otp|code)($|_)/i;
+
+function snakeKey(key) {
+  return String(key || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+/** Would storing this field name risk a message or a credential? */
+export function forbiddenKey(key) {
+  const snake = snakeKey(key);
+  return FORBIDDEN.test(snake) || CREDENTIAL.test(snake);
+}
 
 function cleanValue(value, depth = 0) {
   if (value === null || value === undefined) return null;
@@ -26,7 +45,7 @@ function cleanValue(value, depth = 0) {
     let n = 0;
     for (const [key, inner] of Object.entries(value)) {
       if (n >= MAX_KEYS) break;
-      if (FORBIDDEN.test(key)) continue;
+      if (forbiddenKey(key)) continue;
       out[key] = cleanValue(inner, depth + 1);
       n += 1;
     }
@@ -118,4 +137,6 @@ export function auditCount(action = null) {
   }
 }
 
-export default { recordAudit, recentAudit, notify, notificationsFor, markNotificationsRead, sanitiseDetail, auditCount };
+export default {
+  recordAudit, recentAudit, notify, notificationsFor, markNotificationsRead, sanitiseDetail, forbiddenKey, auditCount,
+};

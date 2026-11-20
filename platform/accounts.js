@@ -123,16 +123,55 @@ export function createOtp({ email, purpose, accountId = null, now = Date.now(), 
   return { ok: true, code, expiresAt: expires.toISOString() };
 }
 
+/**
+ * Which code is this person trying to type: a signup ticket, or a
+ * "you already have an account" login code? Answered by what is live in the
+ * table, never by trying both and keeping whichever answer looks nicer.
+ */
+export function pendingPurpose({ email, purpose = null, now = Date.now() } = {}) {
+  const address = normalizeEmail(email);
+  const stamp = new Date(Number(now)).toISOString();
+  const live = (p) => {
+    const row = get(
+      'SELECT * FROM otp_codes WHERE email = ? AND purpose = ? ORDER BY created_at DESC LIMIT 1',
+      [address, p],
+    );
+    if (!row || row.consumed_at) return null;
+    if (row.expires_at < stamp) return null;
+    if (Number(row.attempts) >= OTP.maxAttempts) return null;
+    return row;
+  };
+  if (purpose) return purpose;
+  const signup = get(
+    'SELECT * FROM otp_codes WHERE email = ? AND purpose = ? ORDER BY created_at DESC LIMIT 1',
+    [address, 'signup'],
+  );
+  // A code that was burned by five wrong guesses is still *this* flow: saying
+  // "no code" there would send the customer looking for a mail that never comes.
+  const burned = signup && signup.consumed_at && Number(signup.attempts) >= OTP.maxAttempts;
+  return live('signup') || burned ? 'signup' : 'login';
+}
+
 /** Check and (on success) consume a code. Every failure costs an attempt. */
 export function verifyOtp({ email, purpose, code, now = Date.now() }) {
   ensureOpen();
   const address = normalizeEmail(email);
+  // The *latest* code, used or not: a row that was burned by five wrong guesses
+  // and a row that was used correctly are different answers, and a customer who
+  // ran out of attempts deserves to be told that instead of "no code".
   const row = get(
-    'SELECT * FROM otp_codes WHERE email = ? AND purpose = ? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1',
+    'SELECT * FROM otp_codes WHERE email = ? AND purpose = ? ORDER BY created_at DESC LIMIT 1',
     [address, purpose],
   );
   const stamp = new Date(Number(now)).toISOString();
   if (!row) return { ok: false, reason: 'no_code' };
+  if (row.consumed_at) {
+    return {
+      ok: false,
+      reason: Number(row.attempts) >= OTP.maxAttempts ? 'too_many_attempts' : 'no_code',
+      attemptsLeft: Number(row.attempts) >= OTP.maxAttempts ? 0 : undefined,
+    };
+  }
   if (row.expires_at < stamp) {
     run('UPDATE otp_codes SET consumed_at = ? WHERE id = ?', [stamp, row.id]);
     return { ok: false, reason: 'expired' };
@@ -144,7 +183,10 @@ export function verifyOtp({ email, purpose, code, now = Date.now() }) {
   if (!otpMatches(platformSecret(), row, String(code ?? '').trim())) {
     run('UPDATE otp_codes SET attempts = attempts + 1 WHERE id = ?', [row.id]);
     const left = OTP.maxAttempts - (Number(row.attempts) + 1);
-    if (left <= 0) run('UPDATE otp_codes SET consumed_at = ? WHERE id = ?', [stamp, row.id]);
+    if (left <= 0) {
+      run('UPDATE otp_codes SET consumed_at = ? WHERE id = ?', [stamp, row.id]);
+      return { ok: false, reason: 'too_many_attempts', attemptsLeft: 0 };
+    }
     return { ok: false, reason: 'wrong_code', attemptsLeft: Math.max(0, left) };
   }
   run('UPDATE otp_codes SET consumed_at = ? WHERE id = ?', [stamp, row.id]);
@@ -240,15 +282,27 @@ export function signupVerify({ email, code, password, now = Date.now(), ip = nul
 
   const address = normalizeEmail(email);
   // A signup code and a "you already have an account" code are both proof of the
-  // same thing: this person reads this inbox.
-  let checked = verifyOtp({ email: address, purpose: 'signup', code, now });
-  if (!checked.ok) checked = verifyOtp({ email: address, purpose: 'login', code, now });
+  // same thing: this person reads this inbox. Which one is in play is decided
+  // *before* a digit is checked — an open signup ticket means this is a signup,
+  // otherwise it is the "already registered" flow. Guessing must not spend the
+  // attempts of a code the customer is holding, and the reason a guess failed
+  // must be the reason of the code that was actually being checked.
+  const purpose = pendingPurpose({ email: address, now });
+  const checked = verifyOtp({ email: address, purpose, code, now });
   if (!checked.ok) return { ok: false, status: 400, error: checked.reason, attemptsLeft: checked.attemptsLeft };
 
   const account = findByEmail(address);
   if (!account) return { ok: false, status: 404, error: 'no_account' };
   if (account.status !== 'active') return { ok: false, status: 403, error: 'account_closed' };
 
+  // Setting a password this way is a password *change* for an account that
+  // already had one (the "you already have an account" code path), so it gets
+  // the same consequence a reset has: every other session ends.
+  if (account.password_hash) {
+    run('UPDATE sessions SET revoked_at = ? WHERE account_id = ? AND revoked_at IS NULL', [
+      new Date(Number(now)).toISOString(), account.id,
+    ]);
+  }
   run('UPDATE accounts SET password_hash = ?, email_verified = 1, last_login_at = ? WHERE id = ?', [
     hashPassword(password), new Date(Number(now)).toISOString(), account.id,
   ]);
@@ -256,6 +310,18 @@ export function signupVerify({ email, code, password, now = Date.now(), ip = nul
 }
 
 // ── login / logout / reset ───────────────────────────────────
+/**
+ * A hash to compare against when there is no account, so a login attempt costs
+ * the same scrypt work whether the address exists or not. A missing account used
+ * to answer in under a millisecond while a real one took tens: a free oracle for
+ * "is this email registered?".
+ */
+let dummyHash = null;
+function placeholderHash() {
+  if (!dummyHash) dummyHash = hashPassword('login-timing-placeholder-not-a-password');
+  return dummyHash;
+}
+
 /** Synchronous and side-effect free apart from the rate limiter, so it is easy to reason about. */
 export function login({ email, password, ip = null, now = Date.now() }) {
   ensureOpen();
@@ -267,7 +333,7 @@ export function login({ email, password, ip = null, now = Date.now() }) {
 
   const account = findByEmail(address);
   // Same answer, same work, whether the account exists or not.
-  const valid = account?.password_hash ? verifyPassword(password, account.password_hash) : false;
+  const valid = verifyPassword(password, account?.password_hash || placeholderHash());
   if (!account || !valid || account.status !== 'active' || !account.email_verified) {
     return { ok: false, status: 401, error: 'bad_credentials', message: 'Email or password is not right.' };
   }

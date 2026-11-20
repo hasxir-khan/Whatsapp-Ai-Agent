@@ -3296,7 +3296,7 @@ only thing standing between you and your free tier.
 ## Tests
 
 ```bash
-npm test                 # 1212 tests, ~2.5min, no network, no keys, no config/owner.json
+npm test                 # 1227 tests, ~2.5min, no network, no keys, no config/owner.json
 npm run eval             # 110 recorded conversations, ~20s, no keys either
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
@@ -3717,6 +3717,7 @@ Three rules keep the layers apart:
 | `PLATFORM_TERMS_VERSION` / `PLATFORM_PRIVACY_VERSION` | `2026-01` | Consent versions, stored with the time they were accepted. |
 | `PLATFORM_TRIAL_DAYS` | `14` | Free-trial length (a plan may override it). |
 | `PLATFORM_DEV_SHOW_CODES` | off | Returns the signup/reset code in the API answer, for local setup with no mail server. Never on in production. |
+| `PLATFORM_TRUST_PROXY` | off | Believe `X-Forwarded-For` from *any* peer. Off means the header is only believed when the peer that opened the socket is loopback or private — which is the single-box deployment. |
 | `PLATFORM_BLOCK_DISPOSABLE` | off | Refuse disposable mail domains outright instead of flagging them. |
 | `PLATFORM_DB_DIALECT` | `sqlite` | `postgres` rewrites `?` placeholders to `$1…` and uses the Postgres DDL. |
 
@@ -3887,6 +3888,24 @@ counts. A worker that is not the platform writes the same events to
 - The test chat runs the tenant's real brain in a short-lived child process with
   a scratch data directory, a fake transport that refuses every number except
   `900000000000`, and no web server. Nothing is sent to WhatsApp.
+
+### Hardening from the Step 0 review
+
+The read-only review of `platform/` (Phase 7 Part 2, step 0) reproduced nine
+things and fixed them in one commit with tests in
+`test/70-platform-hardening.test.js`:
+
+| what was wrong | what it does now |
+|---|---|
+| `x-forwarded-for` was believed from anyone, so every per-IP brake (signup, reset, login, codes) was rotatable with a header | believed only from a loopback/private peer, or with `PLATFORM_TRUST_PROXY=1` |
+| a wrong signup code was reported as `no_code`, the attempt count never reached the browser, and a guess could spend the attempts of a live login code | the code in play is chosen first (`pendingPurpose`), and the reason is the reason of *that* code |
+| login answered in ~1 ms for an unknown address and ~49 ms for a real one — a free "is this email registered?" oracle | unknown addresses pay the same scrypt work as real ones |
+| `signupVerify` could change an existing account's password and leave the old sessions alive | every other session ends, exactly like a reset |
+| audit details stored whatever they were given, including `apiKey` / `token` / `secret` shaped fields | credential-shaped keys are dropped before storage (`forbiddenKey`) |
+| `PLATFORM_DEV_SHOW_CODES=1` was honoured even with `NODE_ENV=production` | ignored in production, whatever the env file says |
+| a tenant with no files on disk made `GET …/qr` throw (and become a plain-text 500 in mounted mode) | `409 not_ready` with a sentence that says what to do; same for pairing and plan changes |
+| `POST …/members` twice for the same person hit the `UNIQUE` constraint and returned a 500, and a role could never be changed | one row per person, `changed` in the answer, roles update, the last owner cannot be demoted |
+| the rate-limit bucket map was attacker-fed and never pruned | bounded at 5 000 buckets, expired windows pruned, cold half dropped when it is full |
 
 ### What cannot be tested here
 

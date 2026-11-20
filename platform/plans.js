@@ -124,7 +124,13 @@ export function applyEntitlements(slug, planId = null) {
 
   for (const [key, value] of Object.entries(writes)) {
     if (current[key] === value) continue;
-    writeTenantEnvValue(slug, key, value);
+    try {
+      writeTenantEnvValue(slug, key, value);
+    } catch {
+      // A tenant with no .env on this machine cannot take entitlements. That is a
+      // provisioning problem to report, not an exception to throw at a request.
+      return { ok: false, error: 'tenant_files_unavailable', key };
+    }
     changed.env.push(key);
   }
 

@@ -150,7 +150,22 @@ export async function qrFor(slug, { accountId, ip = null, now = Date.now() } = {
   const limited = rateLimit(`platform-qr:${accountId}:${slug}`, { max: 20, windowMs: 60000, now: Number(now) });
   if (!limited.ok) return { ok: false, status: 429, error: 'too_many_requests', retryAfter: limited.retryAfter };
 
-  const info = connectHooks.qr ? await connectHooks.qr(slug) : await (await admin()).qrForTenant(slug);
+  let info = null;
+  try {
+    info = connectHooks.qr ? await connectHooks.qr(slug) : await (await admin()).qrForTenant(slug);
+  } catch (err) {
+    // No folder yet, or a tenant that was never created on disk: answer honestly
+    // instead of letting the exception become a 500 with an internal message.
+    recordAudit({ action: 'qr_unavailable', accountId, tenant: slug, ip, ok: false });
+    return {
+      ok: false,
+      status: 409,
+      error: 'not_ready',
+      message: String(err?.message || '').includes('not_found')
+        ? 'This assistant has no files on this machine yet. Finish provisioning, then ask for the QR again.'
+        : 'The QR is not available right now. Start the assistant and try again.',
+    };
+  }
   recordAudit({ action: 'qr_viewed', accountId, tenant: slug, ip });
   if (info?.transport === 'cloud') {
     return {
@@ -196,7 +211,16 @@ export async function requestPairingCode(slug, { accountId, number = null, ip = 
   const digits = String(number || tenant.number || '').replace(/\D/g, '');
   if (!/^\d{10,15}$/.test(digits)) return { ok: false, status: 400, error: 'bad_number' };
 
-  (await admin()).writeTenantEnvValue(slug, 'PAIRING_NUMBER', digits);
+  try {
+    (await admin()).writeTenantEnvValue(slug, 'PAIRING_NUMBER', digits);
+  } catch {
+    return {
+      ok: false,
+      status: 409,
+      error: 'not_ready',
+      message: 'This assistant has no .env on this machine yet. Finish provisioning first.',
+    };
+  }
   try {
     if (connectHooks.restart) await connectHooks.restart(slug);
     else await (await admin()).restartTenant(slug);

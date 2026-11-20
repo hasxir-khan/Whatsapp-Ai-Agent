@@ -126,9 +126,37 @@ export function readRawBody(req, { limit = 5 * 1024 * 1024, timeoutMs = 30000 } 
   });
 }
 
+const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
+const LOOPBACK_OR_PRIVATE = /^(::1|::ffff:127\.|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|f[cd][0-9a-f]{2}:)/i;
+
+/** `::ffff:10.0.0.1` → `10.0.0.1`, so one host cannot look like two. */
+export function normalizeIp(value) {
+  const text = String(value || '').trim().replace(/^\[|\]$/g, '');
+  return text.replace(/^::ffff:/i, '') || 'unknown';
+}
+
+/** The address that actually opened the socket — not something a header claims. */
+export function socketIp(req) {
+  return normalizeIp(req?.socket?.remoteAddress || req?.socket?.remoteAddress || '');
+}
+
+/**
+ * Whose rate-limit bucket is this request in?
+ *
+ * `x-forwarded-for` is a *request header*: anyone can send any value, so
+ * trusting it from the open internet would make every per-IP brake rotatable at
+ * will. It is only believed when the peer that opened the socket is a proxy we
+ * can see (loopback or a private network) — which is how the single-box
+ * deployment runs — or when `PLATFORM_TRUST_PROXY=1` says the peer is a proxy
+ * on a public address (Cloudflare, a load balancer).
+ */
 export function clientIp(req) {
-  const forwarded = String(req?.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
-  return forwarded || req?.socket?.remoteAddress || 'unknown';
+  const peer = socketIp(req);
+  const forwarded = normalizeIp(String(req?.headers?.['x-forwarded-for'] || '').split(',')[0]);
+  const trustHeader = TRUTHY.has(String(process.env.PLATFORM_TRUST_PROXY || '').trim().toLowerCase())
+    || LOOPBACK_OR_PRIVATE.test(peer);
+  if (!trustHeader) return peer;
+  return forwarded !== 'unknown' ? forwarded : peer;
 }
 
 export function userAgent(req) {

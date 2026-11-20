@@ -169,10 +169,46 @@ export function resetRateLimits() {
 }
 
 /**
+ * Keys are emails, addresses and account ids — attacker-influenced. A bucket that
+ * is never asked about again used to sit in this Map forever, so a spray of
+ * unique addresses was a slow memory leak. Pruning runs when the map grows past
+ * `RATE_LIMIT_MAX_BUCKETS` and drops every window that has already expired.
+ */
+export const RATE_LIMIT_MAX_BUCKETS = 5000;
+
+function pruneBuckets(now) {
+  let removed = 0;
+  for (const [key, stamps] of buckets) {
+    const last = stamps[stamps.length - 1] || 0;
+    if (!stamps.length || now - last > 24 * 60 * 60000) {
+      buckets.delete(key);
+      removed += 1;
+    }
+  }
+  // Still at the ceiling (a flood inside a day): drop the coldest half. Halving
+  // keeps the sort amortised — the next pruning is another 2 500 keys away.
+  if (buckets.size >= RATE_LIMIT_MAX_BUCKETS) {
+    const entries = [...buckets.entries()].sort((a, b) => (a[1][a[1].length - 1] || 0) - (b[1][b[1].length - 1] || 0));
+    const drop = Math.max(1, Math.ceil(entries.length / 2));
+    for (const [key] of entries.slice(0, drop)) {
+      buckets.delete(key);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+/** How many buckets exist right now. Exported for the pruning test. */
+export function rateLimitStats() {
+  return { buckets: buckets.size, max: RATE_LIMIT_MAX_BUCKETS };
+}
+
+/**
  * Sliding window. `max` requests per `windowMs` per key, with the remaining
  * time handed back so the UI can say something useful.
  */
 export function rateLimit(key, { max = 60, windowMs = 60000, now = Date.now() } = {}) {
+  if (buckets.size >= RATE_LIMIT_MAX_BUCKETS && !buckets.has(key)) pruneBuckets(now);
   const stamps = (buckets.get(key) || []).filter((t) => now - t < windowMs);
   if (stamps.length >= max) {
     const retryAfter = Math.ceil((windowMs - (now - stamps[0])) / 1000);

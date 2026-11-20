@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platformEnabled, platformMisconfigured, platformPublicUrl, CONSENT } from './env.js';
-import { ensurePlatformDb, run } from './db.js';
+import { ensurePlatformDb, get, all, run } from './db.js';
 import { rateLimit } from '../src/services/adminPanel.js';
 import {
   isPlatformPath, sendJson, sendHtml, sendText, redirect, readJsonBody, readRawBody, clientIp, userAgent,
@@ -491,12 +491,40 @@ export async function handlePlatformRoute(req, res, url) {
           message: 'That person needs a platform account first — then you can give them view access.',
         }), true;
       }
-      run(
-        'INSERT INTO memberships (account_id, slug, role, created_at) VALUES (?, ?, ?, ?)',
-        [target.id, slug, role, new Date().toISOString()],
-      );
-      recordAudit({ action: 'member_added', accountId: account.id, tenant: slug, ip, detail: { role } });
-      return sendJson(res, 200, { ok: true, role }), true;
+      // Adding the same person twice used to reach the database and come back as
+      // a UNIQUE-constraint 500; and there was no way to change a role at all.
+      // One row per person, written once and updated after that.
+      const existingMember = get('SELECT role FROM memberships WHERE account_id = ? AND slug = ?', [target.id, slug]);
+      const before = existingMember?.role || null;
+      if (before === role) {
+        return sendJson(res, 200, { ok: true, role, changed: false }), true;
+      }
+      if (before === 'owner' && role !== 'owner') {
+        // An assistant with no owner is an assistant nobody can manage.
+        const owners = all('SELECT account_id FROM memberships WHERE slug = ? AND role = ?', [slug, 'owner']);
+        if (owners.filter((row) => row.account_id !== target.id).length === 0) {
+          return sendJson(res, 409, {
+            error: 'last_owner',
+            message: 'Add another owner before changing this one — somebody has to be able to manage the assistant.',
+          }), true;
+        }
+      }
+      if (existingMember) {
+        run('UPDATE memberships SET role = ? WHERE account_id = ? AND slug = ?', [role, target.id, slug]);
+      } else {
+        run(
+          'INSERT INTO memberships (account_id, slug, role, created_at) VALUES (?, ?, ?, ?)',
+          [target.id, slug, role, new Date().toISOString()],
+        );
+      }
+      recordAudit({
+        action: existingMember ? 'member_role_changed' : 'member_added',
+        accountId: account.id,
+        tenant: slug,
+        ip,
+        detail: { role, before },
+      });
+      return sendJson(res, 200, { ok: true, role, changed: true, before }), true;
     }
 
     if (rest === '/usage' && method === 'GET') {

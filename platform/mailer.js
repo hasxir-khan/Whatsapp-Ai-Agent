@@ -56,8 +56,13 @@ export function readOutbox(limit = 20) {
   }
 }
 
-/** Dev only: show the code in the API response so local setup needs no inbox. */
+/**
+ * Dev only: show the code in the API response so local setup needs no inbox.
+ * Never in production, whatever the env file says — a code in a JSON body is a
+ * login for anyone who can read that body.
+ */
 export function showCodesInResponse() {
+  if (String(process.env.NODE_ENV || '').toLowerCase() === 'production') return false;
   return ['1', 'true', 'yes', 'on'].includes(String(process.env.PLATFORM_DEV_SHOW_CODES || '').toLowerCase());
 }
 
