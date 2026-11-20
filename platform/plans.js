@@ -182,12 +182,12 @@ export function assignPlan({ slug, planId, accountId = null, ip = null, now = Da
   }
   // A paused tenant whose plan is restored is allowed to run again; whether the
   // process starts is the supervisor's business, not this function's.
-  if (tenant.status === 'paused' && tenant.paused_reason === 'trial_expired' && plan.id !== 'free_paused') {
-    fields.status = 'active';
+  if (tenant.status === 'paused' && tenant.paused_reason === 'trial_expired' && (plan.id !== 'free' || extendTrial)) {
+    fields.status = 'provisioned'; // an upgrade unlocks Go live; it does not bypass readiness
     fields.paused_reason = null;
   }
-  run('UPDATE tenants SET plan_id = ?, trial_ends_at = COALESCE(?, trial_ends_at), status = COALESCE(?, status), paused_reason = COALESCE(?, paused_reason), updated_at = ? WHERE slug = ?', [
-    fields.plan_id, fields.trial_ends_at || null, fields.status || null, fields.paused_reason ?? null, fields.updated_at, slug,
+  run('UPDATE tenants SET plan_id = ?, trial_ends_at = ?, status = COALESCE(?, status), paused_reason = ?, updated_at = ? WHERE slug = ?', [
+    fields.plan_id, fields.trial_ends_at || (plan.id !== 'free' ? null : tenant.trial_ends_at), fields.status || null, fields.status === 'provisioned' ? null : tenant.paused_reason, fields.updated_at, slug,
   ]);
 
   recordAudit({
@@ -283,7 +283,7 @@ export function resetPlanHooks() {
 async function stopTenantProcess(slug) {
   if (planHooks.stop) return planHooks.stop(slug);
   const admin = await import('../src/services/adminPanel.js');
-  return admin.stopTenant(slug);
+  return admin.adminHooks.stop(slug);
 }
 
 /**
@@ -296,15 +296,14 @@ export async function expireTrials({ now = Date.now(), stop = null } = {}) {
     [new Date(Number(now)).toISOString()],
   );
   const paused = [];
-  for (const tenant of expired) {
+  const { withWorker } = await import('./keys.js');
+  for (const candidate of expired) await withWorker(candidate.slug, async () => {
+    const tenant = get('SELECT * FROM tenants WHERE slug = ?', [candidate.slug]);
+    if (!tenant || tenant.status === 'paused' || !(Date.parse(tenant.trial_ends_at) <= now)) return;
     const stopFn = stop || stopTenantProcess;
-    let stopped = false;
-    try {
-      await stopFn(tenant.slug);
-      stopped = true;
-    } catch {
-      stopped = false;
-    }
+    let stopped;
+    try { stopped = (await stopFn(tenant.slug))?.ok !== false; } catch { stopped = false; }
+    if (!stopped) { recordAudit({ action: 'trial_stop_failed', tenant: tenant.slug, ok: false }); return; }
     run('UPDATE tenants SET status = ?, paused_reason = ?, updated_at = ? WHERE slug = ?', [
       'paused', 'trial_expired', new Date(Number(now)).toISOString(), tenant.slug,
     ]);
@@ -326,7 +325,7 @@ export async function expireTrials({ now = Date.now(), stop = null } = {}) {
       detail: { stopped, plan: tenant.plan_id },
     });
     paused.push({ slug: tenant.slug, stopped });
-  }
+  });
   return { paused, checked: expired.length };
 }
 

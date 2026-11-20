@@ -554,7 +554,7 @@ export function addFaq(q, a) {
 
 // ── validation (doctor + every write) ───────────────────────
 
-export function validateProfile(p = profile()) {
+export function validateProfile(p = profile(), decisionContext) {
   const errors = [];
   const warnings = [];
   const push = (list, msg) => list.push(msg);
@@ -571,7 +571,7 @@ export function validateProfile(p = profile()) {
   intakeCheck.errors.forEach((e) => push(errors, e));
   intakeCheck.warnings.forEach((w) => push(warnings, w));
 
-  const decisionsCheck = validateDecisions(p.business?.decisions);
+  const decisionsCheck = validateDecisions(p.business?.decisions, decisionContext);
   decisionsCheck.errors.forEach((e) => push(errors, e));
   decisionsCheck.warnings.forEach((w) => push(warnings, w));
 

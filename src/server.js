@@ -30,8 +30,6 @@ import {
   webSecurityState,
 } from './services/webAuth.js';
 import { getTransport } from './transport/index.js';
-import { handlePlatformRoute } from '../platform/routes.js';
-import { initPlatform } from '../platform/index.js';
 import { growthSnapshot, SOURCE_LABELS } from './services/growthDashboard.js';
 import * as accuracyModule from './services/accuracy.js';
 import {
@@ -1229,13 +1227,7 @@ export function webSecurityStatus() {
 
 let startedServer = null;
 
-export function startServer() {
-  // The platform keeps its own state and, in a single-process install, receives
-  // usage events from this process's LLM client. Off unless PLATFORM_ENABLED.
-  if (process.env.PLATFORM_ENABLED) {
-    initPlatform().catch((err) => console.error('platform init failed:', err?.message || err));
-  }
-
+export function startServer({ handleRoute = null } = {}) {
   if (!config.server.enabled) {
     console.log('🌐 Dashboard disabled (ENABLE_WEB=false)');
     return null;
@@ -1263,6 +1255,13 @@ export function startServer() {
       // Every browser-facing answer says the same thing about referrers.
       for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
         if (!res.hasHeader?.(k)) res.setHeader(k, v);
+      }
+
+      if (process.env.TENANT_WORKER_MODE === 'link' &&
+          (req.method !== 'GET' || !['/api/status', '/qr.png', '/health'].includes(url.pathname))) {
+        res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'link_only_worker' }));
+        return;
       }
 
       // `?token=` is a one-time ticket: exchange it for the signed HttpOnly
@@ -1305,7 +1304,7 @@ export function startServer() {
       // Phase 7: the customer platform is a separate layer. It answers only its
       // own paths (/platform, /api/platform) and only when PLATFORM_ENABLED is
       // set; otherwise this returns false at once and nothing below changes.
-      if (await handlePlatformRoute(req, res, url)) return;
+      if (handleRoute && await handleRoute(req, res, url)) return;
 
       // The admin panel owns /admin and /api/admin, and answers 404 unless it is
       // switched on with a token. Routed first so nothing below can shadow it.

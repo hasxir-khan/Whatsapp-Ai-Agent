@@ -16,10 +16,9 @@
 // one.
 
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
-import { get, all, run, lastId } from './db.js';
-import { setUsageRecorder } from '../src/services/usageEvents.js';
+import { get, all, run, lastId, flush } from './db.js';
+import { setUsageRecorder, consumeUsageJournal, validKeyRef } from '../src/services/usageEvents.js';
 
 /** A stable, non-reversible conversation handle. */
 export function conversationHash(chatKey) {
@@ -51,10 +50,13 @@ export function record(event = {}) {
   const tenant = String(event.tenant || '').trim();
   if (!tenant) return { ok: false, error: 'no_tenant' };
   const uid = String(event.uid || event.eventUid || '').slice(0, 40) || null;
-  if (uid && get('SELECT id FROM usage_events WHERE event_uid = ?', [uid])) {
+  if (uid && get('SELECT id FROM usage_events WHERE tenant = ? AND event_uid = ?', [tenant, uid])) {
     return { ok: true, duplicate: true };
   }
-  const at = new Date(event.at || Date.now()).toISOString();
+  const time = new Date(event.at || Date.now());
+  if (!Number.isFinite(time.getTime())) return { ok: false, error: 'invalid_time' };
+  const at = time.toISOString();
+  const ref = validKeyRef(event.keyRef);
   const prompt = Math.max(0, Math.round(Number(event.promptTokens) || 0));
   const completion = Math.max(0, Math.round(Number(event.completionTokens) || 0));
   const total = Math.max(0, Math.round(Number(event.totalTokens) || prompt + completion));
@@ -62,8 +64,9 @@ export function record(event = {}) {
   run(
     `INSERT INTO usage_events
        (tenant, event_uid, created_at, day, month, provider, model, agent, kind, conversation,
-        prompt_tokens, completion_tokens, total_tokens, estimated, latency_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        prompt_tokens, completion_tokens, total_tokens, estimated, latency_ms,
+        key_slot, key_last4, error_category, key_ref)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       tenant,
       uid,
@@ -80,8 +83,20 @@ export function record(event = {}) {
       total,
       estimated,
       Math.max(0, Math.round(Number(event.latencyMs) || 0)),
+      Number(event.keySlot) > 0 ? Number(event.keySlot) : null,
+      event.keyLast4 ? String(event.keyLast4).slice(-4) : null,
+      event.errorCategory ? String(event.errorCategory).slice(0, 20) : null,
+      ref,
     ],
   );
+  // A delayed journal line must not change the health of a replacement key.
+  if (ref && event.keySlot && event.keyLast4 && (!event.errorCategory || ['invalid','quota','rate_limited','failing'].includes(event.errorCategory))) {
+    const health = ['invalid','quota','rate_limited','failing'].includes(event.errorCategory) ? event.errorCategory : 'active';
+    run(`UPDATE tenant_keys SET last_used_at = ?, health = ?, health_at = ?
+         WHERE slug = ? AND provider = ? AND slot = ? AND fingerprint = ? AND status = 'active'
+         AND (id || ':' || key_version) = ? AND (health_at IS NULL OR health_at <= ?)`,
+      [at, health, at, tenant, String(event.provider), Number(event.keySlot), String(event.keyLast4).slice(-4), ref, at]);
+  }
   return { ok: true, id: lastId() };
 }
 
@@ -200,8 +215,47 @@ export function summary(slug, { month = new Date().toISOString().slice(0, 7), fr
     daily: daily(slug, { from: from || `${month}-01`, to }),
     monthly: monthly(slug, { from, to }),
     models: byModel(slug, { month }),
+    keys: byKey(slug, { month }),
     events,
   };
+}
+
+/**
+ * Calls, tokens and errors per key slot — the "usage per key/provider/model"
+ * view. `errors` counts events that arrived with an error category; the caller
+ * records those when a call is refused, so the count is real traffic.
+ */
+export function byKey(slug, { month = null } = {}) {
+  const params = [String(slug)];
+  let sql = `SELECT provider, model, key_slot, key_last4, key_ref,
+      COUNT(*) AS calls,
+      COALESCE(SUM(total_tokens), 0) AS tokens,
+      COALESCE(SUM(CASE WHEN estimated = 1 THEN 1 ELSE 0 END), 0) AS estimated,
+      COALESCE(SUM(CASE WHEN error_category IS NOT NULL THEN 1 ELSE 0 END), 0) AS errors,
+      MAX(CASE WHEN error_category IS NOT NULL THEN created_at END) AS last_error_at, GROUP_CONCAT(DISTINCT error_category) AS categories
+    FROM usage_events WHERE tenant = ?`;
+  if (month) {
+    sql += ' AND month = ?';
+    params.push(String(month).slice(0, 7));
+  }
+  sql += ' GROUP BY provider, model, key_slot, key_last4, key_ref ORDER BY tokens DESC';
+  const rows = all(sql, params);
+
+  return rows.map(({ key_ref, ...row }) => ({
+    ...row,
+    key_version: key_ref ? Number(key_ref.split(':')[1]) : null,
+    key_slot: row.key_slot === null ? null : Number(row.key_slot),
+    calls: Number(row.calls) || 0,
+    tokens: Number(row.tokens) || 0,
+    estimated: Number(row.estimated) || 0,
+    errors: Number(row.errors) || 0,
+    error_categories: (row.categories || '').split(',').filter(Boolean),
+  }));
+}
+
+/** One-line alias used by platform/keys.js. */
+export function platformKeyUsage(slug, options = {}) {
+  return byKey(slug, options);
 }
 
 // ── worker journals ──────────────────────────────────────────
@@ -213,35 +267,19 @@ export function summary(slug, { month = new Date().toISOString().slice(0, 7), fr
  */
 export function ingestJournal({ slug, dataDir, keepFile = false } = {}) {
   const dir = dataDir || journalDir(slug);
-  const file = path.join(dir, 'usage-events.jsonl');
-  if (!fs.existsSync(file)) return { ok: true, imported: 0, duplicates: 0, missing: true };
-  let lines = [];
   try {
-    lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
-  } catch {
-    return { ok: false, error: 'unreadable' };
-  }
-  let imported = 0;
-  let duplicates = 0;
-  for (const line of lines) {
-    let event;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const result = record({ ...event, tenant: event.tenant || slug });
-    if (result.duplicate) duplicates += 1;
-    else if (result.ok) imported += 1;
-  }
-  if (!keepFile) {
-    try {
-      fs.rmSync(file, { force: true });
-    } catch {
-      /* next import will see the same uids and skip them */
-    }
-  }
-  return { ok: true, imported, duplicates };
+    return consumeUsageJournal(dir, (lines) => {
+      let imported = 0, duplicates = 0;
+      for (const line of lines) {
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
+        const result = record({ ...event, tenant: slug });
+        if (result.duplicate) duplicates++;
+        else if (result.ok) imported++;
+      }
+      return { ok: flush(), imported, duplicates };
+    }, { keepFile });
+  } catch { return { ok: false, error: 'journal_unavailable' }; }
 }
 
 function journalDir(slug) {
@@ -258,6 +296,8 @@ export default {
   monthly,
   byKind,
   byModel,
+  byKey,
+  platformKeyUsage,
   conversations,
   summary,
   ingestJournal,

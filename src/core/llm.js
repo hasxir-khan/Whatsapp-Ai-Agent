@@ -8,9 +8,10 @@
 
 import { config } from '../config/env.js';
 import { bumpUsage, getUsage, todayKey, logEvent, tenantUsage, bumpTenantUsage } from '../utils/db.js';
-import { GEMINI_BASE, geminiHeaders, isKeyError, explainGeminiError } from '../utils/gemini.js';
+import { GEMINI_BASE, authHeadersFor, isKeyError, explainGeminiError } from '../utils/gemini.js';
 import * as providerTrace from '../services/providerTrace.js';
 import { recordUsage, estimateTokens, isRecording } from '../services/usageEvents.js';
+import * as keyChain from '../services/keyChain.js';
 
 let fetchImpl = globalThis.fetch;
 
@@ -23,6 +24,21 @@ export class QuotaError extends Error {
   constructor(message) {
     super(message);
     this.name = 'QuotaError';
+  }
+}
+
+/**
+ * Every key the tenant holds refused this call. Distinct from QuotaError (the
+ * tenant's own daily budget) and from a plain provider failure, because the
+ * customer-facing answer and the owner-facing advice are different.
+ */
+export class AllKeysFailedError extends Error {
+  constructor(message, { provider = null, states = null } = {}) {
+    super(message);
+    this.name = 'AllKeysFailedError';
+    this.allKeysFailed = true;
+    this.provider = provider;
+    this.states = states || {};
   }
 }
 
@@ -90,10 +106,14 @@ export function providerModels(provider) {
 }
 
 export function providersAvailable() {
+  // Configuration, not health: a key that is cooling down after a 429 must not
+  // make the provider disappear from the chain, or one rate limit would look
+  // like "no AI configured" for a minute. Health decides *order* and whether a
+  // key is called at all (see callWithKeyChain).
   const out = [];
-  if (config.keys.groq) out.push('groq');
-  if (config.keys.gemini) out.push('gemini');
-  if (config.keys.openrouter) out.push('openrouter');
+  for (const provider of keyChain.PROVIDERS) {
+    if (keyChain.configuredKeys(provider).length) out.push(provider);
+  }
   return out;
 }
 
@@ -119,10 +139,12 @@ function orderedProviders(chatKey = null, mode = 'chat') {
   let chain = wanted.filter((p) => p !== 'openrouter');
   if (wanted.includes('openrouter') && openrouterModels().length) chain.push('openrouter');
 
+  const preferred = process.env.LLM_PREFERRED_PROVIDER;
   const s = pickSticky(chatKey, mode);
   if (s?.provider && chain.includes(s.provider)) {
     chain = [s.provider, ...chain.filter((p) => p !== s.provider)];
   }
+  if (chain.includes(preferred)) chain = [preferred, ...chain.filter((p) => p !== preferred)];
   return chain;
 }
 
@@ -167,12 +189,12 @@ function isModelProblem(status, bodyText = '') {
 }
 
 // ── OpenAI-compatible chat (Groq + OpenRouter) ──────────────
-async function openAiCompatible({ provider, model, system, messages, temperature, maxTokens, json, tools, toolChoice, signal }) {
+async function openAiCompatible({ provider, model, system, messages, temperature, maxTokens, json, tools, toolChoice, signal, key: explicitKey = null }) {
   const isGroq = provider === 'groq';
   const url = isGroq
     ? 'https://api.groq.com/openai/v1/chat/completions'
     : 'https://openrouter.ai/api/v1/chat/completions';
-  const key = isGroq ? config.keys.groq : config.keys.openrouter;
+  const key = explicitKey || (isGroq ? config.keys.groq : config.keys.openrouter);
 
   const body = {
     model,
@@ -194,11 +216,11 @@ async function openAiCompatible({ provider, model, system, messages, temperature
     headers['X-Title'] = config.bot.name;
   }
 
-  const res = await fetchImpl(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
+  const res = await fetchImpl(url, { method: 'POST', redirect: 'error', headers, body: JSON.stringify(body), signal });
   const raw = await res.text();
 
   if (!res.ok) {
-    const err = new Error(`${provider} ${res.status}: ${raw.slice(0, 300)}`);
+    const err = new Error(`${provider} HTTP ${res.status}`);
     err.status = res.status;
     err.body = raw;
     err.retryAfter = parseFloat(res.headers?.get?.('retry-after') || '0') || 0;
@@ -269,7 +291,7 @@ export function toGeminiSchema(schema = {}) {
   return out;
 }
 
-async function gemini({ model, system, messages, temperature, maxTokens, json, tools, signal }) {
+async function gemini({ model, system, messages, temperature, maxTokens, json, tools, signal, key: explicitKey = null }) {
   const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`;
 
   const body = {
@@ -293,16 +315,17 @@ async function gemini({ model, system, messages, temperature, maxTokens, json, t
     ];
   }
 
+  const headers = { 'Content-Type': 'application/json', ...authHeadersFor(explicitKey || config.keys.gemini, config.geminiAuthStyle) };
   const res = await fetchImpl(url, {
-    method: 'POST',
-    headers: geminiHeaders({ 'Content-Type': 'application/json' }),
+    method: 'POST', redirect: 'error',
+    headers,
     body: JSON.stringify(body),
     signal,
   });
   const raw = await res.text();
 
   if (!res.ok) {
-    const err = new Error(explainGeminiError(res.status, raw));
+    const err = new Error(explainGeminiError(isKeyError(res.status, raw) ? 401 : res.status, ''));
     err.status = res.status;
     err.body = raw;
     err.model = model;
@@ -334,6 +357,77 @@ async function gemini({ model, system, messages, temperature, maxTokens, json, t
 
 async function callProvider(provider, args) {
   return provider === 'gemini' ? gemini(args) : openAiCompatible({ provider, ...args });
+}
+
+/** One bounded inference for an explicitly chosen provider/key. No retries,
+ * sticky routing, tools, global key fallback or usage from the hosting bot. */
+export function singleInference({ provider, model, key, system = '', prompt, maxTokens = 160, timeoutMs = 8000 }) {
+  if (!key || !keyChain.PROVIDERS.includes(provider)) throw new Error('provider_and_key_required');
+  return callProvider(provider, { model, key, system, messages: [{ role: 'user', content: prompt }],
+    temperature: 0, maxTokens, signal: AbortSignal.timeout(timeoutMs) });
+}
+
+/**
+ * One model, tried with every key the tenant holds for that provider, best
+ * first. A key that is rejected outright is never retried in this process; a
+ * key that is merely tired (429/5xx/timeout) is skipped for a while and tried
+ * again later. When nothing is left to try, the original error is rethrown so
+ * the caller's model/provider fallbacks behave exactly as they did before —
+ * this function adds keys, it does not take over routing.
+ */
+async function callWithKeyChain(provider, args, usage) {
+  const keys = keyChain.availableKeys(provider);
+  const rejected = [];
+  if (!keys.length) {
+    const states = keyChain.keyStatus(provider).reduce((acc, row) => ({ ...acc, [row.slot]: row.state }), {});
+    throw new AllKeysFailedError(`${provider}: every key is unusable (${JSON.stringify(states)})`, { provider, states });
+  }
+
+  let lastError = null;
+  for (const entry of keys) {
+    try {
+      const result = await callProvider(provider, { ...args, key: entry.key });
+      keyChain.note(provider, entry.slot, 'active');
+      return { ...result, keySlot: entry.slot, keyLast4: String(entry.key).slice(-4) };
+    } catch (cause) {
+      const category = keyChain.classifyError(cause);
+      const status = Number(cause?.status) || 0;
+      const modelProblem = isModelProblem(status, cause?.body);
+      const toolsUnsupported = !!args.tools?.length && !category && [400, 404, 422].includes(status) &&
+        /tool|function|unsupported|unknown field|invalid argument/i.test(String(cause?.body || ''));
+      const keyInvalid = category === 'invalid';
+      const message = provider === 'gemini' && keyInvalid
+        ? `Gemini rejected the API key (HTTP ${status}). Replace it with a key from https://aistudio.google.com/api-keys.`
+        : status ? `${provider} HTTP ${status}` : 'provider request failed';
+      // Providers can echo the submitted key or prompt. Do not expose the raw
+      // exception (including immutable AbortSignal reasons) beyond this call.
+      const err = Object.assign(new Error(message), {
+        provider, status, keyInvalid, toolsUnsupported, modelProblem, retryAfter: Number(cause?.retryAfter) || 0,
+        name: cause?.name === 'TimeoutError' ? 'TimeoutError' : 'Error',
+      });
+      if (isRecording()) recordUsage({ ...usage, tenant: tenantSlug(), provider, model: args.model,
+        keySlot: entry.slot, keyLast4: String(entry.key).slice(-4), errorCategory: category || (modelProblem ? 'unsupported_model' : 'provider_error') });
+      if (!category) throw err;
+      keyChain.note(provider, entry.slot, category, {
+        reason: category, retryAfterMs: err.retryAfter ? Number(err.retryAfter) * 1000 : null,
+      });
+      logEvent('llm_key_' + category, null, { provider, slot: entry.slot, status: err.status || 0 });
+      lastError = err;
+      if (category === 'invalid' || category === 'quota') rejected.push(entry.slot);
+    }
+  }
+
+  // A tenant with a backup chain whose every key was rejected gets the honest
+  // "all my keys are out" error, which is what the customer path answers
+  // politely and the owner path explains. A tenant with a single key keeps the
+  // provider's own error, exactly as before — one key is not a chain.
+  if (rejected.length === keys.length && keyChain.configuredKeys(provider).length > 1) {
+    const states = keyChain.keyStatus(provider).reduce((acc, row) => ({ ...acc, [row.slot]: row.state }), {});
+    const err = new AllKeysFailedError(`${provider}: no usable key (${rejected.join(', ')})`, { provider, states });
+    err.cause = lastError;
+    throw err;
+  }
+  throw lastError || new Error(`${provider}: no key answered`);
 }
 
 /**
@@ -372,6 +466,9 @@ export async function chat({
   // bill can say *what* was expensive. Optional and never used for routing.
   agent = null,
 } = {}) {
+  // A tenant whose profile says `llm.keySource: platform` is refused here, with
+  // a sentence that says what to do — never with "No AI provider configured".
+  keyChain.assertKeySource();
   checkQuota();
 
   const mode = small ? 'small' : 'chat';
@@ -384,6 +481,9 @@ export async function chat({
   }
 
   let providers = orderedProviders(chatKey, mode);
+  // Specialised callers can pin a pair on unmanaged bots, never bypass a
+  // managed tenant's chosen model with a reasoning-agent default.
+  if (process.env.TENANT_WORKER_MODE === 'live' || process.env.SANDBOX === '1') { pinnedProvider = null; pinnedModel = null; }
   if (pinnedProvider) providers = providers.filter((p) => p === pinnedProvider);
   if (!providers.length) {
     providerTrace.record({ chat: chatKey, kind: kind || mode, ok: false, reason: 'no provider configured', ms: Date.now() - started });
@@ -391,6 +491,7 @@ export async function chat({
   }
 
   let lastError = null;
+  let keyFailure = null;
   const failures = []; // {provider, model, reason}
 
   for (const provider of providers) {
@@ -408,9 +509,9 @@ export async function chat({
       const budget = Math.max(64, Math.min(Number(maxTokens) || config.llm.maxTokens, 4000));
       const signal = AbortSignal.timeout(timeoutMs);
       try {
-        const result = await callProvider(provider, {
+        const result = await callWithKeyChain(provider, {
           model, system, messages, temperature, maxTokens: budget, json, tools, toolChoice, signal,
-        });
+        }, { kind: kind || mode, agent: agentName, chatKey });
         // An empty text is fine when the model asked for a tool instead.
         if (!result.text && !result.toolCalls?.length) {
           throw new Error(`${provider}/${model}: empty response`);
@@ -448,6 +549,8 @@ export async function chat({
             model,
             agent: agentName,
             chatKey,
+            keySlot: result.keySlot || null,
+            keyLast4: result.keyLast4 || null,
             promptTokens,
             completionTokens,
             totalTokens: result.tokens || promptTokens + completionTokens,
@@ -485,6 +588,14 @@ export async function chat({
         const reason = status ? `HTTP ${status}` : err.name === 'TimeoutError' || /aborted|timeout/i.test(err.message) ? 'timeout' : err.message.slice(0, 80);
         failures.push({ provider, model, reason });
 
+        if (err.allKeysFailed) {
+          // Every key this provider has was rejected, not merely tired: no model
+          // on it can answer, and the reason is worth keeping for the caller.
+          keyFailure = keyFailure || err;
+          logEvent('llm_all_keys_failed', null, { provider, states: err.states });
+          break;
+        }
+
         if (err.keyInvalid) {
           // Wrong/expired key: every other model on this provider fails too.
           logEvent('llm_bad_key', null, { provider, model, status });
@@ -499,7 +610,7 @@ export async function chat({
           await sleep(wait);
           continue;
         }
-        if (isModelProblem(status, err.body)) continue; // try next model
+        if (err.modelProblem) continue; // try next model
         if (status >= 500) { await sleep(800); continue; }
         if (err.name === 'TimeoutError' || /aborted|timeout/i.test(err.message)) continue;
 
@@ -516,6 +627,11 @@ export async function chat({
     ok: false,
     reason: failures.length ? `all providers failed — ${failures.map((f) => `${f.provider}:${f.reason}`).join(', ').slice(0, 140)}` : 'no provider answered',
   });
+  if (keyFailure) {
+    // The one error the customer path knows how to answer politely and the
+    // owner path knows how to explain.
+    throw keyFailure;
+  }
   throw lastError || new Error('All AI providers failed');
 }
 
@@ -567,7 +683,7 @@ export function llmStatus() {
 }
 
 export default {
-  chat, chatJson, extractJson, hasLLM, providersAvailable, llmStatus, QuotaError,
+  chat, chatJson, extractJson, hasLLM, providersAvailable, llmStatus, QuotaError, AllKeysFailedError,
   tenantBudget, assertTenantBudget, tenantSlug, stickyFor, openrouterModels,
   StaleResponseError, _resetProviderState,
 };

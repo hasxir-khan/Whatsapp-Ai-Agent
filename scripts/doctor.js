@@ -1347,6 +1347,15 @@ async function main() {
   if (only) console.log(`\n\x1b[2monly: ${only}\x1b[0m`);
   console.log('\n' + describeConfig());
 
+  if (want('platform') && (process.env.PLATFORM_ENABLED || only === 'platform')) {
+    section('Customer platform');
+    const { doctorDiagnostics, remedy } = await import('../platform/diagnostics.js');
+    const check = await doctorDiagnostics();
+    for (const code of check.errors) { bad(remedy[code]); problems.push(code); }
+    for (const code of check.warnings) warn(remedy[code]);
+    if (!check.enabled) info('Platform disabled.');
+    else if (!check.errors.length && !check.warnings.length) ok('Configuration and stored key envelopes checked.');
+  }
   if (want('runtime')) await checkNode();
   if (want('files')) await checkFiles();
   if (want('identity', 'owner')) await checkOwner();

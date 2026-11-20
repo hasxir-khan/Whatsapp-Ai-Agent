@@ -453,8 +453,10 @@ test('.team add, set and remove change the roster and clean the chain', async ()
 
 test('working hours are respected when the card is sent', () => {
   assert.equal(team.withinWorkingHours(null), true);
-  assert.equal(team.withinWorkingHours('00:00-23:59'), true);
-  assert.ok(team.withinWorkingHours('00:00-00:00') === false || true); // an empty window is a closed window
+  const at = new Date('2026-01-15T15:30:00Z'); // 20:30 Karachi, not HHMM-as-minutes
+  assert.equal(team.withinWorkingHours('00:00-23:59', at), true);
+  assert.equal(team.withinWorkingHours('20:00-21:00', at), true);
+  assert.equal(team.withinWorkingHours('09:00-17:00', at), false);
 });
 
 // ════════════════════════════════════════════════════════════

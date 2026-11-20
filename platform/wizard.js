@@ -9,13 +9,15 @@
 // A draft is written after *every* step (the customer can close the tab), and
 // the step number is kept so the browser can resume where it left off.
 
-import { get, run } from './db.js';
+import { get, run, flush } from './db.js';
 import { tenantForAccount, isTenantOwner, mergeWizardIntoProfile } from './provisioning.js';
-import { readTenantProfile, writeTenantProfile, saveUpload, ingestUpload, readTenantEnv } from '../src/services/adminPanel.js';
-import { validateProfile } from '../src/services/profile.js';
-import { listTemplates } from '../src/services/templates.js';
-import { checkEntitlement } from './plans.js';
-import { startTenantViaHook } from './connect.js';
+import { readTenantProfile, writeTenantProfile, saveUpload, ingestUpload, validateTenantProfile, tenantRunning } from '../src/services/adminPanel.js';
+import { checklist, markTestChat } from './onboarding.js';
+import { applySettings } from './settings.js';
+import { withWorker, stopKeyWorker } from './keys.js';
+import { listTemplates, isTemplate, buildProfileFromTemplate } from '../src/services/templates.js';
+import { applyEntitlements, checkEntitlement } from './plans.js';
+import { linkStatus, startTenantViaHook } from './connect.js';
 import { helpTexts } from './env.js';
 import { recordAudit, notify } from './audit.js';
 
@@ -77,11 +79,9 @@ export function fieldsForStep(stepId) {
     1: ['template', 'businessType'],
     2: ['business'],
     3: ['catalog', 'services', 'faqs', 'payment'],
-    4: ['documents'],
+    4: [],
     5: ['conversation', 'intake', 'replyTiming', 'agents'],
-    6: ['connect'],
-    7: ['test'],
-    8: ['live'],
+    6: [], 7: [], 8: [],
   };
   return map[Number(stepId)] || [];
 }
@@ -116,7 +116,7 @@ export function previewProfile(slug, draft) {
 
   const applied = mergeWizardIntoProfile(base, draft || {});
   // Step 1's template choice is a hint for createTenant, not a profile field.
-  const check = validateProfile(applied);
+  const check = validateTenantProfile(slug, applied);
   return { ok: !(check.errors || []).length, errors: check.errors || [], warnings: check.warnings || [], profile: applied };
 }
 
@@ -133,29 +133,51 @@ export function saveStep(slug, accountId, { step, patch = {}, now = Date.now() }
   if (!stepDef) return { ok: false, status: 400, error: 'unknown_step', steps: STEP_IDS };
 
   const current = readDraft(slug);
+  const invalid = (field, message) => ({ ok: false, status: 400, error: 'invalid', saved: false,
+    errors: [message], fieldErrors: [{ field, message }], step: current.step });
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return invalid('patch', 'Expected a group of fields.');
+  for (const name of Object.keys(patch)) if (!fieldsForStep(step).includes(name)) return invalid(name, 'This field is not editable in this step.');
+  if (patch.template && !isTemplate(patch.template)) return invalid('template', 'Choose a listed template.');
+  if (patch.business !== undefined && (!patch.business || typeof patch.business !== 'object' || Array.isArray(patch.business))) return invalid('business', 'Expected business details.');
+  if (patch.business && Object.keys(patch.business).some((k) => !['name','type','city','hours','languages','tone'].includes(k))) return invalid('business', 'Unrecognised business field.');
+  for (const k of ['name','type','city','hours']) if (patch.business?.[k] !== undefined && (typeof patch.business[k] !== 'string' || !patch.business[k].trim())) return invalid(`business.${k}`, `Enter the business ${k}.`);
+  for (const k of ['catalog','services','faqs']) if (patch[k] !== undefined && (!Array.isArray(patch[k]) || patch[k].some((r) => !r || typeof r !== 'object' || Array.isArray(r)))) return invalid(k, 'Expected a list of entries.');
+  if (patch.payment !== undefined && (!patch.payment || typeof patch.payment !== 'object' || Array.isArray(patch.payment))) return invalid('payment','Expected payment details.');
+  if (patch.payment?.bank !== undefined && (!patch.payment.bank || typeof patch.payment.bank !== 'object' || Array.isArray(patch.payment.bank) || Object.values(patch.payment.bank).some((v) => typeof v !== 'string'))) return invalid('payment.bank.number','Enter the bank account details as text.');
+  if (patch.services?.some((r) => typeof r.name !== 'string' || !r.name.trim())) return invalid('services','Each service needs a name.');
+  if (patch.business?.tone !== undefined && typeof patch.business.tone !== 'string' && typeof patch.business.tone?.style !== 'string') return invalid('business.tone','Enter a tone description.');
   const data = mergeDraft(current.data, stepDef.id, patch);
-  const preview = previewProfile(slug, data);
-  if (!preview.ok) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'invalid',
-      errors: preview.errors,
-      warnings: preview.warnings,
-      saved: false,
-      step: current.step,
-    };
+  let base;
+  try { base = readTenantProfile(slug); } catch { return invalid('business', 'Finish provisioning the profile first.'); }
+  if (stepDef.id === 1 && !patch.template && membership.template && 'template' in patch) return invalid('template', 'To keep this profile, leave its current template selected.');
+  if (stepDef.id === 1 && patch.template && patch.template !== membership.template) {
+    const template = buildProfileFromTemplate(patch.template, { name: base.business?.name || membership.name, number: membership.number, city: base.business?.city });
+    // Replacing a starter is only safe before people edit it; keep plan flags.
+    if (current.step > 2 || membership.status === 'active') return invalid('template', 'Setup is already under way. Edit the business details instead.');
+    base = { ...base, ...template, features: base.features };
   }
-
-  // Validate first, then write — the tenant's own profile file, atomically.
-  const written = writeTenantProfile(slug, preview.profile);
-  if (!written.ok) {
-    return { ok: false, status: 400, error: 'rejected', errors: written.errors || [], saved: false };
+  // Only apply this step's delta. Replaying the entire draft here would roll
+  // back Settings edits whenever the owner advanced to another wizard page.
+  if (stepDef.id === 5 && Object.keys(patch).length) {
+    const changes = {};
+    for (const [group, values] of Object.entries(patch)) {
+      if (group === 'replyTiming') changes['conversation.replyTiming'] = values;
+      else if (['conversation','intake'].includes(group) && values && typeof values === 'object') {
+        for (const [k,v] of Object.entries(values)) changes[`${group}.${k}`] = v;
+      } else return invalid(group, 'Use Behaviour settings to edit this group.');
+    }
+    const result = applySettings({ slug, accountId, patch: changes });
+    if (!result.ok) return { ...result, fieldErrors: result.errors || [], saved: false };
+  } else if (stepDef.id <= 3 && Object.keys(patch).length) {
+    const profile = mergeWizardIntoProfile(base, patch);
+    const written = writeTenantProfile(slug, profile);
+    if (!written.ok) return { ok: false, status: 400, error: 'invalid', saved: false, errors: written.errors,
+      fieldErrors: written.errors.map((message) => ({ field: message.match(/business\.[a-z]+/)?.[0] || (/faq/i.test(message) ? 'faqs' : /catalog/i.test(message) ? 'catalog' : 'business'), message })) };
   }
 
   const stamp = new Date(Number(now)).toISOString();
   const existing = draftRow(slug);
-  const nextStep = Math.max(Number(current.step) || 1, stepDef.id);
+  const nextStep = Math.min(8, stepDef.id + 1);
   if (existing) {
     run('UPDATE wizard_drafts SET step = ?, data = ?, updated_at = ? WHERE slug = ?', [
       nextStep, JSON.stringify(data), stamp, slug,
@@ -166,7 +188,7 @@ export function saveStep(slug, accountId, { step, patch = {}, now = Date.now() }
     ]);
   }
   run('UPDATE tenants SET template = COALESCE(?, template), updated_at = ? WHERE slug = ?', [
-    data.template || data.businessType || null, stamp, slug,
+    stepDef.id === 1 ? patch.template || null : null, stamp, slug,
   ]);
   recordAudit({ action: 'wizard_step_saved', accountId, tenant: slug, detail: { step: stepDef.id } });
 
@@ -175,7 +197,7 @@ export function saveStep(slug, accountId, { step, patch = {}, now = Date.now() }
     saved: true,
     step: stepDef.id,
     nextStep: STEPS.find((s) => s.id > stepDef.id)?.id || null,
-    warnings: preview.warnings,
+    warnings: [],
     updatedAt: stamp,
   };
 }
@@ -184,11 +206,13 @@ export function saveStep(slug, accountId, { step, patch = {}, now = Date.now() }
  * Documents go through `learn` exactly as they do in the admin panel: the same
  * 5 MB limit, the same extension whitelist, the same pipeline.
  */
-export async function addDocument(slug, accountId, { name, buffer, now = Date.now() } = {}) {
+export const addDocument = (slug, accountId, opts) => withWorker(slug, () => learnWhileStopped(slug, accountId, opts));
+async function learnWhileStopped(slug, accountId, { name, buffer, now = Date.now() } = {}) {
   const membership = tenantForAccount(accountId, slug);
   if (!membership) return { ok: false, status: 404, error: 'not_found' };
   if (membership.member_role !== 'owner') return { ok: false, status: 403, error: 'owner_only' };
 
+  if (membership.status === 'active' || tenantRunning(slug)) return { ok: false, status: 409, error: 'worker_running', message: 'Upload documents before starting linking, or pause the live assistant first.' };
   const draft = readDraft(slug);
   const sofar = Array.isArray(draft.data.documents) ? draft.data.documents : [];
   if (sofar.length >= 20) {
@@ -214,10 +238,10 @@ export async function addDocument(slug, accountId, { name, buffer, now = Date.no
   try {
     ingested = wizardHooks.ingest ? await wizardHooks.ingest(slug, saved.file) : await ingestUpload(slug, saved.file);
   } catch (err) {
-    return { ok: false, status: 500, error: 'ingest_failed', message: String(err?.message || 'The document could not be learned.').slice(0, 200) };
+    return { ok: false, status: 500, error: 'ingest_failed', message: 'The document could not be learned.' };
   }
   if (!ingested?.ok) {
-    return { ok: false, status: 400, error: 'ingest_failed', message: 'The document was saved but could not be learned. Check its contents.', detail: ingested?.output || null };
+    return { ok: false, status: 400, error: 'ingest_failed', message: 'The document was saved but could not be learned. Check its contents.' };
   }
 
   const documents = [...sofar, { name: saved.name, bytes: saved.bytes, at: new Date(Number(now)).toISOString(), chunks: ingested.chunks || null }];
@@ -238,19 +262,17 @@ export async function addDocument(slug, accountId, { name, buffer, now = Date.no
  * contact number that WhatsApp will never issue. When no sandbox is available
  * the answer is honest ("not available here") rather than a fake reply.
  */
-export async function sandboxChat(slug, accountId, { text, now = Date.now() } = {}) {
+export const sandboxChat = (slug, accountId, opts) => withWorker(slug, () => sandboxWhileAuthorised(slug, accountId, opts));
+async function sandboxWhileAuthorised(slug, accountId, { text, now = Date.now() } = {}) {
   const membership = tenantForAccount(accountId, slug);
   if (!membership) return { ok: false, status: 404, error: 'not_found' };
   const message = String(text || '').trim().slice(0, 500);
   if (!message) return { ok: false, status: 400, error: 'empty_message' };
 
-  if (wizardHooks.sandboxChat) {
-    const res = await wizardHooks.sandboxChat(slug, message);
-    return { ok: true, ...res, sandbox: true };
-  }
+  if (membership.member_role !== 'owner') return { ok: false, status: 403, error: 'owner_only' };
 
   const { runSandboxChat } = await import('./sandbox.js');
-  const result = await runSandboxChat(slug, message, { now });
+  const result = wizardHooks.sandboxChat ? { ok: true, ...await wizardHooks.sandboxChat(slug, message) } : await runSandboxChat(slug, message, { now });
   if (!result.ok) {
     return {
       ok: false,
@@ -261,6 +283,8 @@ export async function sandboxChat(slug, accountId, { text, now = Date.now() } = 
         'It is available from the platform app on the same machine.',
     };
   }
+  if (!result.replies?.some((r) => typeof r === 'string' && r.trim())) return { ok: false, status: 409, error: 'no_reply', message: 'The sandbox received no reply. Check the key and behaviour settings.' };
+  markTestChat(slug);
   return { ok: true, sandbox: true, ...result };
 }
 
@@ -269,60 +293,33 @@ export async function sandboxChat(slug, accountId, { text, now = Date.now() } = 
  * The last step, and the only one that starts a process. Every precondition is
  * checked first so a half-configured bot never answers a real customer.
  */
-export async function goLive(slug, accountId, { ip = null, now = Date.now() } = {}) {
-  const membership = tenantForAccount(accountId, slug);
-  if (!membership) return { ok: false, status: 404, error: 'not_found' };
-  if (membership.member_role !== 'owner') return { ok: false, status: 403, error: 'owner_only' };
-
-  const tenant = get('SELECT * FROM tenants WHERE slug = ?', [slug]);
-  if (!tenant) return { ok: false, status: 404, error: 'not_found' };
-  if (tenant.status === 'paused') {
-    return { ok: false, status: 409, error: 'paused', message: 'This assistant is paused. Choose a plan to switch it back on.' };
-  }
-  if (tenant.status === 'failed') {
-    return { ok: false, status: 409, error: 'provisioning_failed', message: 'Setup did not finish. Retry provisioning from the dashboard.' };
-  }
-
-  let profile = null;
-  try {
-    profile = readTenantProfile(slug);
-  } catch {
-    profile = null;
-  }
-  if (!profile) return { ok: false, status: 409, error: 'no_profile', message: 'The business profile has not been saved yet.' };
-  const check = validateProfile(profile);
-  if (check.errors?.length) return { ok: false, status: 409, error: 'invalid_profile', errors: check.errors };
-
-  const env = readTenantEnv(slug);
-  const transport = (env.TRANSPORT || 'baileys').toLowerCase();
-  const linked = tenant.link_status === 'connected' || (transport === 'cloud' && !!env.CLOUD_TOKEN);
-  if (!linked) {
-    return {
-      ok: false,
-      status: 409,
-      error: 'whatsapp_not_connected',
-      message: 'Connect WhatsApp first — the assistant has no number to answer on.',
-    };
-  }
-
-  try {
-    const start = wizardHooks.start || startTenantViaHook;
-    await start(slug);
-  } catch (err) {
-    return { ok: false, status: 502, error: 'start_failed', message: String(err?.message || 'The assistant did not start.').slice(0, 200) };
-  }
-
-  const stamp = new Date(Number(now)).toISOString();
-  run("UPDATE tenants SET status = 'active', updated_at = ? WHERE slug = ?", [stamp, slug]);
-  recordAudit({ action: 'tenant_went_live', accountId, tenant: slug, ip });
-  notify({
-    accountId,
-    tenant: slug,
-    kind: 'live',
-    title: 'Your assistant is live',
-    body: 'It is answering on WhatsApp now. You can change any setting from Settings.',
+export function goLive(slug, accountId, { ip = null, resume = false } = {}) {
+  return withWorker(slug, async () => {
+    const t = tenantForAccount(accountId, slug);
+    if (!t) return { ok: false, status: 404, error: 'not_found' };
+    if (t.member_role !== 'owner') return { ok: false, status: 403, error: 'owner_only' };
+    if ((t.status === 'paused' && !(resume && t.paused_reason === 'owner')) || Date.parse(t.trial_ends_at) <= Date.now()) return { ok: false, status: 409, error: 'paused' };
+    if (resume && t.status !== 'paused') return { ok: false, status: 409, error: 'not_paused' };
+    if (!resume && t.status === 'active') return { ok: true, status: 'active', alreadyLive: true };
+    if (!['provisioned','paused'].includes(t.status)) return { ok: false, status: 409, error: 'provisioning_incomplete' };
+    const applied = applyEntitlements(slug, t.plan_id);
+    if (!applied.ok) return { ok: false, status: 409, error: applied.error };
+    await linkStatus(slug);
+    const gate = checklist(slug);
+    if (!gate.requiredComplete) return { ok: false, status: 409, error: 'checklist_incomplete', missing: gate.missing, items: gate.items };
+    try { await (wizardHooks.start || startTenantViaHook)(slug); }
+    catch { return { ok: false, status: 502, error: 'start_failed', message: 'The worker could not start. Check platform readiness and the worker log.' }; }
+    const stamp = new Date().toISOString();
+    run("UPDATE tenants SET status = 'active', paused_reason = NULL, updated_at = ? WHERE slug = ?", [stamp, slug]);
+    if (!flush()) {
+      try { await stopKeyWorker(slug); } catch { return { ok: false, status: 502, error: 'stop_failed' }; }
+      run('UPDATE tenants SET status = ?, paused_reason = ? WHERE slug = ?', [t.status, t.paused_reason, slug]);
+      return { ok: false, status: 503, error: 'storage_unavailable' };
+    }
+    recordAudit({ action: resume ? 'tenant_resumed' : 'tenant_went_live', accountId, tenant: slug, ip });
+    notify({ accountId, tenant: slug, kind: 'live', title: 'Your assistant is live' });
+    return { ok: true, status: 'active', liveAt: stamp };
   });
-  return { ok: true, status: 'active', liveAt: stamp };
 }
 
 /** Everything the wizard page needs, in one answer. */
@@ -334,6 +331,9 @@ export function wizardState(slug, accountId) {
   const templates = listTemplates();
   const agentLimit = checkEntitlement(slug, 'agents', { used: 0, add: 0 });
 
+  let p = {};
+  try { p = readTenantProfile(slug); } catch { /* provisioning may have failed */ }
+  const b = p.business || {};
   return {
     ok: true,
     tenant: {
@@ -344,7 +344,8 @@ export function wizardState(slug, accountId) {
     role: membership.member_role,
     steps: STEPS,
     step: draft.step,
-    draft: draft.data,
+    draft: { template: tenant.template, business: { name: b.name, type: b.type, hours: b.hours, city: b.city, languages: b.languages, tone: p.tone?.style },
+      catalog: p.catalog?.items || [], faqs: p.faqs || [], payment: b.payment || {}, documents: draft.data.documents || [] },
     updated_at: draft.updated_at,
     templates,
     help: helpTexts(),

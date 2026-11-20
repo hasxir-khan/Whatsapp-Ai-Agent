@@ -14,6 +14,8 @@
 //   • the panel never returns a secret. Keys are write-only and come back
 //     masked; .env, session files and the database are never served.
 
+import { DEFAULT_TEAM_LIMIT } from './decisionTeam.js';
+import { childBase, helperBase, platformManaged } from './workerEnv.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -312,7 +314,8 @@ export function writeTenantEnvValue(slug, key, value) {
     return line;
   });
   if (!found) next.push(`${key}=${value}`);
-  fs.writeFileSync(file, next.join('\n'));
+  fs.writeFileSync(file + '.tmp', next.join('\n'), { mode: 0o600 });
+  fs.renameSync(file + '.tmp', file);
 }
 
 /** `gsk_1234…abcd` — enough to recognise a key, useless to anyone else. */
@@ -396,6 +399,8 @@ export function envSummary(slug) {
   };
 }
 
+export function tenantRunning(slug) { return pidAlive(readPid(slug)); }
+
 export function describeTenant(slug) {
   const meta = readTenantJson(slug);
   if (!meta) return null;
@@ -454,27 +459,43 @@ export function readTenantProfile(slug) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
+export function validateTenantProfile(slug, profile) {
+  const env = readTenantEnv(slug);
+  return validateProfile(profile, { owner: (env.MY_NUMBER || '').replace(/\D/g, ''),
+    limit: Math.max(1, Math.round(Number(env.TEAM_MAX_MEMBERS) || DEFAULT_TEAM_LIMIT)) });
+}
+
 /**
  * Writes only through validateProfile(), so the panel cannot save a profile the
  * bot would refuse to load. The file is replaced atomically.
  */
-export function writeTenantProfile(slug, profileObject) {
+export function writeTenantProfile(slug, profileObject, { backup = false } = {}) {
   if (!profileObject || typeof profileObject !== 'object' || Array.isArray(profileObject)) {
     return { ok: false, errors: ['profile must be a JSON object'] };
   }
-  const check = validateProfile(profileObject);
+  const check = validateTenantProfile(slug, profileObject);
   if (check.errors?.length) return { ok: false, errors: check.errors };
 
   const dir = tenantDir(slug);
   const file = path.join(dir, 'config', 'owner.json');
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  let backupName = null;
+  if (backup && fs.existsSync(file)) {
+    const dest = path.join(dir, 'data', 'backups');
+    fs.mkdirSync(dest, { recursive: true, mode: 0o700 });
+    backupName = `owner-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.json`;
+    fs.writeFileSync(path.join(dest, backupName), fs.readFileSync(file), { mode: 0o600, flag: 'wx' });
+    for (const old of fs.readdirSync(dest).filter((n) => /^owner-\d+-[a-f0-9]{8}\.json$/.test(n)).sort().reverse().slice(20)) {
+      fs.rmSync(path.join(dest, old), { force: true });
+    }
+  }
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(profileObject, null, 2)}\n`);
+  fs.writeFileSync(tmp, `${JSON.stringify(profileObject, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(tmp, file);
 
   // If this process is serving that tenant, make it live immediately.
   let reloaded = false;
-  if (config.tenant.slug === slug) {
+  if (config.tenant.slug === slug && path.resolve(config.paths.config) === path.join(dir, 'config')) {
     try {
       reloadProfile();
       reloaded = true;
@@ -482,7 +503,7 @@ export function writeTenantProfile(slug, profileObject) {
       reloaded = false;
     }
   }
-  return { ok: true, warnings: check.warnings || [], reloaded, bytes: fs.statSync(file).size };
+  return { ok: true, warnings: check.warnings || [], reloaded, backup: backupName, bytes: fs.statSync(file).size };
 }
 
 // ── keys (write-only) ────────────────────────────────────────
@@ -490,6 +511,7 @@ const KEY_NAME = /^(GROQ_API_KEY|GEMINI_API_KEY|OPENROUTER_API_KEY)$/;
 const KEY_VALUE = /^[A-Za-z0-9._-]{8,200}$/;
 
 export function setTenantKeys(slug, pairs = {}) {
+  if (platformManaged(tenantDir(slug), readTenantJson(slug))) throw new Error('use_platform_dashboard');
   const saved = [];
   for (const [name, value] of Object.entries(pairs)) {
     if (!KEY_NAME.test(name)) throw new Error(`unknown_key:${name}`);
@@ -589,7 +611,7 @@ export function saveUpload(slug, { name, buffer } = {}) {
  * because its knowledge lives in *its* database.
  */
 export async function ingestUpload(slug, file) {
-  if (config.tenant.slug === slug) {
+  if (config.tenant.slug === slug && !platformManaged(tenantDir(slug), readTenantJson(slug))) {
     const knowledge = await import('./knowledge.js');
     const res = await knowledge.ingestFile(file);
     return { ok: true, mode: 'inline', source: res.source, chunks: res.chunks, chars: res.chars };
@@ -599,14 +621,15 @@ export async function ingestUpload(slug, file) {
   const repo = config.root;
   const child = spawnSync(
     process.execPath,
-    [path.join(repo, 'scripts', 'tenant.js'), 'learn', slug, file],
+    [path.join(repo, 'scripts', 'learn.js'), file],
     {
       cwd: repo,
       encoding: 'utf8',
       timeout: 120000,
       env: {
-        ...process.env,
+        ...helperBase(dir, readTenantJson(slug)),
         TENANT: slug,
+        TENANTS_DIR: tenantsRoot(),
         ENV_FILE: path.join(dir, '.env'),
         CONFIG_DIR: path.join(dir, 'config'),
         DATA_DIR: path.join(dir, 'data'),
@@ -626,7 +649,7 @@ export async function ingestUpload(slug, file) {
  * tenant → the CLI, because its database is its own.
  */
 export async function indexImagesFor(slug) {
-  if (config.tenant.slug === slug) {
+  if (config.tenant.slug === slug && !platformManaged(tenantDir(slug), readTenantJson(slug))) {
     const { indexCatalogImages, visualSearchEnabled } = await import('./visualSearch.js');
     if (!visualSearchEnabled()) return { ok: false, reason: 'visual_search_off', hint: '.set features.visualSearch true' };
     return { ok: true, mode: 'inline', ...(await indexCatalogImages()) };
@@ -639,7 +662,7 @@ export async function indexImagesFor(slug) {
     encoding: 'utf8',
     timeout: 300000,
     env: {
-      ...process.env,
+      ...helperBase(dir, readTenantJson(slug)),
       TENANT: slug,
       TENANTS_DIR: tenantsRoot(),
       ENV_FILE: path.join(dir, '.env'),
@@ -655,11 +678,14 @@ export async function indexImagesFor(slug) {
 }
 
 // ── process control ──────────────────────────────────────────
-export function tenantEnv(slug) {
+// An isolated worker takes configuration from its tenant .env, never from
+// another bot or the control plane (which also holds the encryption secret).
+export function tenantEnv(slug, { isolated = false } = {}) {
   const meta = readTenantJson(slug) || {};
   const dir = tenantDir(slug);
   return {
-    ...process.env,
+    ...childBase(isolated),
+    ...(isolated ? { QR_PATH: path.join(dir, 'data', 'link-qr.png'), PLATFORM_ENABLED: '', ADMIN_TOKEN: '' } : {}),
     TENANT: slug,
     TENANTS_DIR: tenantsRoot(),
     ENV_FILE: path.join(dir, '.env'),
@@ -673,21 +699,31 @@ export function tenantEnv(slug) {
   };
 }
 
-export async function startTenant(slug, { spawnImpl = null } = {}) {
+export async function startTenant(slug, { spawnImpl = null, extraEnv = null, isolated = false } = {}) {
   const meta = readTenantJson(slug);
   if (!meta) throw new Error('not_found');
+  if (platformManaged(tenantDir(slug), meta) && !(isolated && ['link', 'live'].includes(extraEnv?.TENANT_WORKER_MODE))) throw new Error('use_platform_dashboard');
   const pid = readPid(slug);
   if (pidAlive(pid)) return { ok: true, alreadyRunning: true, pid };
 
   const spawnChild = spawnImpl || (await import('node:child_process')).spawn;
+  // `extraEnv` is how a caller hands the child something that must never touch
+  // the disk — the platform's decrypted AI keys, for one. It is merged last so
+  // it cannot be overridden by a stale .env value.
   const child = spawnChild(process.execPath, [path.join(config.root, 'src', 'index.js')], {
     cwd: config.root,
-    env: tenantEnv(slug),
+    env: { ...tenantEnv(slug, { isolated }), ...(extraEnv || {}) },
     detached: true,
     stdio: 'ignore',
   });
+  if (!spawnImpl) {
+    await new Promise((resolve, reject) => { child.once('error', reject); child.once('spawn', resolve); });
+  }
   child?.unref?.();
-  if (child?.pid) fs.writeFileSync(pidFile(slug), String(child.pid));
+  if (child?.pid) {
+    try { fs.writeFileSync(pidFile(slug), String(child.pid), { mode: 0o600 }); }
+    catch (err) { child.kill?.('SIGKILL'); throw err; } // never leave a key-bearing worker untracked
+  }
   return { ok: true, started: true, pid: child?.pid || null };
 }
 
@@ -715,10 +751,28 @@ export function stopTenant(slug) {
   return { ok: true, stopped: true, pid };
 }
 
+/** Wait for the old process to release its session and its key material. */
+export async function stopTenantAndWait(slug) {
+  const result = stopTenant(slug);
+  if (!result.ok || !result.stopped) return result;
+  for (let i = 0; i < 80; i++) {
+    if (!pidAlive(result.pid)) return result;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  fs.writeFileSync(pidFile(slug), String(result.pid)); // retain the handle for operator intervention
+  return { ok: false, reason: 'worker_did_not_exit' };
+}
+
 export async function restartTenant(slug, opts) {
-  stopTenant(slug);
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  if (platformManaged(tenantDir(slug), readTenantJson(slug)) && !opts?.isolated) throw new Error('use_platform_dashboard');
+  if (!(await stopTenantAndWait(slug)).ok) throw new Error('stop_failed');
   return startTenant(slug, opts);
+}
+
+export function clearTenantLink(slug) {
+  const dir = tenantDir(slug);
+  fs.rmSync(path.join(dir, 'sessions'), { recursive: true, force: true });
+  fs.rmSync(path.join(dir, 'data', 'link-qr.png'), { force: true });
 }
 
 // ── QR / cloud ───────────────────────────────────────────────
@@ -748,7 +802,7 @@ export async function qrForTenant(slug) {
   }
 
   // live, in this process
-  if (config.tenant.slug === slug) {
+  if (config.tenant.slug === slug && path.resolve(config.paths.config) === path.join(tenantDir(slug), 'config')) {
     const { botState } = await import('../state.js');
     if (botState.qr && /^[A-Za-z0-9+/=]+$/.test(botState.qr)) {
       const QRCode = (await import('qrcode')).default;
@@ -757,7 +811,7 @@ export async function qrForTenant(slug) {
   }
 
   // written to disk by a child process (run-all / show --start)
-  const candidates = [path.join(config.root, `qr-${slug}.png`), meta.slug === 'default' ? path.join(config.root, 'qr.png') : null]
+  const candidates = platformManaged(tenantDir(slug), meta) ? [path.join(tenantDir(slug), 'data', 'link-qr.png')] : [path.join(config.root, `qr-${slug}.png`), meta.slug === 'default' ? path.join(config.root, 'qr.png') : null]
     .filter(Boolean);
   for (const file of candidates) {
     try {
@@ -780,7 +834,7 @@ export async function qrForTenant(slug) {
 // hook, and a test can replace it.
 export const adminHooks = {
   start: startTenant,
-  stop: stopTenant,
+  stop: stopTenantAndWait,
   restart: restartTenant,
 };
 
@@ -793,7 +847,7 @@ export function setAdminHooks(next = {}) {
 
 export function resetAdminHooks() {
   adminHooks.start = startTenant;
-  adminHooks.stop = stopTenant;
+  adminHooks.stop = stopTenantAndWait;
   adminHooks.restart = restartTenant;
   return adminHooks;
 }

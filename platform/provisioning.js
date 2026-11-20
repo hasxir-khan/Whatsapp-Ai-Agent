@@ -188,6 +188,7 @@ export async function provisionTenant({
   ip = null,
   now = Date.now(),
 } = {}) {
+  if (/[\r\n\x00]/.test(name)) return { ok: false, error: 'invalid_business_name' };
   const digits = normaliseNumber(number);
   if (!/^\d{10,15}$/.test(digits)) {
     return { ok: false, error: 'bad_number', message: 'A WhatsApp number needs 10–15 digits, international format.' };
@@ -238,6 +239,7 @@ export async function provisionTenant({
         if (!onDisk) {
           const created = await create({
             name,
+            platformManaged: true,
             slug,
             number: digits,
             template: template || undefined,
@@ -361,7 +363,11 @@ export function mergeWizardIntoProfile(profile, draft = {}) {
       : b.languages;
   }
   if (b.tone) next.tone = { ...(next.tone || {}), ...(typeof b.tone === 'object' ? b.tone : { style: String(b.tone) }) };
-  if (b.payment) next.business.payment = b.payment;
+  if (draft.payment) {
+    const old = next.business.payment || {};
+    next.business.payment = { ...old, ...draft.payment, ...(draft.payment.bank ? { bank: { ...old.bank, ...draft.payment.bank } } : {}) };
+  }
+  if (Array.isArray(draft.services)) next.owner = { ...next.owner, services: draft.services.slice(0, 200) };
   if (Array.isArray(draft.catalog)) {
     next.catalog = { ...(next.catalog || {}), items: draft.catalog.slice(0, 200) };
   }
@@ -378,20 +384,29 @@ export function mergeWizardIntoProfile(profile, draft = {}) {
 
 /** Remove a tenant completely (account deletion). Returns what was removed. */
 export async function destroyTenant(slug, { accountId = null, ip = null } = {}) {
+  const { withWorker, stopKeyWorker } = await import('./keys.js');
+  return withWorker(slug, () => removeStoppedTenant(slug, accountId, ip, stopKeyWorker));
+}
+
+async function removeStoppedTenant(slug, accountId, ip, stop) {
   const tenant = getTenant(slug);
   if (!tenant) return { ok: false, error: 'no_tenant' };
+  if (accountId && tenant.account_id !== accountId) return { ok: false, error: 'not_owner' };
   const adminModule = await admin();
   let removedFiles = false;
   try {
+    await stop(slug);
     adminModule.deleteTenantFromPanel(slug, slug);
     removedFiles = true;
-  } catch {
-    removedFiles = false;
+  } catch (err) {
+    if (err.message !== 'not_found') return { ok: false, error: 'tenant_cleanup_failed' };
   }
   run('DELETE FROM tenants WHERE slug = ?', [slug]);
   run('DELETE FROM memberships WHERE slug = ?', [slug]);
   run('DELETE FROM wizard_drafts WHERE slug = ?', [slug]);
   run('DELETE FROM tenant_secrets WHERE slug = ?', [slug]);
+  for (const table of ['tenant_keys','settings_undo','compatibility_runs']) run(`DELETE FROM ${table} WHERE slug = ?`, [slug]);
+  run('DELETE FROM usage_events WHERE tenant = ?', [slug]);
   recordAudit({
     action: 'tenant_destroyed',
     accountId: accountId || tenant.account_id,

@@ -223,7 +223,7 @@ export function withinWorkingHours(hours, at = new Date()) {
   if (from === null || to === null) return true;
   let local;
   try {
-    local = Number(
+    local = parseHHMM(
       new Intl.DateTimeFormat('en-GB', {
         timeZone: config.timezone || 'Asia/Karachi',
         hour: '2-digit',
@@ -231,7 +231,6 @@ export function withinWorkingHours(hours, at = new Date()) {
         hour12: false,
       })
         .format(at)
-        .replace(':', '')
     );
   } catch {
     local = at.getHours() * 60 + at.getMinutes();
@@ -252,7 +251,7 @@ function parseHHMM(value) {
  * Checked before every write (`.set`, `.team`, the admin panel) and by the
  * doctor. A typo is a warning; something the engine cannot run with is an error.
  */
-export function validateDecisions(raw) {
+export function validateDecisions(raw, { owner = ownerNumber(), limit = teamLimit() } = {}) {
   const errors = [];
   const warnings = [];
   if (raw === null || raw === undefined || raw === '') return { errors, warnings };
@@ -280,8 +279,8 @@ export function validateDecisions(raw) {
         errors.push('business.decisions.team.members must be a list');
       } else {
         const list = Array.isArray(members) ? members : [];
-        if (list.length > teamLimit()) {
-          errors.push(`business.decisions.team.members holds ${list.length} people; the limit is ${teamLimit()}`);
+        if (list.length > limit) {
+          errors.push(`business.decisions.team.members holds ${list.length} people; the limit is ${limit}`);
         }
         const seen = new Set();
         list.forEach((m, i) => {
@@ -290,7 +289,7 @@ export function validateDecisions(raw) {
           if (!m.name || String(m.name).trim().length < 2) errors.push(`${where}.name is required`);
           const number = normalizeMemberNumber(m.number);
           if (!number) errors.push(`${where}.number must be a phone number (8–15 digits)`);
-          else if (number === ownerNumber()) errors.push(`${where}.number is the owner's own number`);
+          else if (number === owner) errors.push(`${where}.number is the owner's own number`);
           else if (seen.has(number)) errors.push(`${where}.number is used twice`);
           seen.add(number);
           const roles = Array.isArray(m.roles) ? m.roles : m.role ? [m.role] : [];

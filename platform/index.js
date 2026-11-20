@@ -4,16 +4,15 @@
 //   import { handlePlatformRoute } from './platform/index.js'   → mount it
 //   node platform/index.js                                       → run it alone
 //
-// Running alone is what a host does in production: one process for accounts,
-// onboarding and billing-less plans, and one process per bot worker underneath
-// (the supervisor in scripts/run-all.js already knows how to run those).
+// Standalone: one control-plane DB writer. Managed tenant workers are started
+// through the platform, not by the generic fleet supervisor.
 //
 // With PLATFORM_ENABLED unset nothing here is reachable: `handlePlatformRoute`
 // returns false for every path, so the bot's own routes answer exactly as they
 // did before.
 
 import http from 'node:http';
-import { platformEnabled, platformMisconfigured, platformPort, platformSecret, platformDir } from './env.js';
+import { platformEnabled, platformMisconfigured, platformPort, platformSecret, platformDir, transportProblem } from './env.js';
 import { ensurePlatformDb, flush } from './db.js';
 import { handlePlatformRoute } from './routes.js';
 import { attachUsageSink, detachUsageSink } from './usage.js';
@@ -27,7 +26,11 @@ export { handlePlatformRoute } from './routes.js';
  * single LLM call site report into this process when it is the same process.
  * Safe to call when the platform is off (it does nothing).
  */
+export function assertPlatformTransport() {
+  if (platformEnabled() && transportProblem()) throw new Error(transportProblem());
+}
 export async function initPlatform() {
+  assertPlatformTransport();
   if (!platformEnabled() || platformMisconfigured()) return { ok: false, enabled: platformEnabled() };
   await ensurePlatformDb();
   seedPlans();
@@ -78,7 +81,7 @@ async function main() {
     process.exit(1);
   }
   if (platformMisconfigured()) {
-    console.error('PLATFORM_ENABLED is on but PLATFORM_SECRET is empty. Refusing to start.');
+    console.error(transportProblem() || 'PLATFORM_ENABLED is on but PLATFORM_SECRET is empty. Refusing to start.');
     process.exit(1);
   }
   await initPlatform();

@@ -66,9 +66,9 @@ ${script}
 </html>`;
 }
 
-function authShell({ title, lede, form, footer }) {
+function authShell({ title, lede, form, footer, script }) {
   return page({
-    title: `${title} · Assistant platform`,
+    title: `${title} · Assistant platform`, script,
     body: `<header class="top"><span class="brand">Assistant platform</span></header>
 <main class="wrap narrow">
   <div class="card">
@@ -87,7 +87,7 @@ export function loginPage() {
   return authShell({
     title: 'Sign in',
     lede: 'Your assistant, your account.',
-    form: `<form id="f">
+    form: `<form method="post" id="f">
   <label for="email">Email</label>
   <input id="email" name="email" type="email" autocomplete="username" required>
   <label for="password">Password</label>
@@ -107,7 +107,7 @@ export function signupPage() {
   return authShell({
     title: 'Create an account',
     lede: 'We email a six-digit code. That is how we know the address is yours.',
-    form: `<form id="f">
+    form: `<form method="post" id="f">
   <label for="email">Email</label>
   <input id="email" name="email" type="email" autocomplete="email" required>
   <label class="row" style="margin-top:14px;color:var(--ink);font-size:14px">
@@ -127,7 +127,7 @@ export function verifyPage({ email = '' } = {}) {
   return authShell({
     title: 'Check your email',
     lede: 'Enter the six-digit code and choose a password. The code expires in 10 minutes.',
-    form: `<form id="f">
+    form: `<form method="post" id="f">
   <label for="email">Email</label>
   <input id="email" name="email" type="email" value="${esc(email)}" autocomplete="email" required>
   <label for="code">Six-digit code</label>
@@ -145,13 +145,13 @@ export function resetPage() {
   return authShell({
     title: 'Reset your password',
     lede: 'We email a six-digit code. Nothing changes until you use it.',
-    form: `<form id="f-request">
+    form: `<form method="post" id="f-request">
   <label for="email">Email</label>
   <input id="email" name="email" type="email" autocomplete="email" required>
   <div class="row" style="margin-top:16px"><button class="primary" type="submit">Email me a code</button></div>
 </form>
 <div class="hr"></div>
-<form id="f-reset">
+<form method="post" id="f-reset">
   <label for="code">Six-digit code</label>
   <input id="code" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6">
   <label for="password">New password</label>
@@ -177,7 +177,7 @@ export function appPage() {
   <noscript><p class="error">This page needs JavaScript. The API is JSON, so a script can do everything the page does.</p></noscript>
 </main>`,
     head: '<link rel="stylesheet" href="/platform/app.css">',
-    script: '<script src="/platform/app.js" defer></script>',
+    script: '<script type="module" src="/platform/app.js"></script>',
   });
 }
 
@@ -187,8 +187,8 @@ export function misconfiguredPage() {
     title: 'Platform not configured',
     body: `<main class="wrap narrow"><div class="card">
   <h1>Not configured</h1>
-  <p class="lede">The platform is switched on but has no session secret, so it will not serve accounts.</p>
-  <p class="muted">Set <code>PLATFORM_SECRET</code> to a long random string, then restart.</p>
+  <p class="lede">The platform is switched on but its security configuration is incomplete.</p>
+  <p class="muted">Set <code>PLATFORM_SECRET</code> to a long random string and configure an HTTPS <code>PLATFORM_PUBLIC_URL</code> in production, then restart.</p>
 </div></main>`,
   });
 }

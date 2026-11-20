@@ -41,3 +41,14 @@
 .danger button { border-color: var(--bad); color: var(--bad); }
 .doc { font-size: 14px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
 .small { font-size: 13px; color: var(--muted); }
+
+.readiness,.control-block { margin: 14px 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
+.checks { padding: 0; list-style: none; }
+.checks li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 5px 0; }
+.checks button,.steps button { font-size: 12px; padding: 4px 8px; }
+.steps [data-state="current"] { border-color: var(--accent); }
+.actions { margin: 10px 0; gap: 8px; }
+.field { display: grid; gap: 4px; margin: 10px 0; }
+.field input[type="checkbox"] { width: auto; justify-self: start; }
+summary { cursor: pointer; font-weight: 600; }
+button:disabled { opacity: .56; cursor: not-allowed; }

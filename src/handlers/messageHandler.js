@@ -18,6 +18,7 @@ import { detectLanguage, detectTone, fromWhisperLanguage } from '../services/lan
 import { generateReply, detectMood, needsOwner } from '../core/brain.js';
 import { routeMessage, managerEnabled } from '../core/manager.js';
 import * as reasoningModule from '../services/reasoning.js';
+import * as keyChain from '../services/keyChain.js';
 import { agentsEnabled, routeToAgent, logAgentEvent, noteAgentSuccess, noteAgentFailure, noteAgentTokens } from '../services/agents.js';
 import { emergencyGuardEnabled, detectEmergency, emergencyReply, emergencyContact } from '../services/agentPacks.js';
 import { detectOptOut, detectOptIn, recordOptOut, recordOptIn, optOutConfirmation } from '../services/growth.js';
@@ -1451,13 +1452,26 @@ async function runBatch(sock, jid, number, items, ctx) {
   // failure is how a chat goes quiet for hours.
   if (reply?.provider === 'error') {
     db.logEvent('brain_no_provider', number, null);
-    try {
-      await notifyOwner(
-        sock,
-        `⚠️ +${number}: no AI provider answered (${reply.model || 'unknown'}). They got the holding line — check the keys and quotas.`
-      );
-    } catch {
-      /* the owner notification must not cost the reply */
+    // One alert per problem, not one per message: a chain outage during a busy
+    // hour must not turn into forty WhatsApp messages to the owner.
+    const ALERT_WINDOW_MS = 30 * 60000;
+    const lastAlert = Date.parse(db.getSetting('ai_down_alerted_at', '') || '') || 0;
+    if (Date.now() - lastAlert > ALERT_WINDOW_MS) {
+      db.setSetting('ai_down_alerted_at', new Date().toISOString());
+      try {
+        const health = keyChain.healthSnapshot();
+        const broken = Object.entries(health)
+          .flatMap(([provider, rows]) => rows.filter((r) => r.state !== 'active').map((r) => `${provider} key …${r.last4}: ${r.state}`))
+          .slice(0, 4);
+        await notifyOwner(
+          sock,
+          `⚠️ +${number}: none of the AI keys answered (${reply.model || 'unknown'}). The customer got the holding line.\n` +
+            (broken.length ? `${broken.join('\n')}\n` : '') +
+            'Reply in this chat if they need a human answer — I will stay quiet until a key works.'
+        );
+      } catch {
+        /* the owner notification must not cost the reply */
+      }
     }
   }
 

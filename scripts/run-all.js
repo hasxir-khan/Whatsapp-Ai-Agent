@@ -8,13 +8,14 @@
 //
 // One crash never takes the others down: each tenant restarts on its own.
 
+import { childBase, platformManaged } from '../src/services/workerEnv.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
 const ROOT = process.cwd();
-const TENANTS = path.join(ROOT, 'tenants');
+const TENANTS = path.resolve(process.env.TENANTS_DIR || path.join(ROOT, 'tenants'));
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 const only = (() => {
@@ -32,12 +33,13 @@ function tenants() {
     .filter((d) => fs.existsSync(path.join(TENANTS, d, 'tenant.json')))
     .map((d) => {
       try {
-        return JSON.parse(fs.readFileSync(path.join(TENANTS, d, 'tenant.json'), 'utf8'));
+        const meta = JSON.parse(fs.readFileSync(path.join(TENANTS, d, 'tenant.json'), 'utf8'));
+        return platformManaged(path.join(TENANTS, d), meta) ? null : meta;
       } catch {
         return null;
       }
     })
-    .filter((t) => t && t.enabled !== false)
+    .filter((t) => t && t.enabled !== false && !t.platformManaged)
     .filter((t) => !only || t.slug === only);
 }
 
@@ -54,7 +56,7 @@ const children = new Map();
 function envFor(t) {
   const dir = path.join(TENANTS, t.slug);
   return {
-    ...process.env,
+    ...childBase(),
     TENANT: t.slug,
     ENV_FILE: path.join(dir, '.env'),
     CONFIG_DIR: path.join(dir, 'config'),

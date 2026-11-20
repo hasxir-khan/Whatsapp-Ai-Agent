@@ -16,6 +16,9 @@
 // Every answer here is owner-only, rate limited, `no-store`, and never cached:
 // the QR *is* the login.
 
+import { deliverKeysAtStart, withWorker } from './keys.js';
+import path from 'node:path';
+import { sessionHealth, sessionConnectedAt } from '../src/utils/sessionBackup.js';
 import { get, run } from './db.js';
 import { tenantForAccount, isTenantOwner, getTenantSecret } from './provisioning.js';
 import { recordAudit } from './audit.js';
@@ -111,14 +114,15 @@ export async function linkStatus(slug, { now = Date.now() } = {}) {
   let detail = null;
   if (transport === 'cloud') {
     // Cloud API has no session: "connected" means the secrets are in place.
-    const ready = !!env.CLOUD_TOKEN && !!env.CLOUD_PHONE_ID && !!env.CLOUD_VERIFY_TOKEN;
+    const ready = !!env.CLOUD_TOKEN && !!env.CLOUD_PHONE_ID && !!env.CLOUD_VERIFY_TOKEN && !!env.CLOUD_APP_SECRET;
     state = ready ? 'connected' : 'waiting';
     detail = ready ? 'cloud_ready' : 'cloud_not_configured';
   } else if (live?.status) {
     state = normalize(live.status);
   } else {
-    // Not running (or not answering): the state we last recorded is the truth.
-    state = tenant.link_status === 'connected' && !tenant.link_error ? 'connected' : 'waiting';
+    // A paused process cannot answer HTTP. Require evidence of a successful local login.
+    const dir = path.join((await admin()).tenantDir(slug), 'sessions');
+    state = sessionConnectedAt(dir) && sessionHealth(dir).state === 'healthy' ? 'connected' : 'waiting';
     if (tenant.link_error) state = 'error';
     detail = 'not_running';
   }
@@ -194,7 +198,8 @@ export async function qrFor(slug, { accountId, ip = null, now = Date.now() } = {
  * A 6-digit code here would be a lie — the platform account's own login code is
  * the only six-digit thing in this product.
  */
-export async function requestPairingCode(slug, { accountId, number = null, ip = null, now = Date.now() } = {}) {
+export const requestPairingCode = (slug, opts) => withWorker(slug, () => pairLocked(slug, opts));
+async function pairLocked(slug, { accountId, number = null, ip = null, now = Date.now() } = {}) {
   if (!isTenantOwner(accountId, slug)) {
     return { ok: false, status: 403, error: 'owner_only', message: 'Only the account owner can link a number.' };
   }
@@ -211,21 +216,19 @@ export async function requestPairingCode(slug, { accountId, number = null, ip = 
   const digits = String(number || tenant.number || '').replace(/\D/g, '');
   if (!/^\d{10,15}$/.test(digits)) return { ok: false, status: 400, error: 'bad_number' };
 
-  try {
-    (await admin()).writeTenantEnvValue(slug, 'PAIRING_NUMBER', digits);
-  } catch {
-    return {
-      ok: false,
-      status: 409,
-      error: 'not_ready',
-      message: 'This assistant has no .env on this machine yet. Finish provisioning first.',
-    };
+  if (!Object.keys(env).length || !['provisioned','active'].includes(tenant.status) || Date.parse(tenant.trial_ends_at) <= Date.now()) {
+    return { ok: false, status: 409, error: 'not_ready', message: 'Finish provisioning and resume the assistant before linking.' };
   }
   try {
+    (await admin()).writeTenantEnvValue(slug, 'PAIRING_NUMBER', digits);
     if (connectHooks.restart) await connectHooks.restart(slug);
-    else await (await admin()).restartTenant(slug);
-  } catch (err) {
-    setLinkState(slug, 'error', err.message);
+    else {
+      const result = await deliverKeysAtStart(slug, { linkOnly: true, pairingNumber: digits });
+      if (!result.ok) throw new Error();
+      run("UPDATE tenants SET status = 'provisioned' WHERE slug = ?", [slug]);
+    }
+  } catch {
+    setLinkState(slug, 'error', 'restart_failed');
     return { ok: false, status: 502, error: 'restart_failed', message: 'The assistant did not start. Check its logs and try again.' };
   }
 
@@ -267,28 +270,19 @@ export async function pairingCode(slug, { accountId, now = Date.now() } = {}) {
 }
 
 /** Unlink: stop the bot and throw the WhatsApp session away (not the business). */
-export async function disconnect(slug, { accountId, ip = null } = {}) {
+export const disconnect = (slug, opts) => withWorker(slug, () => disconnectLocked(slug, opts));
+async function disconnectLocked(slug, { accountId, ip = null } = {}) {
   if (!isTenantOwner(accountId, slug)) return { ok: false, status: 403, error: 'owner_only' };
   const tenant = get('SELECT * FROM tenants WHERE slug = ?', [String(slug)]);
   if (!tenant) return { ok: false, status: 404, error: 'not_found' };
+  const panel = await admin();
   try {
-    if (connectHooks.stop) await connectHooks.stop(slug);
-    else await (await admin()).stopTenant(slug);
-  } catch {
-    /* already stopped is not a failure */
-  }
-  let files = false;
-  try {
-    const { rm } = await import('node:fs/promises');
-    const path = await import('node:path');
-    const adminModule = await admin();
-    const dir = adminModule.tenantDir(slug);
-    await rm(path.join(dir, 'sessions'), { recursive: true, force: true });
-    files = true;
-  } catch {
-    files = false;
-  }
+    if ((await (connectHooks.stop || panel.adminHooks.stop)(slug))?.ok === false) throw new Error();
+    panel.clearTenantLink(slug);
+  } catch { return { ok: false, status: 502, error: 'disconnect_failed' }; }
+  const files = true;
   setLinkState(slug, 'unlinked');
+  run("UPDATE tenants SET status = 'provisioned' WHERE slug = ? AND status = 'active'", [slug]);
   recordAudit({ action: 'whatsapp_disconnected', accountId, tenant: slug, ip, detail: { sessionsRemoved: files } });
   return { ok: true, status: 'unlinked', sessionsRemoved: files };
 }
@@ -296,8 +290,9 @@ export async function disconnect(slug, { accountId, ip = null } = {}) {
 /** Start a tenant through the supervisor, with a hook for tests. */
 export async function startTenantViaHook(slug) {
   if (connectHooks.start) return connectHooks.start(slug);
-  const adminModule = await admin();
-  return adminModule.startTenant(slug);
+  const result = await deliverKeysAtStart(slug); // replace any link-only child
+  if (!result.ok) throw new Error(result.error);
+  return result;
 }
 
 /** Is this number already linked to a different account? Asked before linking, not after. */

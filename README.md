@@ -3696,7 +3696,7 @@ Three rules keep the layers apart:
 
 1. **Nothing in the bot imports `platform/`.** The one hook is
    `src/services/usageEvents.js`: `llm.js` calls `recordUsage()` wherever a model
-   call succeeds, and the platform either registers a sink in the same process or
+   attempt succeeds or fails, and the platform either registers a sink in the same process or
    asks the worker for a local journal (`PLATFORM_USAGE_JOURNAL=1`).
 2. **The platform never writes a tenant file directly.** Profiles go through
    `writeTenantProfile()` (which validates), uploads through `saveUpload()` +
@@ -3717,14 +3717,18 @@ Three rules keep the layers apart:
 | `PLATFORM_TERMS_VERSION` / `PLATFORM_PRIVACY_VERSION` | `2026-01` | Consent versions, stored with the time they were accepted. |
 | `PLATFORM_TRIAL_DAYS` | `14` | Free-trial length (a plan may override it). |
 | `PLATFORM_DEV_SHOW_CODES` | off | Returns the signup/reset code in the API answer, for local setup with no mail server. Never on in production. |
-| `PLATFORM_TRUST_PROXY` | off | Believe `X-Forwarded-For` from *any* peer. Off means the header is only believed when the peer that opened the socket is loopback or private — which is the single-box deployment. |
+| `PLATFORM_TRUST_PROXY` | off | Pin the immediate proxy and which header it sets (`xff:IP` or `cf:IP`, comma-separated). In production, unset means use the socket address. See deployment below. |
+| `PLATFORM_PUBLIC_URL` | — | Public HTTPS origin used to choose cookie security and form webhook URLs. |
+| `PLATFORM_KEY_SECRET` | — | Independent, stable, random master secret (≥32 characters) for tenant AI keys. Missing/unusable ⇒ no BYOK delivery. |
 | `PLATFORM_BLOCK_DISPOSABLE` | off | Refuse disposable mail domains outright instead of flagging them. |
 | `PLATFORM_DB_DIALECT` | `sqlite` | `postgres` rewrites `?` placeholders to `$1…` and uses the Postgres DDL. |
 
 ### Run it locally
 
 ```bash
-# 1. the platform alone (its own process, its own database)
+# 1. Generate and SAVE PLATFORM_KEY_SECRET once (openssl rand -base64 48).
+# Export it from your private environment before adding any tenant keys.
+# The platform alone (its own process, its own database):
 PLATFORM_ENABLED=1 \
 PLATFORM_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")" \
 PLATFORM_DEV_SHOW_CODES=1 \
@@ -3738,6 +3742,8 @@ npm start
 # → http://localhost:3000/platform, next to /admin and the dashboard
 ```
 
+`scripts/start.js` mounts the optional HTTP handler before booting the bot.
+Managed workers do not import or initialise the control plane.
 The mounted form inherits the bot's own exposure rules: on a public bind it
 needs `DASHBOARD_TOKEN` like the rest of the dashboard (otherwise the whole web
 UI is refused, platform included). For a real customer-facing deployment run the
@@ -3745,8 +3751,8 @@ platform as its own app — `npm run platform` — which is what the diagram sho
 
 Creating an assistant from the wizard runs `createTenant` for you, so the tenant
 appears under `tenants/<slug>/` exactly as if you had run
-`node scripts/tenant.js new`. `node scripts/run-all.js` then supervises every
-worker; the platform starts and stops them through the same functions.
+`node scripts/tenant.js new`. Use **Go live** in the platform for these workers.
+The generic `run-all` supervisor skips them; it does not have their AI keys.
 
 ### What is in `platform/`
 
@@ -3794,11 +3800,9 @@ city, languages, hours, tone) → catalogue, services, FAQs, payment details →
 optional documents → behaviour (handover words, intake fields, daily cap, reply
 timing) → connect WhatsApp → test chat → go live.
 
-Every step is saved as a draft (`wizard_drafts`) **and** written into the
-tenant's `config/owner.json` through `validateProfile()` — a step that the bot
-would refuse to load fails with the validator's own message and changes nothing.
-The help text under each field comes from `_help` in `config/owner.example.json`,
-so it lives with the example config the bot already ships.
+The wizard remembers the next step (`wizard_drafts`). Only edited profile fields
+go through the validated atomic writer. Linking, learned documents, model checks
+and sandbox replies are server-attested, not editable completion flags.
 
 Documents use the existing pipeline unchanged: 5 MB ceiling, extension
 whitelist, `learn`.
@@ -3806,7 +3810,7 @@ whitelist, `learn`.
 ### Connecting WhatsApp
 
 The QR is fetched from the tenant's own process (the same `qrForTenant()` the
-admin panel uses: live `botState`, or the `qr-<slug>.png` the worker writes), is
+admin panel uses: live `botState` or the managed worker’s tenant-local QR), is
 owner-only, rate limited to 20 a minute, sent with `no-store`, and is never
 stored by the platform.
 
@@ -3889,6 +3893,115 @@ counts. A worker that is not the platform writes the same events to
   a scratch data directory, a fake transport that refuses every number except
   `900000000000`, and no web server. Nothing is sent to WhatsApp.
 
+### Bring your own AI keys and activate an assistant
+
+1. In **AI keys & model**, open a provider’s help, paste its key into the masked
+   field, then **Test saved key**. A provider has at most three active slots.
+   The first available slot is primary; backups are for continuity, not for
+   bypassing a provider’s terms or quota. Groq, Gemini and OpenRouter each have
+   a short model list. A hosted key pool (`LLM_KEY_SOURCE=platform`) is **not** offered.
+2. Choose a model and consent to its compatibility check. The check spends up
+   to **8 real calls** on your key; it sends synthetic questions and public
+   catalogue names/prices, not chat history or the whole profile. Read the
+   price, language, scope and confirmation results. **WARN** is advisory;
+   **FAIL** blocks that provider/model unless the owner explicitly accepts the
+   warning. A provider outage does not replace a previous verdict.
+3. Start **QR linking** or phone pairing. Linking alone cannot answer messages.
+   Run a **Test chat** (fake WhatsApp transport, isolated scratch DB), then
+   follow the checklist’s fix actions and choose **Go live**. Payment details
+   are required for order-taking businesses; adding a team is optional. Upload
+   documents before starting the worker, or pause it first. **Pause** keeps the
+   profile, session and keys. **Resume** rechecks readiness and trial state.
+4. Use **Settings** for conversation boundaries, intake (including conditional
+   questions and template defaults), decision team/chains, payment-proof rules,
+   agents and business details. Controls outside the plan are disabled with an
+   upgrade hint; the server checks again when saving. Changes are validated
+   together. A private profile backup and a field-level undo record keep the
+   last 20 changes; undo refuses a conflicting edit or a now-disallowed feature.
+
+The dashboard never returns an AI key. It shows the last four characters,
+health, last test, calls, tokens and classified errors. Worker journals are
+imported on dashboard detail reads. Worker usage carries a non-secret slot/version
+identifier, so even two keys ending in the same four characters do not share
+health after rotation. Older events still count toward usage. A failed key attempt and the successful
+backup attempt are separate rows, not two successful completions. Rotate or
+revoke in the dashboard to replace the running worker’s environment; removing
+its last usable chain stops it. **Revoke at the provider as well** if a key has
+been exposed. A sandbox chat or key test can spend provider quota; the usage
+rollup is chat-worker telemetry, not the provider’s billing statement.
+
+### Deployment and recovery checklist
+
+- **TLS and cookies.** Set `NODE_ENV=production` and `PLATFORM_PUBLIC_URL` to the
+  actual `https://` origin. Terminate TLS at your ingress, redirect public HTTP
+  there and block direct access to the origin and tenant ports. The configured
+  URL, not `X-Forwarded-Proto`, controls `__Host-` cookies (`Path=/`, `Secure`,
+  `SameSite=Strict`, session `HttpOnly`). Standalone and mounted startup refuse
+  plain HTTP unless you explicitly set `PLATFORM_ALLOW_HTTP=1`; this is not a
+  substitute for TLS. `npm run doctor -- platform` warns about that override.
+- **Client IP.** For a Railway/reverse proxy that appends or overwrites XFF,
+  set e.g. `PLATFORM_TRUST_PROXY=xff:10.0.0.2` with the *actual socket peer*.
+  Only the rightmost address is used. For cloudflared use `cf:127.0.0.1` (or its
+  specific container IP); trust `CF-Connecting-IP` only on that ingress. Strip
+  incoming client-supplied headers at the edge. Unlisted peers cannot select
+  their IP bucket. Legacy `1` trusts **all socket peers** for XFF: never use it
+  on a mixed or directly reachable network; doctor warns in production. Local development retains the
+  Step 0 loopback/private XFF behaviour when the setting is unset.
+- **Email.** `PLATFORM_MAILER=file` is the development default: its private
+  `outbox.jsonl` contains live codes and does **not** send email. In production
+  use `PLATFORM_MAILER=http`, `PLATFORM_MAIL_FROM`, `PLATFORM_MAIL_TOKEN` and an
+  HTTPS `PLATFORM_MAIL_URL` (defaults to `https://api.resend.com/emails`). The
+  adapter posts `{from,to:[address],subject,text}` with bearer auth, an 8-second
+  timeout and no redirects. For SMTP or another API, inject
+  `setMailer({mode, async send({to,subject,text}) { /* … */ }})`; resolve
+  `{ok:true}` only on provider acceptance, otherwise `{ok:false}` or throw.
+  Do not log codes, keys, message bodies or raw provider errors. A failed
+  provider is not silently replaced by a file outbox.
+  - Verify the sender domain and From address; publish the provider’s **SPF**
+    and **DKIM** records and check DMARC alignment with a delivered test mail.
+  - Enable provider-side bounce/complaint notifications and suppression for
+    hard bounces. Monitor temporary failures and delivery latency against the
+    10-minute code lifetime. Provider acceptance is not inbox delivery.
+  - Check sender/domain rate limits and quotas; alarm on 429/5xx, bounces and
+    sudden OTP volume. Signup is capped at 5/hour/address and 10/hour/IP;
+    code creation at 5/15 minutes/address and 20/15 minutes/IP. Do not retry
+    expired codes or bypass these limits. Leave `PLATFORM_DEV_SHOW_CODES` unset.
+- **Backups and migration.** Use persistent private storage and **one** sql.js
+  writer to `PLATFORM_DIR`. Stop old workers and the generic supervisor before
+  a v1 upgrade; take a consistent backup of the platform DB and tenant folders.
+  v2 upgrades in place, keeps users and usage, and returns legacy active tenants
+  to setup for the new gates. Re-enter legacy AI keys in the dashboard; remove
+  stale plaintext keys from `.env` and secure old backups. The worker launcher
+  ignores those slots. Never run a second platform against the same file.
+  Store `PLATFORM_KEY_SECRET` separately from snapshots in a secret manager;
+  restore the DB **and the original secret** to decrypt. Changing the master
+  string is not a rotation procedure: restore it or re-enrol the tenant keys.
+  Protect tenant `.env`, WhatsApp sessions and private profile backups too.
+  Account JSON exports never include credentials. An operator-only export
+  (`node platform/scripts/exportKeys.js SLUG NEW_FILE`) is metadata-only unless
+  **both** `--with-keys` and `PLATFORM_ALLOW_KEY_EXPORT=1` are supplied. Such a
+  file is plaintext, created at 0600; never publish it or include it in logs.
+- **Verification.** `npm run doctor -- platform` reads a DB snapshot without
+  editing it. `GET /api/health` reports only readiness codes (cached for 15 s),
+  including an unreadable envelope or an unsupported key source; `/health` is
+  liveness. Doctor warns about a production file outbox and about dev codes.
+  Test a restore and the final phone-link/mail/provider round trips on staging.
+
+### Known risks
+
+- The platform CSP still permits **`unsafe-inline`** scripts/styles. Same-origin
+  assets and text-node rendering help, but CSP is not a complete XSS defence.
+- AI keys use **AES-256-GCM** with a random nonce, a scrypt-derived master key
+  and tenant/key/version binding. This protects the keys in a **database leak**,
+  not a **server compromise**. A privileged host process can inspect memory,
+  worker environments or the master secret. It does not encrypt all business
+  data. Use a trusted host and restrict OS access; worker env isolation is not
+  a container security boundary.
+- Account verification and recovery depend on the **email provider**, its DNS
+  setup, quotas and deliverability. Outage or suppression can delay or prevent
+  a login/recovery code. A passing AI compatibility check is also a small
+  sample, not a guarantee that a live model will always behave correctly.
+
 ### Hardening from the Step 0 review
 
 The read-only review of `platform/` (Phase 7 Part 2, step 0) reproduced nine
@@ -3920,8 +4033,8 @@ pretend otherwise:
   receipts. The platform only reports the URL and whether the secrets are set.
 - **Live model billing numbers** from Groq/Gemini/OpenRouter. Both paths are
   exercised with a fake fetch that either reports `usage` or omits it.
-- **Email delivery.** There is no provider wired up: codes go to
-  `platform/data/outbox.jsonl` until `setMailer()` is given one.
+- **Mail reaching a real inbox.** Tests exercise the HTTP adapter, failures and file
+  transport offline, not sender-domain DNS, bounce events or spam filtering.
 
 ---
 

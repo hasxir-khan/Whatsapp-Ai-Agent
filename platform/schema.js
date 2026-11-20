@@ -117,6 +117,7 @@ const SQLITE = [
     estimated INTEGER NOT NULL DEFAULT 0,
     latency_ms INTEGER NOT NULL DEFAULT 0
   )`,
+  `CREATE INDEX IF NOT EXISTS usage_events_tenant_uid ON usage_events (tenant, event_uid)`,
   `CREATE INDEX IF NOT EXISTS usage_events_tenant_day ON usage_events (tenant, day)`,
   `CREATE TABLE IF NOT EXISTS platform_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,6 +144,59 @@ const SQLITE = [
     account_id TEXT NOT NULL,
     granted_at TEXT NOT NULL
   )`,
+  // A tenant's own AI keys. `secret` is an AES-256-GCM envelope, never the key;
+  // `fingerprint` is the last four characters, which is all any screen shows.
+  `CREATE TABLE IF NOT EXISTS tenant_keys (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    slot INTEGER NOT NULL,
+    key_version INTEGER NOT NULL DEFAULT 1,
+    fingerprint TEXT NOT NULL,
+    fingerprint_hash TEXT,
+    secret TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    label TEXT,
+    added_by TEXT,
+    created_at TEXT NOT NULL,
+    rotated_at TEXT,
+    revoked_at TEXT,
+    last_used_at TEXT,
+    last_tested_at TEXT,
+    test_state TEXT,
+    health TEXT NOT NULL DEFAULT 'unknown',
+    health_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS tenant_keys_slug ON tenant_keys (slug, provider, status)`,
+  // One row per compatibility run. Consent is recorded with it, because the run
+  // spends the customer's own quota.
+  `CREATE TABLE IF NOT EXISTS compatibility_runs (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL,
+    categories TEXT,
+    scenarios INTEGER NOT NULL DEFAULT 0,
+    calls INTEGER NOT NULL DEFAULT 0,
+    consent_at TEXT,
+    created_at TEXT NOT NULL,
+    detail TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS compatibility_runs_slug ON compatibility_runs (slug, created_at)`,
+  // Every settings write keeps the profile it replaced, so "undo" is a fact
+  // rather than a hope. 0700 folder, one row per write, pruned to the last 20.
+  `CREATE TABLE IF NOT EXISTS settings_undo (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL,
+    token TEXT NOT NULL,
+    before TEXT NOT NULL,
+    changed TEXT,
+    account_id TEXT,
+    created_at TEXT NOT NULL,
+    undone_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS settings_undo_slug ON settings_undo (slug, created_at)`,
 ];
 
 const POSTGRES = JSON.parse(
@@ -153,7 +207,23 @@ const POSTGRES = JSON.parse(
 );
 
 /** Bumped when a column is added so `migrate()` knows what to do. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+
+/**
+ * Columns added after the first release. `initPlatformDb` applies them one by
+ * one and ignores "duplicate column", so an old platform.db upgrades in place
+ * without losing a row.
+ */
+export const MIGRATIONS = [
+  'ALTER TABLE usage_events ADD COLUMN key_slot INTEGER',
+  'ALTER TABLE usage_events ADD COLUMN key_last4 TEXT',
+  'ALTER TABLE usage_events ADD COLUMN key_ref TEXT',
+  'ALTER TABLE usage_events ADD COLUMN error_category TEXT',
+  'ALTER TABLE tenants ADD COLUMN test_chat_at TEXT',
+  'ALTER TABLE tenants ADD COLUMN key_source TEXT',
+  'ALTER TABLE tenants ADD COLUMN model TEXT',
+  'ALTER TABLE tenants ADD COLUMN model_override INTEGER NOT NULL DEFAULT 0',
+];
 
 export function schemaStatements(dialect = 'sqlite') {
   return dialect === 'postgres' ? POSTGRES : SQLITE;
@@ -189,10 +259,10 @@ export const PLAN_SEEDS = [
     features: [
       'liveInbox', 'bookingAgent', 'followUpAgent', 'pdfInvoices', 'growthApproval',
       'analystAgent', 'closerAgent', 'reviewAgent', 'visualSearch', 'selfHealing',
-      'multiAgent', 'marketingAgents', 'businessBrain', 'reasoning', 'sourceLinks',
+      'multiAgent', 'conversationControl', 'marketingAgents', 'businessBrain', 'reasoning', 'sourceLinks',
       'reactivationAgent', 'contentAgent', 'mcpTools', 'privacyTools',
     ],
   },
 ];
 
-export default { schemaStatements, SCHEMA_VERSION, PLAN_SEEDS };
+export default { schemaStatements, SCHEMA_VERSION, MIGRATIONS, PLAN_SEEDS };

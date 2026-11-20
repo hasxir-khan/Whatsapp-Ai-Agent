@@ -931,7 +931,7 @@ test('a paused tenant cannot go live, and a plan change brings it back', async (
   assert.equal(blocked.body.error, 'paused');
 
   plans.assignPlan({ slug, planId: 'starter', accountId: auth.accountId });
-  assert.equal(provisioning.getTenant(slug).status, 'active');
+  assert.equal(provisioning.getTenant(slug).status, 'provisioned', 'upgrade unlocks onboarding; it cannot bypass the live checklist');
 });
 
 // ── 9. usage ───────────────────────────────────────────────

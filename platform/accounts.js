@@ -20,6 +20,7 @@ import {
 } from './crypto.js';
 import { ensureOpen, get, all, run } from './db.js';
 import { OTP, CONSENT, platformSecret, trialDays } from './env.js';
+import { recordAudit } from './audit.js';
 import { rateLimit } from '../src/services/adminPanel.js';
 import { sendMail, showCodesInResponse } from './mailer.js';
 
@@ -242,7 +243,9 @@ export async function signupStart({ email, terms = false, privacy = false, ip = 
     // Do not confirm or deny: the answer is the same as "we sent a code", and
     // the mail says "you already have an account".
     const otp = createOtp({ email: address, purpose: 'login', accountId: existing.id, now, ip });
-    if (otp.ok) await deliverCode({ email: address, purpose: 'login', code: otp.code, expiresAt: otp.expiresAt });
+    if (!otp.ok) return { ok: false, status: 429, error: otp.reason, retryAfter: otp.retryAfter };
+    const sent = await deliverCode({ email: address, purpose: 'login', code: otp.code, expiresAt: otp.expiresAt });
+    if (!sent.ok) return { ok: false, status: 503, error: 'email_delivery_unavailable' };
     return { ok: true, existing: true, ...codeEnvelope(otp) };
   }
 
@@ -263,6 +266,7 @@ export async function signupStart({ email, terms = false, privacy = false, ip = 
   const otp = createOtp({ email: address, purpose: 'signup', accountId: account.id, now, ip });
   if (!otp.ok) return { ok: false, status: 429, error: otp.reason, retryAfter: otp.retryAfter };
   const delivery = await deliverCode({ email: address, purpose: 'signup', code: otp.code, expiresAt: otp.expiresAt });
+  if (!delivery.ok) return { ok: false, status: 503, error: 'email_delivery_unavailable' };
   return {
     ok: true,
     email: address,
@@ -352,12 +356,15 @@ export async function passwordResetStart({ email, ip = null, now = Date.now() })
   const account = findByEmail(address);
   if (!account || account.status !== 'active') {
     // Always the same answer: an attacker learns nothing about who is registered.
-    return { ok: true, sent: true };
+    return { ok: true, requested: true };
   }
   const otp = createOtp({ email: address, purpose: 'reset', accountId: account.id, now, ip });
   if (!otp.ok) return { ok: false, status: 429, error: otp.reason, retryAfter: otp.retryAfter };
   const delivery = await deliverCode({ email: address, purpose: 'reset', code: otp.code, expiresAt: otp.expiresAt });
-  return { ok: true, sent: true, delivery: delivery.mode, ...codeEnvelope(otp) };
+  // Do not turn a mail outage into an account-existence oracle. Externally
+  // acknowledge a request, not delivery; operators see failures in the audit.
+  if (!delivery.ok) recordAudit({ action: 'reset_email_failed', accountId: account.id, ok: false });
+  return { ok: true, requested: true, ...(delivery.ok ? codeEnvelope(otp) : {}) };
 }
 
 export function passwordResetComplete({ email, code, password, now = Date.now() }) {
@@ -457,6 +464,7 @@ export function scrubAccount(accountId, { now = Date.now() } = {}) {
     [anonymised, anonymised, stamp, accountId],
   );
   run('UPDATE sessions SET revoked_at = ? WHERE account_id = ? AND revoked_at IS NULL', [stamp, accountId]);
+  run('DELETE FROM memberships WHERE account_id = ?', [accountId]);
   run('DELETE FROM otp_codes WHERE account_id = ? OR email = ?', [accountId, account.email_norm]);
   run('DELETE FROM wizard_drafts WHERE slug IN (SELECT slug FROM tenants WHERE account_id = ?)', [accountId]);
   return { ok: true, deleted_at: stamp };

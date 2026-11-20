@@ -1,10 +1,8 @@
 // platform/mailer.js
 // How a one-time code leaves the platform.
 //
-// There is no mail provider wired up, and pretending otherwise would be worse
-// than saying so: the default transport writes the message to a 0700 file under
-// platform/data/outbox and reports `mode: 'file'`. A real deployment plugs its
-// provider in through `setMailer()`. Tests read the outbox file.
+// The default file transport is for development. Production can select the
+// HTTPS JSON adapter below, or inject an SMTP adapter with the same contract.
 //
 // The code itself is never logged, and never written anywhere a bot can read.
 
@@ -35,11 +33,32 @@ export const fileMailer = {
   },
 };
 
+/** Resend-compatible HTTPS API. Destinations and credentials are host
+ * configuration, never request parameters; no redirects, no response bodies
+ * in logs or responses, and no silent fallback to file on provider errors. */
+export const httpMailer = {
+  mode: 'http',
+  async send({ to, subject, text }, fetchImpl = globalThis.fetch) {
+    const url = new URL(process.env.PLATFORM_MAIL_URL || 'https://api.resend.com/emails');
+    const token = process.env.PLATFORM_MAIL_TOKEN, from = process.env.PLATFORM_MAIL_FROM;
+    if (url.protocol !== 'https:' || !token || !from) return { ok: false };
+    const response = await fetchImpl(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000),
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ from, to: [to], subject, text }) });
+    return { ok: response.ok };
+  },
+};
+export function activeMailer() {
+  if (transport) return transport;
+  const mode = process.env.PLATFORM_MAILER || 'file';
+  return mode === 'http' ? httpMailer : mode === 'file' ? fileMailer : { mode: 'invalid', send: async () => ({ ok: false }) };
+}
+
 export async function sendMail(message) {
-  const chosen = transport || fileMailer;
+  const chosen = activeMailer();
   try {
     const res = await chosen.send(message);
-    return { ok: res?.ok !== false, mode: res?.mode || chosen.mode || 'custom' };
+    return { ok: res?.ok === true, mode: chosen.mode || 'custom' };
   } catch {
     // A dead mail server must not turn a signup into a 500 with a stack trace.
     return { ok: false, mode: chosen.mode || 'custom' };

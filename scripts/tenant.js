@@ -27,6 +27,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { buildProfileFromTemplate, isTemplate, listTemplates, TEMPLATE_IDS } from '../src/services/templates.js';
 import { runSetup } from './wizard.js';
 import { templateAgents, MAX_AGENTS, validateAgent } from '../src/services/agents.js';
+import { childBase, emptyProviderSlots, helperBase, platformManaged } from '../src/services/workerEnv.js';
 import { validSlug as sharedValidSlug, validPort, resolveInside, ensurePrivateDir, writePrivateFile, tightenFile } from '../src/services/validation.js';
 
 // Where the users live: whatever folder you ran the command from.
@@ -184,6 +185,7 @@ export function createTenant(opts = {}) {
     port,
     timezone,
     enabled: true,
+    ...(opts.platformManaged ? { platformManaged: true } : {}),
     createdAt: new Date().toISOString(),
   };
   writePrivateFile(path.join(dir, 'tenant.json'), `${JSON.stringify(tenant, null, 2)}\n`);
@@ -438,12 +440,13 @@ function cmdShow(slug, flags) {
   console.log(`  Gemini key      : ${env.GEMINI_API_KEY ? c.green(mask(env.GEMINI_API_KEY)) : c.yellow('missing')}`);
 
   if (flags.start) {
+    if (platformManaged(dir, t)) die('Start this managed assistant from the platform dashboard.');
     console.log(`\nStarting ${t.name}… scan the QR in the terminal (or open /qr.png on port ${t.port})\n`);
     const child = spawn(process.execPath, [path.join(REPO, 'src', 'index.js')], {
       cwd: REPO,
       stdio: 'inherit',
       env: {
-        ...process.env,
+        ...childBase(),
         TENANT: slug,
         ENV_FILE: path.join(dir, '.env'),
         CONFIG_DIR: path.join(dir, 'config'),
@@ -479,6 +482,7 @@ function cmdKeys(slug, pairs = []) {
     if (idx < 1) die(`Expected KEY=VALUE, got "${pair}"`);
     const key = pair.slice(0, idx).trim();
     const value = pair.slice(idx + 1).trim();
+    if (platformManaged(tenantDir(slug), t) && key in emptyProviderSlots()) die('Manage AI keys from the platform dashboard.');
     if (!/^[A-Z0-9_]+$/.test(key)) die(`Invalid key name "${key}"`);
     writeEnvValue(slug, key, value);
     console.log(`${c.green('✔')} ${slug}: ${key} set (${mask(value)})`);
@@ -533,7 +537,7 @@ function cmdLearn(slug, target, flags) {
     cwd: REPO,
     stdio: 'inherit',
     env: {
-      ...process.env,
+      ...helperBase(dir, t),
       TENANT: slug,
       ENV_FILE: path.join(dir, '.env'),
       CONFIG_DIR: path.join(dir, 'config'),
@@ -558,7 +562,7 @@ function cmdIndexImages(slug, flags) {
     cwd: REPO,
     stdio: 'inherit',
     env: {
-      ...process.env,
+      ...helperBase(dir, t),
       TENANT: slug,
       TENANTS_DIR: TENANTS,
       ENV_FILE: path.join(dir, '.env'),

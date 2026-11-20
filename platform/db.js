@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import initSqlJs from 'sql.js';
 import { platformDbFile, ensurePlatformDir } from './env.js';
-import { schemaStatements } from './schema.js';
+import { schemaStatements, MIGRATIONS, PLAN_SEEDS, SCHEMA_VERSION } from './schema.js';
 
 let SQL = null;
 let db = null;
@@ -43,6 +43,20 @@ export function currentFile() {
   return file;
 }
 
+/** Operator tools inspect a snapshot without creating, migrating or periodically
+ * flushing the live writer's file. The callback must complete synchronously. */
+export async function readSnapshot(fn, target = platformDbFile()) {
+  const engine = SQL || await initSqlJs();
+  const copy = new engine.Database(fs.readFileSync(target));
+  try {
+    return fn((query, params = []) => {
+      const stmt = copy.prepare(query), rows = [];
+      try { stmt.bind(params); while (stmt.step()) rows.push(stmt.getAsObject()); return rows; }
+      finally { stmt.free(); }
+    });
+  } finally { copy.close(); }
+}
+
 /** Open (or create) the platform database and apply the schema. */
 export async function initPlatformDb({ file: target = platformDbFile() } = {}) {
   if (db && file === target) return db;
@@ -50,25 +64,34 @@ export async function initPlatformDb({ file: target = platformDbFile() } = {}) {
   ensurePlatformDir();
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   SQL = SQL || (await initSqlJs());
+  if (db && file === target) return db; // concurrent first request during WASM load
 
   if (fs.existsSync(target)) {
-    try {
-      db = new SQL.Database(fs.readFileSync(target));
-    } catch {
-      // A corrupt platform database must not look like an empty platform, but
-      // refusing to boot is worse: start clean and let the audit trail show it.
-      db = new SQL.Database();
-    }
+    db = new SQL.Database(fs.readFileSync(target));
   } else {
     db = new SQL.Database();
   }
   file = target;
-  for (const statement of schemaStatements(dialect())) {
-    try {
-      db.run(statement);
-    } catch {
-      /* present already, or a dialect that does not need it */
+  const version = Number(db.exec('PRAGMA user_version')[0]?.values[0][0]) || 0;
+  db.run('BEGIN');
+  try {
+    for (const statement of schemaStatements(dialect())) db.run(statement);
+    if (version < 2) {
+      for (const statement of MIGRATIONS) {
+        try { db.run(statement); }
+        catch (err) { if (!/duplicate column name/i.test(err.message)) throw err; }
+      }
+      // Upgrade the bundled Growth seed, not an operator's customised plan.
+      const growth = PLAN_SEEDS.find((p) => p.id === 'growth').features;
+      db.run("UPDATE plans SET features = ? WHERE id = 'growth' AND features = ?",
+        [JSON.stringify(growth), JSON.stringify(growth.filter((f) => f !== 'conversationControl'))]);
+      // Pre-BYOK active rows cannot attest a key, compatibility run or sandbox turn.
+      db.run("UPDATE tenants SET status = 'provisioned' WHERE status = 'active' AND test_chat_at IS NULL");
+      db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     }
+    db.run('COMMIT');
+  } catch (err) {
+    db.run('ROLLBACK'); db.close(); db = file = null; throw err;
   }
   save(true);
   if (!saveTimer) {
@@ -94,13 +117,14 @@ function save(force = false) {
   if (!db || !file) return false;
   try {
     const bytes = Buffer.from(db.export());
-    fs.writeFileSync(file, bytes, { mode: 0o600 });
+    fs.writeFileSync(file + '.tmp', bytes, { mode: 0o600 });
+    fs.renameSync(file + '.tmp', file);
     try {
       fs.chmodSync(file, 0o600);
     } catch {
       /* best effort */
     }
-    return !force || true;
+    return true;
   } catch {
     return false;
   }
@@ -111,7 +135,7 @@ export function flush() {
 }
 
 export function closePlatformDb() {
-  if (db) save(true);
+  if (db) { save(true); db.close(); }
   db = null;
   file = null;
   return true;

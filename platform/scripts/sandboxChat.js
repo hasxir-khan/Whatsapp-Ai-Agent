@@ -10,6 +10,8 @@
 // conversation control settings are the tenant's real ones.
 
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const SANDBOX_NUMBER = process.env.SANDBOX_NUMBER || '900000000000';
 
@@ -72,23 +74,20 @@ async function main() {
     return;
   }
 
-  // Each sandbox run starts from an empty scratch directory, so a previous test
-  // cannot answer this one.
-  for (const dir of [process.env.DATA_DIR, process.env.TMP_DIR, process.env.SESSION_FOLDER]) {
-    if (!dir) continue;
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    } catch {
-      /* best effort */
-    }
+  // Running this script manually must never erase or open an actual tenant DB.
+  const root = process.env.SANDBOX_ROOT || '';
+  if (process.env.SANDBOX !== '1' || path.dirname(root) !== os.tmpdir() || !/^wa-sandbox-[a-f0-9-]{36}$/.test(path.basename(root))) throw new Error('not_a_sandbox');
+  for (const [key, leaf] of [['DATA_DIR','data'],['SESSION_FOLDER','sessions'],['TMP_DIR','tmp']]) {
+    const dir = path.join(root, leaf);
+    if (process.env[key] !== dir) throw new Error('not_a_sandbox');
+    fs.mkdirSync(dir, { mode: 0o700 });
   }
 
   const db = await import('../../src/utils/db.js');
   await db.initDB();
-  const { handleIncoming } = await import('../../src/handlers/messageHandler.js');
+  const { handleIncoming, drainBatches } = await import('../../src/handlers/messageHandler.js');
 
-  const number = String(input.number || SANDBOX_NUMBER).replace(/\D/g, '');
+  const number = SANDBOX_NUMBER;
   const transport = sandboxTransport(number);
   await handleIncoming(transport, {
     id: `SANDBOX-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -100,13 +99,13 @@ async function main() {
   });
 
   // Give fire-and-forget sends (typing indicators, deferred replies) a moment.
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  await drainBatches({ timeoutMs: 40000 });
   process.stdout.write(`${JSON.stringify({ ok: true, replies: transport.sent, sandbox: true, number })}\n`);
   // The process is a scratch one; leave without flushing a database nobody owns.
   process.exit(0);
 }
 
-main().catch((err) => {
-  process.stdout.write(`${JSON.stringify({ ok: false, error: 'sandbox_failed', detail: String(err?.message || err).slice(0, 200) })}\n`);
+main().catch(() => {
+  process.stdout.write(`${JSON.stringify({ ok: false, error: 'sandbox_failed' })}\n`);
   process.exit(1);
 });

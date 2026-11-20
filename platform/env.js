@@ -41,7 +41,7 @@ export function platformSecret() {
 
 /** On but unusable: a clear message beats an open door. */
 export function platformMisconfigured() {
-  return platformEnabled() && !platformSecret();
+  return platformEnabled() && (!platformSecret() || !!transportProblem());
 }
 
 export function platformPort() {
@@ -51,6 +51,16 @@ export function platformPort() {
 /** Public origin used in links and Cloud API webhook URLs. */
 export function platformPublicUrl() {
   return String(process.env.PLATFORM_PUBLIC_URL || '').replace(/\/$/, '');
+}
+
+/** TLS can terminate at the host proxy. Trust the operator's public URL, not
+ * the request Host or forwarded protocol supplied by an Internet client. */
+export function secureOrigin() {
+  try { return new URL(platformPublicUrl()).protocol === 'https:'; } catch { return false; }
+}
+export function transportProblem() {
+  if (process.env.NODE_ENV?.toLowerCase() !== 'production' || secureOrigin() || process.env.PLATFORM_ALLOW_HTTP === '1') return null;
+  return 'Production requires an https PLATFORM_PUBLIC_URL. Only set PLATFORM_ALLOW_HTTP=1 for an explicitly insecure deployment.';
 }
 
 export function sessionMinutes() {

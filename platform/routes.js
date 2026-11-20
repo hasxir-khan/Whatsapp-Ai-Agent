@@ -21,6 +21,7 @@ import { rateLimit } from '../src/services/adminPanel.js';
 import {
   isPlatformPath, sendJson, sendHtml, sendText, redirect, readJsonBody, readRawBody, clientIp, userAgent,
 } from './http.js';
+import { diagnostics } from './diagnostics.js';
 import * as views from './views.js';
 import * as accounts from './accounts.js';
 import session from './session.js';
@@ -31,6 +32,11 @@ import { linkStatus, qrFor, requestPairingCode, pairingCode, disconnect } from '
 import { summary as usageSummary, ingestJournal } from './usage.js';
 import { notificationsFor, markNotificationsRead, recentAudit, recordAudit } from './audit.js';
 import { claimTrial, exportAccount, exportTokenValid, scrubAccount, getAccount } from './accounts.js';
+import * as keys from './keys.js';
+import { readSettings, applySettings, undoSettings } from './settings.js';
+import {
+  onboardingState, checklist, connectionCard, pauseTenant,
+} from './onboarding.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -39,6 +45,7 @@ const TYPES = { '.js': 'application/javascript; charset=utf-8', '.css': 'text/cs
 const AUTH_PAGES = new Set(['/platform/login', '/platform/signup', '/platform/verify', '/platform/reset']);
 
 let lastExpiryCheck = 0;
+let readiness = null;
 
 /** Trial expiry runs at most once a minute per process; it is also runnable by cron. */
 async function maybeExpireTrials(now = Date.now()) {
@@ -120,6 +127,12 @@ export async function handlePlatformRoute(req, res, url) {
   const method = String(req.method || 'GET').toUpperCase();
   const ip = clientIp(req);
 
+  if (pathname === '/api/health' && method === 'GET') {
+    if (platformMisconfigured()) return sendJson(res, 503, diagnostics()), true;
+    await ensurePlatformDb();
+    if (!readiness || Date.now() - readiness.at > 15000) readiness = { at: Date.now(), value: diagnostics(all) };
+    return sendJson(res, readiness.value.ok ? 200 : 503, readiness.value), true;
+  }
   if (platformMisconfigured()) {
     if (isApi) return sendJson(res, 503, { error: 'platform_not_configured' }), true;
     return sendHtml(res, 503, views.misconfiguredPage()), true;
@@ -151,7 +164,7 @@ export async function handlePlatformRoute(req, res, url) {
     }
     if (pathname.startsWith('/platform/') && TYPES[path.extname(pathname)]) {
       const name = path.basename(pathname);
-      if (['app.js', 'app.css', 'auth.js'].includes(name)) return serveStatic(res, path.join(PUBLIC, name)), true;
+      if (['app.js', 'controls.js', 'app.css', 'auth.js'].includes(name)) return serveStatic(res, path.join(PUBLIC, name)), true;
     }
     return sendHtml(res, 404, views.notFoundPage()), true;
   }
@@ -284,8 +297,9 @@ export async function handlePlatformRoute(req, res, url) {
         message: 'Export your data first — deletion removes the assistant folders too.',
       }), true;
     }
-    for (const tenant of tenantsForAccount(account.id)) {
-      await destroyTenant(tenant.slug, { accountId: account.id, ip });
+    for (const tenant of tenantsForAccount(account.id).filter((t) => t.account_id === account.id)) {
+      const deleted = await destroyTenant(tenant.slug, { accountId: account.id, ip });
+      if (!deleted.ok) return sendJson(res, 503, deleted), true;
     }
     scrubAccount(account.id);
     recordAudit({ action: 'account_deleted', accountId: account.id, ip });
@@ -365,6 +379,14 @@ export async function handlePlatformRoute(req, res, url) {
     const membership = tenantForAccount(account.id, slug);
     if (!membership) return sendJson(res, 404, { error: 'not_found' }), true;
     const owner = membership.member_role === 'owner';
+    // A queued request can outlive a role change or tenant deletion. Check
+    // again inside the per-worker lock, immediately before the mutation.
+    const applyOwnerChange = (change) => keys.applyToWorker(slug, () => {
+      const current = tenantForAccount(account.id, slug);
+      if (!current) return { ok: false, status: 404, error: 'not_found' };
+      if (current.member_role !== 'owner') return { ok: false, status: 403, error: 'owner_only' };
+      return change();
+    });
 
     if (rest === '' && method === 'GET') {
       const state = wizardState(slug, account.id);
@@ -376,6 +398,7 @@ export async function handlePlatformRoute(req, res, url) {
       }
       return sendJson(res, 200, {
         ...state,
+        ...onboardingState(slug),
         usage: usageSummary(slug),
         plans: listPlans().map((p) => ({ id: p.id, name: p.name, limits: p.limits })),
         entitlements: planForTenant(slug),
@@ -409,7 +432,9 @@ export async function handlePlatformRoute(req, res, url) {
     if (wizardMatch && method === 'POST') {
       const body = await readJsonBody(req);
       if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
-      const result = saveStep(slug, account.id, { step: wizardMatch[1], patch: body.body.patch || {} });
+      const save = () => saveStep(slug, account.id, { step: wizardMatch[1], patch: body.body.patch || {} });
+      const result = Number(wizardMatch[1]) <= 5 && Object.keys(body.body.patch || {}).length
+        ? await applyOwnerChange(save) : save();
       return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
     }
 
@@ -425,6 +450,7 @@ export async function handlePlatformRoute(req, res, url) {
     }
 
     if (rest === '/test-chat' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
       const limitedChat = rateLimit(`platform-testchat:${account.id}:${slug}`, { max: 30, windowMs: 60 * 60000 });
       if (!limitedChat.ok) return sendJson(res, 429, { error: 'too_many_requests', retryAfter: limitedChat.retryAfter }), true;
       const body = await readJsonBody(req);
@@ -434,8 +460,165 @@ export async function handlePlatformRoute(req, res, url) {
     }
 
     if (rest === '/go-live' && method === 'POST') {
+      // The checklist is the gate: a half-configured assistant must never start
+      // answering real customers because a button was pressed.
       const result = await goLive(slug, account.id, { ip });
       return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+    }
+
+    if (rest === '/onboarding' && method === 'GET') {
+      const result = onboardingState(slug, account.id);
+      return sendJson(res, result.ok ? 200 : result.status || 404, result), true;
+    }
+
+    if (rest === '/checklist' && method === 'GET') {
+      return sendJson(res, 200, checklist(slug)), true;
+    }
+
+    if (rest === '/connection' && method === 'GET') {
+      const result = connectionCard(slug);
+      return sendJson(res, result.ok ? 200 : 404, result), true;
+    }
+
+    if (rest === '/pause' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+      const result = await pauseTenant(slug, account.id, { reason: body.body.reason || 'owner', ip });
+      return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+    }
+
+    if (rest === '/resume' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      const result = await goLive(slug, account.id, { resume: true, ip });
+      return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+    }
+
+    // ── keys ────────────────────────────────────────────────
+    if (rest === '/keys' && method === 'GET') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      return sendJson(res, 200, keys.keyScreen(slug)), true;
+    }
+
+    if (rest === '/keys' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      const limitedKeys = rateLimit(`platform-key-add:${account.id}:${slug}`, { max: 10, windowMs: 60 * 60000 });
+      if (!limitedKeys.ok) return sendJson(res, 429, { error: 'too_many_requests', retryAfter: limitedKeys.retryAfter }), true;
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+      const result = await applyOwnerChange(() => keys.addKey({
+        slug,
+        accountId: account.id,
+        provider: body.body.provider,
+        key: body.body.key,
+        ip,
+      }));
+      return sendJson(res, result.ok ? 201 : result.status || 400, result), true;
+    }
+
+    if (rest === '/keys/test' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+      const result = await keys.testKey({
+        slug, accountId: account.id, provider: body.body.provider, key: body.body.key,
+      });
+      return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+    }
+
+    if (rest === '/keys/source' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+      const result = await applyOwnerChange(() => keys.setKeySource(slug, body.body.source, { accountId: account.id, ip }));
+      return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+    }
+
+    const keyRoute = rest.match(/^\/keys\/([A-Za-z0-9_-]{4,40})\/(test|revoke|rotate)$/);
+    if (keyRoute && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      const [, keyId, action] = keyRoute;
+      if (action === 'test') {
+        const result = await keys.testKey({ slug, accountId: account.id, keyId });
+        return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+      }
+      if (action === 'revoke') {
+        const result = await applyOwnerChange(() => keys.revokeKey({ slug, keyId, accountId: account.id, ip }));
+        return sendJson(res, result.ok ? 200 : result.status || 404, result), true;
+      }
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+      const result = await applyOwnerChange(() => keys.replaceKey({ slug, keyId, key: body.body.key, accountId: account.id, ip }));
+      return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+    }
+
+    if (rest === '/model' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+      const result = await applyOwnerChange(() => keys.setModel({
+        slug,
+        provider: body.body.provider,
+        model: body.body.model,
+        override: body.body.override === true,
+        accountId: account.id,
+        ip,
+      }));
+      return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+    }
+
+    if (rest === '/compatibility' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      const limitedCompat = rateLimit(`platform-compat:${account.id}:${slug}`, { max: 3, windowMs: 60 * 60000 });
+      if (!limitedCompat.ok) return sendJson(res, 429, { error: 'too_many_requests', retryAfter: limitedCompat.retryAfter }), true;
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+      let result = await keys.runCompatibility({
+        slug,
+        accountId: account.id,
+        consent: body.body.consent === true,
+        provider: body.body.provider || null,
+        model: body.body.model || null,
+        ip,
+      });
+      if (result.ok && result.blocked) result = await keys.applyToWorker(slug, () => result);
+      return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+    }
+
+    // ── settings ────────────────────────────────────────────
+    if (rest === '/settings' && method === 'GET') {
+      return sendJson(res, 200, readSettings(slug)), true;
+    }
+
+    if (rest === '/settings' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      const limitedSettings = rateLimit(`platform-settings:${account.id}:${slug}`, { max: 60, windowMs: 10 * 60000 });
+      if (!limitedSettings.ok) return sendJson(res, 429, { error: 'too_many_requests', retryAfter: limitedSettings.retryAfter }), true;
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+      const result = await applyOwnerChange(() => applySettings({
+        slug, accountId: account.id, patch: body.body.patch || {}, ip,
+      }));
+      return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+    }
+
+    if (rest === '/settings/undo' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+      const result = await applyOwnerChange(() => undoSettings({ slug, accountId: account.id, token: body.body.token || null, ip }));
+      return sendJson(res, result.ok ? 200 : result.status || 400, result), true;
+    }
+
+    if (rest === '/connect/start' && method === 'POST') {
+      if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
+      if (!rateLimit(`platform-link:${slug}`, { max: 5, windowMs: 60000 }).ok) return sendJson(res, 429, { error: 'too_many_requests' }), true;
+      const result = await keys.withWorker(slug, async () => {
+        const t = tenantForAccount(account.id, slug);
+        if (t?.member_role !== 'owner' || t.status !== 'provisioned') return { ok: false, error: 'not_ready' };
+        return keys.deliverKeysAtStart(slug, { start: true, linkOnly: true });
+      });
+      return sendJson(res, result.ok ? 200 : 409, result), true;
     }
 
     if (rest === '/status' && method === 'GET') {
@@ -475,7 +658,7 @@ export async function handlePlatformRoute(req, res, url) {
       }
       const body = await readJsonBody(req);
       if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
-      const result = assignPlan({ slug, planId: body.body.planId, accountId: account.id, ip });
+      const result = await applyOwnerChange(() => assignPlan({ slug, planId: body.body.planId, accountId: account.id, ip }));
       return sendJson(res, result.ok ? 200 : 400, result), true;
     }
 

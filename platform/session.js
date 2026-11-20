@@ -15,7 +15,7 @@
 import { hmacWith, safeEqual, csrfOk as adminCsrfOk } from '../src/services/adminPanel.js';
 import { randomId } from './crypto.js';
 import { get, run } from './db.js';
-import { platformSecret, sessionMinutes } from './env.js';
+import { platformSecret, sessionMinutes, secureOrigin } from './env.js';
 
 export const COOKIE = 'wa_platform';
 export const CSRF_COOKIE = 'wa_platform_csrf';
@@ -41,8 +41,10 @@ export function signatureValid(parsed) {
   return safeEqual(expected, parsed.signature);
 }
 
-function cookieAttributes() {
-  return ['Path=/', 'HttpOnly', 'SameSite=Strict'];
+function cookieName(base) { return secureOrigin() ? `__Host-${base}` : base; }
+function cookieLine(base, value, age) {
+  return `${cookieName(base)}=${encodeURIComponent(value)}; Path=/; SameSite=Strict; Max-Age=${age}` +
+    (base === COOKIE ? '; HttpOnly' : '') + (secureOrigin() ? '; Secure' : '');
 }
 
 /** Issue a session for an account: database row + cookies, nothing in a JWT. */
@@ -59,25 +61,21 @@ export function issueSession(accountId, { ip = null, userAgent = null, now = Dat
     ip ? String(ip).slice(0, 60) : null,
     userAgent ? String(userAgent).slice(0, 200) : null,
   ]);
-  const cookie = [`${COOKIE}=${encodeURIComponent(issueCookieValue(sessionId, expiresAt))}`, ...cookieAttributes(), `Max-Age=${minutes * 60}`];
-  const csrfCookie = [`${CSRF_COOKIE}=${encodeURIComponent(csrf)}`, 'Path=/', 'SameSite=Strict', `Max-Age=${minutes * 60}`];
-  return { sessionId, csrf, expiresAt, cookies: [cookie.join('; '), csrfCookie.join('; ')] };
+  return { sessionId, csrf, expiresAt, cookies: [cookieLine(COOKIE, issueCookieValue(sessionId, expiresAt), minutes * 60),
+    cookieLine(CSRF_COOKIE, csrf, minutes * 60)] };
 }
 
 export function clearCookies() {
-  return [
-    `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
-    `${CSRF_COOKIE}=; Path=/; SameSite=Strict; Max-Age=0`,
-  ];
+  return [cookieLine(COOKIE, '', 0), cookieLine(CSRF_COOKIE, '', 0)];
 }
 
 /** Cookie parsing lives in adminPanel; this only adds the platform's names. */
 export function cookies(req) {
-  const out = {};
+  const out = Object.create(null);
   for (const part of String(req?.headers?.cookie || '').split(';')) {
     const idx = part.indexOf('=');
     if (idx < 1) continue;
-    out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+    try { out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim()); } catch { /* ignore invalid cookie */ }
   }
   return out;
 }
@@ -88,7 +86,7 @@ export function cookies(req) {
  */
 export function readSession(req, { now = Date.now() } = {}) {
   const jar = cookies(req);
-  const raw = jar[COOKIE];
+  const raw = jar[cookieName(COOKIE)];
   if (!raw) return { ok: false, reason: 'no_cookie' };
   const parsed = parseCookieValue(raw);
   if (!parsed || !signatureValid(parsed)) return { ok: false, reason: 'bad_signature' };
@@ -98,7 +96,7 @@ export function readSession(req, { now = Date.now() } = {}) {
   if (!row || row.revoked_at) return { ok: false, reason: 'revoked' };
   if (Date.parse(row.expires_at) <= Number(now)) return { ok: false, reason: 'expired' };
 
-  return { ok: true, accountId: row.account_id, sessionId: row.id, csrf: jar[CSRF_COOKIE] || '' };
+  return { ok: true, accountId: row.account_id, sessionId: row.id, csrf: jar[cookieName(CSRF_COOKIE)] || '' };
 }
 
 /** Mutations: header must match the CSRF cookie, or the request must be same-origin. */

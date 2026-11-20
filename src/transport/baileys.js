@@ -194,10 +194,10 @@ export class BaileysTransport extends Transport {
   }
 
   /** Build the socket exactly as index.js always did. */
-  async connect() {
+  async connect({ load = loadBaileys } = {}) {
     setStatus(botState.connectedAt ? 'reconnecting' : 'connecting');
 
-    const baileys = await loadBaileys();
+    const baileys = await load();
     const { state, saveCreds } = await baileys.useMultiFileAuthState(config.paths.sessions);
 
     let version;
@@ -214,7 +214,7 @@ export class BaileysTransport extends Transport {
 
     // Missed-call rescue: when nobody picks up within CALL_FALLBACK_SECONDS,
     // the assistant starts the conversation in chat instead.
-    if (config.calls.enabled) registerCalls(sock);
+    if (config.calls.enabled && process.env.TENANT_WORKER_MODE !== 'link') registerCalls(sock);
 
     // ── pairing code (nicer than a QR on a headless host) ────
     if (!state.creds.registered && config.session.pairingNumber) {
@@ -296,6 +296,8 @@ export class BaileysTransport extends Transport {
         this.reconnectTimer.unref?.();
       }
     });
+
+    if (process.env.TENANT_WORKER_MODE === 'link') return sock;
 
     // ── incoming messages ────────────────────────────────────
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
@@ -393,6 +395,7 @@ export class BaileysTransport extends Transport {
 
   // ── sending ───────────────────────────────────────────────
   async send(jid, payload = {}) {
+    if (process.env.TENANT_WORKER_MODE === 'link') throw new Error('link_only_worker');
     if (!this.sock) throw new Error('baileys: not connected');
     const sent = await this.sock.sendMessage(jid, payload);
     // Remember the id so `messages.update` can be matched to a recipient and a

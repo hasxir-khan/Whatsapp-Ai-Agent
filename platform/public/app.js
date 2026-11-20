@@ -5,12 +5,26 @@
 // renders the answer. No framework, no bundler, no external script — the page
 // has to work on a phone, on a cheap host, with nothing installed.
 
+import { tenantControls } from './controls.js';
+
 (function () {
   'use strict';
 
   var app = document.getElementById('app');
   var who = document.getElementById('who');
   var state = { me: null, plans: [], slug: null, tab: 'setup', chat: [], poll: null };
+
+  function navigate(tab, step) {
+    state.tab = tab;
+    if (step && tab === 'setup') state.detail.step = step;
+    render();
+    document.getElementById('tenant-controls')?.scrollIntoView({ block: 'start' });
+  }
+  const controls = tenantControls({ el, call, errText, say, navigate, refresh: async function (d, text, bad) {
+    if (state.slug !== d.tenant.slug) return;
+    await loadTenant();
+    if (state.slug === d.tenant.slug) { render(); say(text, bad ? 'bad' : 'ok'); }
+  } });
 
   // ── tiny helpers ──────────────────────────────────────────
   function el(tag, attrs, children) {
@@ -33,13 +47,13 @@
   }
 
   function csrf() {
-    return (document.cookie.match(/(?:^|;\s*)wa_platform_csrf=([^;]*)/) || [])[1] || '';
+    return (document.cookie.match(/(?:^|;\s*)__Host-wa_platform_csrf=([^;]*)/) || document.cookie.match(/(?:^|;\s*)wa_platform_csrf=([^;]*)/) || [])[1] || '';
   }
 
   async function call(path, options) {
     var opts = options || {};
     var res = await fetch(path, {
-      method: opts.method || 'GET',
+      method: opts.method || (opts.body ? 'POST' : 'GET'),
       credentials: 'same-origin',
       headers: Object.assign(
         { 'x-platform-csrf': decodeURIComponent(csrf()) },
@@ -72,7 +86,7 @@
   function errText(data, fallback) {
     if (!data) return fallback;
     if (data.message) return data.message;
-    if (Array.isArray(data.errors) && data.errors.length) return data.errors.join('\n');
+    if (Array.isArray(data.errors) && data.errors.length) return data.errors.map((e) => typeof e === 'string' ? e : `${e.field}: ${e.message}`).join('\n');
     if (data.error) return String(data.error).replace(/_/g, ' ');
     return fallback;
   }
@@ -96,17 +110,21 @@
     who.textContent = state.me.account.email;
     var plans = await call('/api/platform/plans');
     state.plans = plans.data.plans || [];
-    render();
   }
 
   async function loadTenant() {
     if (!state.slug) return;
-    var res = await call('/api/platform/tenants/' + encodeURIComponent(state.slug));
-    state.detail = res.status === 200 ? res.data : null;
+    var slug = state.slug;
+    var res = await call('/api/platform/tenants/' + encodeURIComponent(slug));
+    if (slug === state.slug) {
+      state.detail = res.status === 200 ? res.data : null;
+      if (state.detail && tenant()) Object.assign(tenant(), state.detail.tenant);
+    }
   }
 
   // ── render ────────────────────────────────────────────────
   function render() {
+    if (!state.me) return;
     app.innerHTML = '';
     app.appendChild(el('h1', { text: 'Your assistants' }));
     app.appendChild(
@@ -180,9 +198,11 @@
           type: 'button',
           'aria-current': t.slug === state.slug ? 'true' : null,
           onclick: function () {
+            state.detail = null;
             state.slug = t.slug;
             state.tab = 'setup';
             state.chat = [];
+            render();
             loadTenant().then(render);
           },
         }, [
@@ -203,7 +223,7 @@
     var template = el('select', {});
     [{ id: '', name: 'Choose a template (optional)' }]
       .concat((state.me.templates || []).map(function (t) {
-        return { id: t.id, name: t.name || t.id };
+        return { id: t.id, name: t.label || t.name || t.id };
       }))
       .forEach(function (t) {
         template.appendChild(el('option', { value: t.id, text: t.name }));
@@ -214,6 +234,7 @@
       var res = await call('/api/platform/tenants', { body: { name: name.value, number: number.value, template: template.value || null } });
       button.disabled = false;
       if (res.status === 200 || res.status === 201) {
+        state.chat = []; state.detail = null;
         state.slug = res.data.slug;
         state.tab = 'setup';
         await load();
@@ -258,10 +279,10 @@
     card.appendChild(el('h2', { text: t ? t.name : state.slug }));
     if (!state.detail) {
       card.appendChild(el('p', { class: 'muted', text: 'Loading…' }));
-      loadTenant().then(render);
       return card;
     }
     var d = state.detail;
+    card.id = 'tenant-controls';
     card.appendChild(
       el('div', { class: 'row' }, [
         el('span', { class: 'pill', text: d.tenant.status }),
@@ -284,11 +305,13 @@
       card.appendChild(el('div', { class: 'row' }, [retry]));
     }
 
+    card.appendChild(controls.overview(d));
     card.appendChild(
       tabs(state.tab, [
         { id: 'setup', label: 'Setup' },
+        ...(d.canEdit ? [{ id: 'keys', label: 'AI keys & model' }] : []),
         { id: 'connect', label: 'WhatsApp' },
-        { id: 'test', label: 'Test chat' },
+        ...(d.canEdit ? [{ id: 'test', label: 'Test chat' }] : []),
         { id: 'usage', label: 'Usage' },
         { id: 'plan', label: 'Plan' },
         { id: 'settings', label: 'Settings' },
@@ -300,7 +323,8 @@
     if (state.tab === 'test') card.appendChild(testPanel());
     if (state.tab === 'usage') card.appendChild(usagePanel(d));
     if (state.tab === 'plan') card.appendChild(planPanel(d));
-    if (state.tab === 'settings') card.appendChild(settingsPanel(d));
+    if (state.tab === 'settings') card.appendChild(controls.settingsPanel(d));
+    if (state.tab === 'keys' && d.canEdit) card.appendChild(controls.keyPanel(d));
     return card;
   }
 
@@ -311,6 +335,7 @@
     ],
     'business-details': [
       { key: 'business.name', label: 'Business name', help: 'Exactly as customers know it.' },
+      { key: 'business.type', label: 'Business type', help: 'What do customers come to you for?' },
       { key: 'business.city', label: 'City', help: 'Lets the assistant talk about delivery, pickup and timing.' },
       { key: 'business.hours', label: 'Hours', help: 'E.g. "Daily 12:00–23:00, closed Tuesdays".' },
       { key: 'business.languages', label: 'Languages', help: 'Comma separated, e.g. English, Urdu, Roman Urdu.' },
@@ -325,13 +350,7 @@
     documents: [
       { key: 'documents', label: 'Documents', type: 'file', help: 'PDF, DOCX, TXT or CSV, up to 5 MB.' },
     ],
-    agents: [
-      { key: 'conversation.handoverKeywords', label: 'Hand over when you hear', help: 'Comma separated words, e.g. refund, manager, complaint.' },
-      { key: 'conversation.dailyMessageCap', label: 'Messages per customer per day', help: 'Blank uses the default of 40.' },
-      { key: 'conversation.maxBotTurnsBeforeHuman', label: 'Turns before a human takes over', help: 'Blank uses the default of 12.' },
-      { key: 'intake.fields', label: 'Questions it must ask', help: 'Comma separated, e.g. name, area, budget.' },
-      { key: 'replyTiming', label: 'Reply timing', help: 'natural, instant, or business hours only.' },
-    ],
+    agents: [],
     connect: [],
     test: [],
     live: [],
@@ -344,7 +363,7 @@
     var stepsBar = el('div', { class: 'steps' });
     d.steps.forEach(function (s) {
       stepsBar.appendChild(
-        el('span', {
+        el('button', { type: 'button', onclick: () => navigate('setup', s.id),
           'data-state': s.id === stepId ? 'current' : s.id < stepId ? 'done' : 'todo',
           text: s.id + '. ' + s.title,
         })
@@ -354,32 +373,11 @@
     box.appendChild(el('h2', { text: meta.title }));
     box.appendChild(el('p', { class: 'muted', text: meta.hint }));
 
-    if (stepId === 6 || stepId === 7 || stepId === 8) {
-      box.appendChild(
-        el('p', {
-          class: 'notice',
-          text:
-            stepId === 6
-              ? 'Open the WhatsApp tab to scan the QR or link with a phone number.'
-              : stepId === 7
-                ? 'Open the Test chat tab. It uses the real assistant with a sandbox contact.'
-                : 'When WhatsApp says connected, press Go live below.',
-        })
-      );
-      if (stepId === 8) {
-        var live = el('button', { class: 'primary', type: 'button', text: 'Go live' });
-        live.addEventListener('click', async function () {
-          live.disabled = true;
-          var res = await call('/api/platform/tenants/' + state.slug + '/go-live', { body: {} });
-          live.disabled = false;
-          say(res.status === 200 ? 'Live. It is answering on WhatsApp now.' : errText(res.data, 'Could not go live.'), res.status === 200 ? 'ok' : 'bad');
-          await load();
-          await loadTenant();
-          render();
-        });
-        box.appendChild(el('div', { class: 'row' }, [live]));
-      }
-      box.appendChild(nextButton(d, stepId));
+    if (stepId >= 5) {
+      const links = { 5: [['keys','Set up AI keys and model'], ['settings','Edit behaviour settings']], 6: [['connect','Connect WhatsApp']], 7: [['test','Open sandbox test chat']], 8: [] };
+      for (const [tab, text] of links[stepId]) if (tab !== 'keys' || d.canEdit) box.appendChild(el('button', { type:'button', text, onclick: () => navigate(tab) }));
+      if (stepId === 8) box.appendChild(el('p', { text: 'Review the activation checklist above. Go live is available once the required checks pass.' }));
+      if (d.canEdit) box.appendChild(nextButton(d, stepId));
       return box;
     }
 
@@ -389,7 +387,7 @@
       var value = get(d.draft, field.key);
       if (field.type === 'file') {
         var file = el('input', { type: 'file' });
-        var upload = el('button', { type: 'button', text: 'Upload' });
+        var upload = el('button', { disabled: !d.canEdit, type: 'button', text: 'Upload' });
         upload.addEventListener('click', async function () {
           if (!file.files || !file.files[0]) return say('Choose a file first.', 'bad');
           upload.disabled = true;
@@ -401,6 +399,7 @@
           });
           var data = await res.json().catch(function () { return {}; });
           upload.disabled = false;
+          if (state.slug !== d.tenant.slug) return;
           say(res.ok ? 'Learned "' + data.document.name + '".' : errText(data, 'Upload failed.'), res.ok ? 'ok' : 'bad');
           await loadTenant();
           render();
@@ -420,7 +419,7 @@
       if (field.type === 'select') {
         input = el('select', {});
         [{ id: '', name: "I'll fill it in myself" }]
-          .concat((d.templates || []).map(function (t) { return { id: t.id, name: t.name || t.id }; }))
+          .concat((d.templates || []).map(function (t) { return { id: t.id, name: t.label || t.name || t.id }; }))
           .forEach(function (option) {
             input.appendChild(el('option', { value: option.id, text: option.name }));
           });
@@ -433,67 +432,49 @@
         if (Array.isArray(raw)) input.value = raw.join(', ');
         else input.value = raw;
       }
+      input.disabled = !d.canEdit;
+      input.id = 'wizard-' + field.key;
       inputs[field.key] = input;
-      box.appendChild(el('label', { text: field.label }));
+      box.appendChild(el('label', { for: input.id, text: field.label }));
       box.appendChild(input);
       if (field.help) box.appendChild(el('p', { class: 'small', text: field.help }));
     });
 
-    var save = el('button', { class: 'primary', type: 'button', text: 'Save and continue' });
+    var save = el('button', { disabled: !d.canEdit, class: 'primary', type: 'button', text: 'Save and continue' });
     save.addEventListener('click', async function () {
       var patch = {};
       Object.keys(inputs).forEach(function (key) {
         var input = inputs[key];
         var value = input.value;
-        if (input.tagName === 'TEXTAREA') value = parseLines(value);
+        if (input.tagName === 'TEXTAREA') value = parseLines(value, key);
         else if (key === 'business.languages' || key === 'conversation.handoverKeywords' || key === 'intake.fields') {
           value = value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
         } else if (key.indexOf('conversation.') === 0 && /Cap|Turns/.test(key)) {
           value = value === '' ? undefined : Number(value);
         }
         if (value === undefined) return;
+        if (input.tagName === 'TEXTAREA' && Array.isArray(get(d.draft, key))) value = value.map((item, i) => {
+          const old = get(d.draft, key)[i]; return old && serialiseLine(old) === input.value.split('\n').filter(Boolean)[i]?.trim() ? old : item;
+        });
         set(patch, key, value);
       });
       // Shape the patch the way the wizard expects (business/catalog/…).
-      var body = { step: stepId, patch: shapePatch(stepId, patch) };
+      var body = { step: stepId, patch: patch };
       save.disabled = true;
       var res = await call('/api/platform/tenants/' + state.slug + '/wizard/' + stepId, { body: body });
       save.disabled = false;
+      if (state.slug !== d.tenant.slug) return;
       if (res.status === 200) {
+        await loadTenant(); if (state.slug !== d.tenant.slug) return; render();
         say(res.data.warnings && res.data.warnings.length ? 'Saved. ' + res.data.warnings[0] : 'Saved.');
-        await loadTenant();
-        render();
       } else {
+        box.querySelectorAll('.field-error').forEach((n) => n.remove());
+        for (const e of res.data.fieldErrors || []) inputs[e.field]?.after(el('span', { class: 'field-error error', text: e.message }));
         say(errText(res.data, 'Could not save that step.'), 'bad');
       }
     });
     box.appendChild(el('div', { class: 'row', style: 'margin-top:14px' }, [save]));
-    box.appendChild(nextButton(d, stepId));
     return box;
-  }
-
-  function shapePatch(stepId, flat) {
-    var patch = {};
-    Object.keys(flat).forEach(function (key) {
-      var parts = key.split('.');
-      if (parts[0] === 'catalog' || parts[0] === 'faqs' || parts[0] === 'documents' || parts[0] === 'replyTiming') {
-        patch[parts[0]] = flat[key];
-        return;
-      }
-      if (parts[0] === 'payment') {
-        patch.payment = patch.payment || {};
-        set(patch.payment, parts.slice(1).join('.'), flat[key]);
-        return;
-      }
-      if (parts[0] === 'business' || parts[0] === 'conversation' || parts[0] === 'intake') {
-        patch[parts[0]] = patch[parts[0]] || {};
-        set(patch[parts[0]], parts.slice(1).join('.'), flat[key]);
-        return;
-      }
-      patch[key] = flat[key];
-    });
-    if (stepId === 1 && patch.template !== undefined) patch.businessType = patch.template;
-    return patch;
   }
 
   function nextButton(d, stepId) {
@@ -501,9 +482,9 @@
     if (!next) return el('span');
     var button = el('button', { type: 'button', text: 'Next: ' + next.title });
     button.addEventListener('click', async function () {
-      await call('/api/platform/tenants/' + state.slug + '/wizard/' + stepId, { body: { step: stepId, patch: {} } });
+      const result = await call('/api/platform/tenants/' + d.tenant.slug + '/wizard/' + stepId, { body: { patch: {} } });
+      if (!result.data.ok) return say(errText(result.data, 'Could not advance.'), 'bad');
       await loadTenant();
-      state.detail.step = next.id;
       render();
     });
     return el('div', { class: 'row', style: 'margin-top:10px' }, [button]);
@@ -528,25 +509,32 @@
 
   function serialiseLine(item) {
     if (typeof item === 'string') return item;
+    if (item?.q) return item.q + ' | ' + item.a;
     if (item && item.name) {
       var bits = [item.name];
-      if (item.price !== undefined && item.price !== null) bits.push(item.price);
+      const price = item.price ?? item.amount ?? item.fee ?? (item.min != null && item.max != null && item.min !== item.max ? `${item.min}–${item.max}` : item.min ?? item.max);
+      if (price != null) bits.push(price);
       if (item.note) bits.push(item.note);
       return bits.join(' | ');
     }
     return JSON.stringify(item);
   }
 
-  function parseLines(text) {
+  function parseLines(text, key) {
     return String(text || '')
       .split('\n')
       .map(function (line) { return line.trim(); })
       .filter(Boolean)
       .map(function (line) {
         var parts = line.split('|').map(function (p) { return p.trim(); });
-        if (parts.length === 1) return parts[0];
+        if (key === 'faqs') return { q: parts[0], a: parts.slice(1).join(' | ') };
+        if (parts.length === 1) return { name: parts[0] };
         var item = { name: parts[0] };
-        if (parts[1]) item.price = Number(parts[1].replace(/[^0-9.]/g, '')) || parts[1];
+        if (parts[1]) {
+          const range = /^(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)$/.exec(parts[1].replace(/,/g, ''));
+          if (range) { item.min = Number(range[1]); item.max = Number(range[2]); }
+          else item.price = Number(parts[1].replace(/,/g, ''));
+        }
         if (parts[2]) item.note = parts[2];
         return item;
       });
@@ -558,6 +546,26 @@
     box.appendChild(el('p', { class: 'muted', text: 'WhatsApp → Linked devices. The QR changes every minute and is never cached.' }));
     var status = el('p', { class: 'small', text: 'Status: ' + d.tenant.link_status });
     box.appendChild(status);
+
+    const slug = d.tenant.slug;
+    const checkLink = async () => {
+      if (!document.body.contains(status)) return;
+      const res = await call('/api/platform/tenants/' + slug + '/status');
+      if (res.status === 200) {
+        status.textContent = 'Status: ' + res.data.status + ' · ' + res.data.transport;
+        // A transition to 'waiting' must not replace the QR or its pairing-code poll.
+        if (res.data.status === 'connected' && d.tenant.link_status !== 'connected' && document.body.contains(status)) { await loadTenant(); render(); return; }
+      }
+      if (document.body.contains(status)) setTimeout(checkLink, 6500);
+    };
+    setTimeout(checkLink, 50);
+    if (d.canEdit && d.tenant.status === 'provisioned' && d.tenant.link_status !== 'connected' && d.connection.whatsapp.transport !== 'cloud') box.appendChild(el('button', {
+      type: 'button', text: 'Start QR linking', onclick: async () => {
+        const r = await call('/api/platform/tenants/' + slug + '/connect/start', { body: {} });
+        say(r.data.ok ? 'Linking started. Choose Show QR in a few seconds.' : errText(r.data, 'Could not start linking.'), r.data.ok ? 'ok' : 'bad');
+      },
+    }));
+    if (!d.canEdit) return box;
 
     var qrBox = el('div', {});
     var pairBox = el('div', {});
@@ -589,18 +597,19 @@
       say(res.data.note || 'Waiting for the code…');
       pairBox.innerHTML = '';
       pairBox.appendChild(el('p', { class: 'small', text: 'Waiting for the assistant to produce the code…' }));
-      setTimeout(pollPairing, (res.data.pollAfterMs || 3500));
+      if (document.body.contains(pairBox)) setTimeout(pollPairing, (res.data.pollAfterMs || 3500));
     });
 
     async function pollPairing() {
-      var res = await call('/api/platform/tenants/' + state.slug + '/pairing/code');
+      if (!document.body.contains(pairBox)) return;
+      var res = await call('/api/platform/tenants/' + slug + '/pairing/code');
       pairBox.innerHTML = '';
       if (res.status === 200 && res.data.code) {
         pairBox.appendChild(el('div', { class: 'code', text: res.data.code }));
         pairBox.appendChild(el('p', { class: 'small', text: res.data.note }));
       } else {
         pairBox.appendChild(el('p', { class: 'small', text: 'Not yet — this page can stay open.' }));
-        setTimeout(pollPairing, 4000);
+        if (res.status === 200) setTimeout(pollPairing, 4000);
       }
     }
 
@@ -623,6 +632,7 @@
 
   // ── test chat ─────────────────────────────────────────────
   function testPanel() {
+    const slug = state.slug;
     var box = el('div', {});
     box.appendChild(el('p', { class: 'muted', text: 'This runs your real assistant against a sandbox contact. Nothing is sent to WhatsApp.' }));
     var log = el('div', { class: 'chat' });
@@ -641,6 +651,7 @@
       send.disabled = true;
       var res = await call('/api/platform/tenants/' + state.slug + '/test-chat', { body: { text: text } });
       send.disabled = false;
+      if (slug !== state.slug) return;
       if (res.status !== 200) {
         state.chat.push({ who: 'sys', text: errText(res.data, 'The sandbox is not available.') });
         log.appendChild(el('div', { class: 'sys', text: errText(res.data, 'The sandbox is not available.') }));
@@ -651,10 +662,12 @@
         log.appendChild(el('div', { class: 'sys', text: '(no reply — check the assistant logs)' }));
         return;
       }
+      await loadTenant();
+      if (slug !== state.slug) return;
       res.data.replies.forEach(function (reply) {
         state.chat.push({ who: 'bot', text: reply });
-        log.appendChild(el('div', { class: 'msg bot', text: reply }));
       });
+      render();
     });
     box.appendChild(input);
     box.appendChild(el('div', { class: 'row', style: 'margin-top:10px' }, [send]));
@@ -684,6 +697,11 @@
       table.appendChild(body);
       box.appendChild(el('div', { class: 'hr' }));
       box.appendChild(table);
+    }
+    if (d.usage?.keys?.length) {
+      box.appendChild(el('h3', { text: 'Usage by key this month' }));
+      for (const k of d.usage.keys) box.appendChild(el('p', { class: 'small', text:
+        `${k.provider || 'unknown'} / ${k.model || '—'} · ${k.key_slot ? `slot ${k.key_slot} ••••${k.key_last4}${k.key_version ? ` v${k.key_version}` : ''}` : 'unattributed'} · ${k.calls} calls · ${k.tokens} tokens · ${k.errors} errors ${k.error_categories.join(', ')}` }));
     }
     box.appendChild(el('p', { class: 'small', text: 'No message text is stored here — only counts, kinds, model names and latency.' }));
     return box;
@@ -725,28 +743,10 @@
     return box;
   }
 
-  function settingsPanel(d) {
-    var box = el('div', {});
-    box.appendChild(el('p', { class: 'muted', text: 'Every setting is the same profile the wizard writes. Change it here any time.' }));
-    var link = el('button', { type: 'button', text: 'Behaviour settings' });
-    link.addEventListener('click', function () {
-      state.tab = 'setup';
-      state.detail.step = 5;
-      render();
-    });
-    box.appendChild(el('div', { class: 'row' }, [link]));
-    var danger = el('div', { class: 'card danger' });
-    danger.appendChild(el('h2', { text: 'Delete this assistant' }));
-    danger.appendChild(el('p', { class: 'small', text: 'Stops the bot and removes its folder. Export your account first — deletion is not reversible.' }));
-    box.appendChild(el('div', { class: 'hr' }));
-    box.appendChild(danger);
-    return box;
-  }
-
   function accountCard() {
     var card = el('div', { class: 'card' });
     card.appendChild(el('h2', { text: 'Your account' }));
-    card.appendChild(el('p', { class: 'small', text: 'Terms v' + state.me.consent.terms + ' · privacy v' + state.me.consent.privacy }));
+    card.appendChild(el('p', { class: 'small', text: 'Terms v' + state.me.consent.versions.terms + ' · privacy v' + state.me.consent.versions.privacy }));
     var exportButton = el('button', { type: 'button', text: 'Export my data' });
     exportButton.addEventListener('click', async function () {
       var res = await call('/api/platform/account/export', { body: {} });

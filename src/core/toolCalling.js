@@ -30,15 +30,6 @@ export function resetNativeSupport() {
   nativeUnsupported.clear();
 }
 
-function looksUnsupported(err) {
-  const body = String(err?.body || err?.message || '').toLowerCase();
-  const status = err?.status || 0;
-  if (status === 400 || status === 404 || status === 422) {
-    return /tool|function|unsupported|unknown field|invalid argument/.test(body);
-  }
-  return /does not support tools|function calling/i.test(body);
-}
-
 /** The tools the model sees, in each provider's favourite shape. */
 export function providerTools(allowed = null, tenant = null) {
   return allToolDefs(tenant).filter((def) => !allowed || allowed.has(def.name)).map((def) => ({
@@ -117,7 +108,7 @@ export async function generateWithTools({ system, messages, ctx = {}, onToolResu
         maxTokens: ctx.maxTokens || null,
       });
     } catch (err) {
-      if (native && looksUnsupported(err)) {
+      if (native && err?.toolsUnsupported) {
         native = false;
         // remember per provider so we do not spend a failed call every message
         if (response?.provider || err?.provider) nativeUnsupported.add(err.provider || 'provider');
