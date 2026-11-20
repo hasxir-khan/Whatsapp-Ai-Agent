@@ -25,6 +25,7 @@ import { botState } from '../state.js';
 import { featureOn } from './profile.js';
 import { isOpen, parseHours } from './hours.js';
 import { tenantBudget, llmStatus } from '../core/llm.js';
+import { decryptRate, unackedCount } from './transportAudit.js';
 import { getUsage, all, get, logEvent } from '../utils/db.js';
 import {
   findOpenIncident,
@@ -59,6 +60,11 @@ export function alertSettings() {
     diskWarnPercent: num(process.env.DISK_WARN_PERCENT, 10),
     diskBadPercent: num(process.env.DISK_BAD_PERCENT, 5),
     llmFailures: num(process.env.ALERT_LLM_FAILURES, 3),
+    // Transport: how many messages may fail to decrypt, and how many outgoing
+    // messages may sit unacknowledged, before the owner hears about it.
+    decryptFailures: num(process.env.ALERT_DECRYPT_FAILURES, 3),
+    decryptWindowMinutes: num(process.env.ALERT_DECRYPT_WINDOW_MINUTES, 15),
+    unackedMessages: num(process.env.ALERT_UNACKED_MESSAGES, 2),
   };
 }
 
@@ -286,6 +292,45 @@ function slaCheck(now) {
   });
 }
 
+/**
+ * Decryption failures. Bad MAC and prekey-bundle session resets are WhatsApp
+ * telling us the keys are out of step — the exact condition behind "Waiting for
+ * this message" on the recipient's screen. Counted by the transport audit, with
+ * categories and addresses only.
+ */
+function decryptCheck(now) {
+  const { decryptFailures, decryptWindowMinutes } = alertSettings();
+  const rate = decryptRate({ windowMs: decryptWindowMinutes * 60_000, now: new Date(now).getTime() });
+  const window = `${Math.round(decryptWindowMinutes)} min`;
+  if (!rate.total) {
+    return { key: 'decrypt', kind: 'decrypt', severity: 'warn', ok: true, detail: `no decrypt failures in the last ${window}` };
+  }
+  const ok = rate.total < decryptFailures;
+  const detail = `${rate.total} message(s) failed to decrypt in the last ${window} (${rate.badMac} bad MAC, ${rate.sessionReset} session resets, ${rate.absentMessage} absent)`
+    + (ok
+      ? ' — below the alert threshold'
+      : ' — run ONE bot process per number (two fight over the same keys), re-link with .qr if it continues, or move this number to the Cloud API, which has no signal sessions');
+  return { key: 'decrypt', kind: 'decrypt', severity: 'warn', ok, detail };
+}
+
+/**
+ * Outgoing messages WhatsApp never acknowledged. This is the sender-side view of
+ * "Waiting for this message": we sent it, the recipient's phone is still asking.
+ */
+function deliveryCheck(now) {
+  const { unackedMessages } = alertSettings();
+  const unacked = unackedCount({ now: new Date(now).getTime() });
+  if (!unacked) {
+    return { key: 'delivery', kind: 'delivery', severity: 'warn', ok: true, detail: 'every recent outgoing message was acknowledged' };
+  }
+  const ok = unacked < unackedMessages;
+  const detail = `${unacked} outgoing message(s) not acknowledged after 60s`
+    + (ok
+      ? ' — below the alert threshold'
+      : ' — check that only one process is running (.health shows the session), then re-link with .qr; if it persists, the Cloud API is the safer transport for this number');
+  return { key: 'delivery', kind: 'delivery', severity: 'warn', ok, detail };
+}
+
 /** Every check, as data. This is also what /api/status and doctor read. */
 export function runChecks(now = new Date()) {
   const checks = [
@@ -296,6 +341,8 @@ export function runChecks(now = new Date()) {
     tenantBudgetCheck(),
     diskCheck(),
     backupCheck(now),
+    decryptCheck(now),
+    deliveryCheck(now),
     ...slaCheck(now),
   ];
   return checks;
@@ -325,6 +372,8 @@ const KIND_LABELS = {
   disk: 'Disk space',
   backup: 'Backups',
   sla: 'A chat is waiting',
+  decrypt: 'Messages failing to decrypt',
+  delivery: 'Outgoing messages not acknowledged',
 };
 
 function alertText(incident) {

@@ -1460,6 +1460,10 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         lines.push('', ...summaryLines());
         const { outboundStoreLine } = await import('../services/outboundStore.js');
         lines.push(outboundStoreLine());
+        // Which session is in use, and whether it has ever connected: the first
+        // question in any "messages are not arriving" conversation.
+        const { sessionSummary } = await import('../utils/sessionBackup.js');
+        lines.push(sessionSummary().line);
       } catch {
         /* ignore */
       }

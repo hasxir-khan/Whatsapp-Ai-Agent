@@ -78,7 +78,8 @@ Everything the demo writes lives in `./demo` and is gitignored; delete the folde
 25. [Security and privacy](#security-and-privacy)
 26. [Troubleshooting](#troubleshooting)
 27. [Typing and delivery — is WhatsApp taking it?](#typing-and-delivery--is-whatsapp-taking-it)
-28. [Honest limitations](#honest-limitations)
+28. [Session safety — one process, one login](#session-safety--one-process-one-login)
+29. [Honest limitations](#honest-limitations)
 
 ---
 
@@ -2298,6 +2299,10 @@ node scripts/restore.js backups/ayesha-….json.gz --slug ayesha --dry-run
 node scripts/restore.js backups/ayesha-….json.gz --slug ayesha
 ```
 
+The WhatsApp login itself is a separate backup: `npm run session` prints the
+`WA_SESSION` blob, and it refuses to do so until the session has had a
+successful connection — see [Session safety](#session-safety--one-process-one-login).
+
 The archive holds the SQLite database plus `config/` and `tenant.json`. It **excludes `.env` and `sessions/` unless you ask** — a backup with API keys in it is a liability, and you already have your keys somewhere. Restoring keeps a `.before-restore-<time>` copy of every file it overwrites.
 
 A cron line that costs nothing:
@@ -2586,6 +2591,116 @@ socket. They can prove the bot called the right method with the right JID, in th
 right order, and that it paused afterwards. It cannot prove
 WhatsApp accepted it, and it cannot prove the customer's phone drew anything —
 only the phone in your hand can. That is why the command asks.
+
+---
+
+## Session safety — one process, one login
+
+Every symptom in this chapter — "Waiting for this message", messages that
+arrive late, messages that never arrive — gets much more likely when two
+programs hold the same WhatsApp login. WhatsApp sees the encryption keys change
+under it, and the client on the other end stops trusting what it receives.
+
+The bot now defends itself, and tells you when it cannot.
+
+### The lock: one process per session folder
+
+On start (Baileys only) the bot writes `sessions/session.lock` with its PID. A
+second process on the same folder refuses to start and prints who holds it:
+
+```
+🔒 Another process is already using this WhatsApp session.
+   pid 4812 on box-1, started 12/11/2026, 09:14
+   Lock file: /srv/bot/sessions/session.lock
+   • Is the bot already running?  pm2 list · systemctl status <service>
+   • Stop the other one, then start this one.
+   • If it crashed and left the lock behind, delete the file above.
+```
+
+A lock left by a crashed process (its PID is gone) is taken over
+automatically. `SESSION_LOCK=0` disables the check; `SESSION_LOCK_STALE_MINUTES`
+(default 15) is how long a lock is trusted before its owner is re-checked.
+
+**What a lock file cannot do:** it sees processes on the same disk. It cannot
+see another container, another machine, or a rolling deploy where the old
+instance is still running while the new one starts. So the deployment rules
+still apply, and they are not optional:
+
+- **One replica per number.** Not two pods behind a load balancer, not
+  "autoscaling", not a standby that also connects.
+- **No overlapping deploys.** Stop the old process, then start the new one
+  (`pm2 restart` with `--kill-timeout` is fine; two services pointing at the
+  same folder is not).
+- **A persistent volume for `sessions/`.** An ephemeral disk means a fresh QR
+  scan after every deploy, and two replicas each with their own half-session.
+- **The admin panel starts tenants too.** If it can start a tenant that is
+  already running elsewhere, you have two processes; use it from one place.
+
+### The restore guard: WA_SESSION never wins over a working login
+
+`WA_SESSION` exists so a free host that wipes its disk can come back without a
+QR scan. It used to be applied on every boot, unconditionally — so a blob
+captured a week ago would replace a session that had been re-linked since. The
+phone keeps the new keys, the bot keeps the old ones: incoming works, outgoing
+is unreadable.
+
+Now the blob is used **only** when the local session is missing or corrupt:
+
+| Situation | What happens |
+|---|---|
+| local `creds.json` is healthy | `WA_SESSION` is ignored, and the log says so (`SESSION_RESTORE_GUARD=0` to force) |
+| no session, or unreadable/empty/malformed `creds.json` | restored from the blob, old files kept as `before-restore-<time>-*` |
+| the blob itself is broken | nothing is written; the local session is untouched |
+
+And a backup is only worth taking from a session that worked: on every
+successful connection the bot writes `sessions/connected.marker`. `npm run
+session` refuses to produce a blob if the keys changed after that marker —
+those keys were never proven, and restoring them later is exactly how a session
+gets rolled back. `SESSION_BACKUP_FORCE=1` overrides it.
+
+### One bad chat does not need a re-link
+
+If a single contact keeps failing to decrypt (three failures in ten minutes by
+default), the bot drops the encryption session for **that address only** and
+lets the next message negotiate fresh keys. Everything else — the pairing, the
+other chats, the account — is untouched.
+
+- Rate-limited: once per chat per 30 minutes.
+- Logged as a `session_recovery` event with the count, never the content.
+- The owner is told once, with advice that says what it did *and* what it did
+  not do.
+- Reversible by design: nothing in the bot's own data is deleted, and
+  `SESSION_RECOVERY=0` turns it off.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SESSION_RECOVERY` | `1` | Per-contact session reset on repeated decrypt failures |
+| `SESSION_RECOVERY_THRESHOLD` | `3` | Failures for one chat before it acts |
+| `SESSION_RECOVERY_WINDOW_MINUTES` | `10` | The window those failures are counted in |
+| `SESSION_RECOVERY_COOLDOWN_MINUTES` | `30` | Minimum gap between resets for one chat |
+
+### The alerts you will actually get
+
+`.health` now carries two transport checks, and they become incidents (one
+message, then a cooldown) just like the connection and disk checks:
+
+```
+🟠 decrypt: 3 message(s) failed to decrypt in the last 15 min (3 bad MAC, 0 session resets, 0 absent)
+   — run ONE bot process per number (two fight over the same keys), re-link with .qr
+     if it continues, or move this number to the Cloud API, which has no signal sessions
+🟠 delivery: 2 outgoing message(s) not acknowledged after 60s — check that only one
+   process is running (.health shows the session), then re-link with .qr
+```
+
+| Variable | Default | What it does |
+|---|---|---|
+| `ALERT_DECRYPT_FAILURES` | `3` | Failures in the window before the owner hears about it |
+| `ALERT_DECRYPT_WINDOW_MINUTES` | `15` | The window |
+| `ALERT_UNACKED_MESSAGES` | `2` | Outgoing messages with no ack after 60 s |
+
+`node scripts/doctor.js` also warns when Cloud API credentials exist while the
+bot is connected over Baileys: if both point at the same number, only one of
+them can hold it.
 
 ---
 
@@ -3181,7 +3296,7 @@ only thing standing between you and your free tier.
 ## Tests
 
 ```bash
-npm test                 # 1123 tests, ~2min, no network, no keys, no config/owner.json
+npm test                 # 1148 tests, ~2min, no network, no keys, no config/owner.json
 npm run eval             # 100 recorded conversations, ~19s, no keys either
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings

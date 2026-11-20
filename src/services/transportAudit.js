@@ -63,6 +63,9 @@ function freshState() {
     typing: [],
     outbound: new Map(),
     inbound: new Map(),
+    // Per-failure events, so a rate (and a per-contact count) can be asked for.
+    // Categories and addresses only — never text.
+    decrypts: [],
     lastPresence: null,
     startedAt: Date.now(),
   };
@@ -312,15 +315,44 @@ export function unackedCount({ now = Date.now(), staleMs = 60000 } = {}) {
 
 // ── decryption ──────────────────────────────────────────────
 /** Count a decryption problem by category. Text is never stored. */
-export function noteDecrypt(kind, { id = null, at = Date.now() } = {}) {
+export function noteDecrypt(kind, { id = null, chat = null, at = Date.now() } = {}) {
   if (!DECRYPT_KINDS[kind]) return null;
   state.counters[kind] += 1;
+  const chatKey = chat ? String(chat) : null;
+  state.decrypts.push({ kind, at: Number(at) || Date.now(), chat: chatKey, id: id || null });
+  if (state.decrypts.length > 500) state.decrypts.shift();
   try {
-    logEvent(`decrypt_${kind}`, null, { id: id || null, at: new Date(at).toISOString() });
+    logEvent(`decrypt_${kind}`, chatKey ? String(chatKey).replace(/@.*$/, '').replace(/\D/g, '') : null, { id: id || null, at: new Date(at).toISOString() });
   } catch {
     /* ignore */
   }
   return state.counters[kind];
+}
+
+/**
+ * How many decryption failures in the last `windowMs`, and where.
+ * This is what the alert and the per-contact recovery both read.
+ */
+export function decryptRate({ windowMs = 15 * 60_000, now = Date.now() } = {}) {
+  const since = Number(now) - Math.max(0, Number(windowMs) || 0);
+  const recent = state.decrypts.filter((event) => event.at >= since);
+  const byKind = { badMac: 0, sessionReset: 0, absentMessage: 0, retryFailed: 0 };
+  const byChat = new Map();
+  for (const event of recent) {
+    byKind[event.kind] = (byKind[event.kind] || 0) + 1;
+    if (event.chat) byChat.set(event.chat, (byChat.get(event.chat) || 0) + 1);
+  }
+  const chats = [...byChat.entries()]
+    .map(([chat, count]) => ({ chat, count }))
+    .sort((a, b) => b.count - a.count);
+  return { total: recent.length, ...byKind, windowMs: Math.max(0, Number(windowMs) || 0), chats };
+}
+
+/** One contact's failures in the window — the input to per-contact recovery. */
+export function decryptFor(chat, { windowMs = 10 * 60_000, now = Date.now() } = {}) {
+  if (!chat) return 0;
+  const rate = decryptRate({ windowMs, now });
+  return rate.chats.find((row) => row.chat === String(chat))?.count || 0;
 }
 
 /**
@@ -477,6 +509,8 @@ export default {
   deliveryLines,
   unackedCount,
   noteDecrypt,
+  decryptRate,
+  decryptFor,
   noteLogText,
   createAuditLogger,
   environment,

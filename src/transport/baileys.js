@@ -56,6 +56,8 @@ import { logEvent } from '../utils/db.js';
 import { botState, setQr, clearQr, setStatus } from '../state.js';
 import { registerCalls } from '../services/calls.js';
 import { storedMessage, storeOutbound } from '../services/outboundStore.js';
+import { maybeRecoverContact } from '../services/sessionRecovery.js';
+import { markSessionConnected } from '../utils/sessionBackup.js';
 import {
   createAuditLogger,
   noteInbound,
@@ -248,6 +250,9 @@ export class BaileysTransport extends Transport {
       if (connection === 'open') {
         this.reconnectAttempts = 0;
         clearQr();
+        // Proof that these keys work: a session backup taken from here is worth
+        // something, one taken after keys changed with no connection is not.
+        markSessionConnected(config.paths.sessions, { at: new Date(), user: sock.user?.id || null });
         botState.connectedAt = new Date();
         botState.me = sock.user ? { id: sock.user.id, name: sock.user.name || sock.user.verifiedName } : null;
         this.status = 'online';
@@ -302,7 +307,11 @@ export class BaileysTransport extends Transport {
         const stub = Number(msg?.messageStubType || 0);
         const params = msg?.messageStubParameters || [];
         if (stub === 2 || params.some((param) => /absent from node/i.test(String(param)))) {
-          noteDecrypt('absentMessage', { id: msg?.key?.id || null });
+          const chat = msg?.key?.remoteJid || null;
+          noteDecrypt('absentMessage', { id: msg?.key?.id || null, chat });
+          // One bad chat should not cost a re-link of the whole number. This is
+          // rate-limited inside; it never throws and never blocks the pipeline.
+          maybeRecoverContact({ sock, chat }).catch(() => {});
         }
       }
 
@@ -332,6 +341,16 @@ export class BaileysTransport extends Transport {
     // only records the timestamp, it does not answer anything.
     sock.ev.on('message-receipt.update', (receipts) => {
       noteStatusUpdate(receipts);
+    });
+
+    // Decryption complaints from the socket's own logger, with an address when
+    // the event carries one.
+    sock.ev.on('messages.update', (updates) => {
+      for (const item of [].concat(updates || [])) {
+        if (Number(item?.update?.messageStubType) === 2 && item?.key?.remoteJid) {
+          maybeRecoverContact({ sock, chat: item.key.remoteJid }).catch(() => {});
+        }
+      }
     });
 
     // Contacts/groups/receipts: nothing to do, but don't let them bubble up

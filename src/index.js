@@ -11,6 +11,7 @@ import { startServer } from './server.js';
 import { startHealthMonitor } from './services/health.js';
 import { startRetention } from './services/privacy.js';
 import { startOutboundPurge } from './services/outboundStore.js';
+import { acquireSessionLock, releaseSessionLock, lockRefusalMessage } from './services/instanceLock.js';
 import { botState, setStatus, bumpStat } from './state.js';
 import { handleIncoming, startPendingFlusher } from './handlers/messageHandler.js';
 import { startDailyReport } from './services/report.js';
@@ -129,9 +130,30 @@ async function boot() {
     console.warn('');
   }
 
+  // One process per session folder. Two of them fight over the same encryption
+  // keys, which is what makes outgoing messages unreadable on the other phone.
+  // (A lock file cannot see another container — see the README on single replica
+  // and a persistent sessions volume.)
+  if (config.transport === 'baileys') {
+    const lock = acquireSessionLock();
+    if (!lock.ok) {
+      console.error(`\n${lockRefusalMessage(lock.holder, lock.path)}\n`);
+      process.exit(1);
+    }
+    if (lock.recovered) console.warn('🔒 A stale session lock was taken over (the previous process is gone)');
+    const release = () => releaseSessionLock();
+    process.on('exit', release);
+    process.on('SIGINT', () => { release(); process.exit(0); });
+    process.on('SIGTERM', () => { release(); process.exit(0); });
+  }
+
   await initDB();
   startAutoSave();
-  await restoreSession();
+  // Only applies WA_SESSION when the local login is missing or corrupt; a
+  // healthy session is never overwritten by an older blob.
+  const restored = await restoreSession();
+  if (restored?.restored) console.log('🔐 This boot is using the WA_SESSION backup, not the local files.');
+  else if (restored?.state === 'healthy') console.log('🔐 This boot is using the local session.');
   await initSheet();
 
   sweepTemp();

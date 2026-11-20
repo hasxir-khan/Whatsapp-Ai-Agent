@@ -233,6 +233,8 @@ async function checkBusiness() {
 
   // transport
   {
+    const { sessionSummary } = await import('../src/utils/sessionBackup.js');
+    const { readLock } = await import('../src/services/instanceLock.js');
     const { BAILEYS_CAPABILITIES } = await import('../src/transport/baileys.js');
     const { CLOUD_CAPABILITIES } = await import('../src/transport/cloud.js');
     const { describeCapabilities } = await import('../src/transport/base.js');
@@ -259,6 +261,24 @@ async function checkBusiness() {
       if (!config.cloud.template) info('No CLOUD_TEMPLATE_NAME set — closed-window replies will be held and reported instead of templated');
     } else {
       info('Missed-call rescue, read receipts, typing indicators and delete-for-everyone all work on Baileys');
+
+      // The clash nobody notices until messages stop decrypting: Cloud API
+      // credentials present while the bot is connected over Baileys. If they
+      // point at the same number, two clients hold the same account.
+      if (config.cloud.phoneId && config.cloud.token) {
+        warn(
+          'Cloud API credentials are set while TRANSPORT=baileys — if they belong to the SAME number, ' +
+            'only one of the two may be connected. Unregister the Cloud app for that number, or move to TRANSPORT=cloud.'
+        );
+        notes.push('Two clients on one WhatsApp number is a classic cause of "Waiting for this message" on the other phone');
+      }
+
+      // Session facts a support conversation always needs.
+      const session = sessionSummary();
+      if (session.state === 'healthy') info(session.line);
+      else warn(`${session.line} — the bot cannot connect until this is fixed`);
+      const lock = readLock();
+      if (lock?.pid) info(`Session lock: held by pid ${lock.pid} on ${lock.host || 'this host'} since ${new Date(lock.started_at || lock.startedAt).toLocaleString('en-GB')}`);
     }
   }
 
