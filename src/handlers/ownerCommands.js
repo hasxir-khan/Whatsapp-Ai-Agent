@@ -1458,6 +1458,8 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       try {
         const { summaryLines } = await import('../services/transportAudit.js');
         lines.push('', ...summaryLines());
+        const { outboundStoreLine } = await import('../services/outboundStore.js');
+        lines.push(outboundStoreLine());
       } catch {
         /* ignore */
       }

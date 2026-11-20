@@ -171,6 +171,23 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status, id);
 
+-- Outgoing messages kept for a short while so a recipient's retry can be
+-- answered: WhatsApp asks for the payload again when a message will not
+-- decrypt, and "I never had it" is what leaves a bubble on "Waiting for this
+-- message". Expires (default 48h), capped, exported and forgotten with the
+-- contact, and never logged. See src/services/outboundStore.js.
+CREATE TABLE IF NOT EXISTS outbound_messages (
+  id          TEXT PRIMARY KEY,   -- the id WhatsApp gave us when we sent it
+  chat        TEXT,
+  kind        TEXT,               -- text (media cannot be rebuilt from JSON)
+  body        TEXT,               -- JSON of the message, handed straight back
+  bytes       INTEGER DEFAULT 0,
+  created_at  TEXT,
+  expires_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outbound_expires ON outbound_messages(expires_at);
+CREATE INDEX IF NOT EXISTS idx_outbound_chat ON outbound_messages(chat);
+
 -- Cloud API: what we sent, and what Meta said happened to it.
 CREATE TABLE IF NOT EXISTS cloud_messages (
   wa_id       TEXT PRIMARY KEY,

@@ -55,6 +55,7 @@ import { config } from '../config/env.js';
 import { logEvent } from '../utils/db.js';
 import { botState, setQr, clearQr, setStatus } from '../state.js';
 import { registerCalls } from '../services/calls.js';
+import { storedMessage, storeOutbound } from '../services/outboundStore.js';
 import {
   createAuditLogger,
   noteInbound,
@@ -73,6 +74,44 @@ import { Transport, normalizeIncoming, jidToNumber } from './base.js';
 // resets through this logger, so it is where decryption failures are counted.
 // The wrapper passes every line through untouched and stores no text.
 const logger = createAuditLogger(pino({ level: process.env.BAILEYS_LOG === 'debug' ? 'debug' : 'silent' }));
+
+/**
+ * The socket options, as a pure function so the parts that matter can be tested
+ * without a socket library installed:
+ *   • `getMessage` answers the retry WhatsApp sends when a recipient cannot
+ *     decrypt what we sent. It returns the stored payload for the id, or
+ *     undefined — never a throw, because a throw there drops the message.
+ *   • the key store stays wrapped in makeCacheableSignalKeyStore: an uncached
+ *     key store re-reads and re-parses every session file on every message.
+ */
+export function buildSocketOptions({ baileys, version, state, getMessage = storedMessage } = {}) {
+  return {
+    version,
+    logger,
+    printQRInTerminal: false,
+    browser: baileys.Browsers.ubuntu('Chrome'),
+    auth: { creds: state.creds, keys: baileys.makeCacheableSignalKeyStore(state.keys, logger) },
+    markOnlineOnConnect: false,
+    syncFullHistory: false,
+    generateHighQualityLinkPreview: false,
+    emitOwnEvents: false,
+    defaultQueryTimeoutMs: 60000,
+    getMessage: (key) => getMessage(key),
+  };
+}
+
+/** Recent `append` messages are a backlog; older ones are history. */
+export function appendWindowMs() {
+  const ms = Number(process.env.APPEND_WINDOW_MS);
+  return Number.isFinite(ms) && ms >= 0 ? Math.min(86_400_000, ms) : 120_000;
+}
+
+/** `APPEND_UPSERTS=0` restores the old "only notify" behaviour. */
+export function appendUpsertsEnabled() {
+  const raw = process.env.APPEND_UPSERTS;
+  if (raw === undefined || raw === '') return true;
+  return !['0', 'false', 'off', 'no'].includes(String(raw).toLowerCase());
+}
 
 export const BAILEYS_CAPABILITIES = {
   text: true,
@@ -166,19 +205,7 @@ export class BaileysTransport extends Transport {
       version = [2, 3000, 1017531287];
     }
 
-    const sock = baileys.default({
-      version,
-      logger,
-      printQRInTerminal: false,
-      browser: baileys.Browsers.ubuntu('Chrome'),
-      auth: { creds: state.creds, keys: baileys.makeCacheableSignalKeyStore(state.keys, logger) },
-      markOnlineOnConnect: false,
-      syncFullHistory: false,
-      generateHighQualityLinkPreview: false,
-      emitOwnEvents: false,
-      defaultQueryTimeoutMs: 60000,
-      getMessage: async () => undefined,
-    });
+    const sock = baileys.default(buildSocketOptions({ baileys, version, state }));
     this.sock = sock;
 
     sock.ev.on('creds.update', saveCreds);
@@ -278,8 +305,12 @@ export class BaileysTransport extends Transport {
           noteDecrypt('absentMessage', { id: msg?.key?.id || null });
         }
       }
-      if (type !== 'notify') return;
-      for (const msg of messages) {
+
+      const relevant = appendUpsertsEnabled()
+        ? [...(messages || [])].filter((msg) => this.worthProcessing(msg, type))
+        : type === 'notify' ? messages || [] : [];
+
+      for (const msg of relevant) {
         if (!msg?.message) {
           this.emitStatus({ type: 'ignored' });
           continue;
@@ -310,6 +341,26 @@ export class BaileysTransport extends Transport {
     return sock;
   }
 
+  /**
+   * Which upserted messages deserve a turn.
+   *
+   * `notify` is a live message: always. `append` used to be dropped on the
+   * floor, which is why a customer who wrote while the bot was reconnecting got
+   * no answer at all. It is history *and* it is a backlog, so the filter is
+   * time: a message older than APPEND_WINDOW_MS (default 2 min) is history and
+   * stays history; anything newer is a message we missed. Ids are deduped by the
+   * handler, so a replay of something we already answered costs nothing.
+   */
+  worthProcessing(msg, type = 'notify') {
+    if (!msg?.message) return false;
+    if (type === 'notify') return true;
+    if (type !== 'append') return false;
+    if (msg.key?.fromMe) return false; // our own sends coming back
+    const stamp = Number(msg.messageTimestamp) * 1000;
+    if (!Number.isFinite(stamp) || stamp <= 0) return false;
+    return Date.now() - stamp <= appendWindowMs();
+  }
+
   async disconnect() {
     this.closed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -326,8 +377,11 @@ export class BaileysTransport extends Transport {
     if (!this.sock) throw new Error('baileys: not connected');
     const sent = await this.sock.sendMessage(jid, payload);
     // Remember the id so `messages.update` can be matched to a recipient and a
-    // send time later. The payload itself is not kept.
+    // send time later. The payload itself is not kept here.
     noteOutbound({ id: sent?.key?.id, jid, at: Date.now() });
+    // …and keep the payload itself briefly, so a recipient's retry can be
+    // answered while the bubble says "Waiting for this message".
+    storeOutbound({ id: sent?.key?.id, jid, payload });
     return sent;
   }
 

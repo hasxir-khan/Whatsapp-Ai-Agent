@@ -1339,6 +1339,7 @@ Two tools and one honest map of where everything lives.
 | `data/*.sqlite` → `leads`, `bookings`, `orders`, `calls` | pipeline, appointments, orders, calls | until `.forget` |
 | `data/*.sqlite` → `followups`, `pending`, `outbox`, `growth_*` | scheduled and attempted messages, opt-outs | until sent or `.forget` |
 | `data/*.sqlite` → `tool_calls`, `message_intents`, `events` | what the bot did and why — operational, not content | until `.forget` (events are aggregate and kept) |
+| `data/*.sqlite` → `outbound_messages` | the replies we sent, kept only so a failed delivery can be retried | `GETMESSAGE_HOURS` (48), then purged; `.forget` deletes them with the contact |
 | `data/invoices/*.pdf` | quotes, invoices, receipts | `INVOICE_KEEP_DAYS` (90), or `.forget` |
 | `tmp/` | downloaded media while it is being read | swept hourly; nothing is kept |
 | `sessions/` | the WhatsApp login | until you delete it |
@@ -2544,6 +2545,38 @@ is sent before the message and again on the way out. A customer never sees
 Stop the bot, delete the stale value from `config/owner.json` (`typing.strategy`)
 or set `TYPING_STRATEGY=a` to go back to the plain shape.
 
+### Why a message says *Waiting for this message*
+
+Two things produce it, and the bot now handles both.
+
+**The sender had nothing to hand back.** When a recipient cannot decrypt a
+message, WhatsApp asks the sender for the original payload. The bot answered
+"never heard of it" for every message, so the bubble stayed until the client
+gave up. It now keeps what it sent, keyed by the id WhatsApp returned, and hands
+it back on request:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `OUTBOUND_STORE` | `1` | Keep outgoing payloads so retries can be answered. `0` disables it (and `.health` says so). |
+| `GETMESSAGE_HOURS` | `48` | How long one is kept. Older than that and the retry is honestly unanswered. |
+| `GETMESSAGE_MAX_ROWS` | `5000` | Hard cap; the oldest rows go first. |
+| `GETMESSAGE_MAX_BYTES` | `4096` | One stored message. Media payloads embed the file and are **not** stored — a retry for those cannot be answered from here, and pretending otherwise would bloat the database. |
+
+These rows are the customer's messages: `.export` includes them, `.forget`
+deletes them, and the retention purge takes them too. They are never logged, and
+`.health` shows only a count and a size.
+
+**The receiver dropped the message.** `messages.upsert` has two kinds: `notify`
+(a live message) and `append` (a replay, including the backlog after a
+reconnect). Only `notify` used to be processed, so anything a customer wrote
+while the bot was reconnecting got no answer at all. `append` messages are now
+treated as a backlog when they are recent:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `APPEND_UPSERTS` | `1` | Process recent `append` messages. `0` restores the old notify-only behaviour. |
+| `APPEND_WINDOW_MS` | `120000` | "Recent" means the message says it was sent in the last two minutes. Older is history, and history is not re-answered. Ids are deduped, so a replay of something already answered costs nothing. |
+
 ### What a fake socket cannot prove
 
 Every test in `test/63-transport-audit.test.js` and `test/65-typing-fix.test.js`
@@ -3148,7 +3181,7 @@ only thing standing between you and your free tier.
 ## Tests
 
 ```bash
-npm test                 # 1089 tests, ~2min, no network, no keys, no config/owner.json
+npm test                 # 1123 tests, ~2min, no network, no keys, no config/owner.json
 npm run eval             # 100 recorded conversations, ~19s, no keys either
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings

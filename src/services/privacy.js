@@ -28,6 +28,7 @@ import { featureOn } from './profile.js';
 import { clearAgentState } from './agents.js';
 import { invoiceDir } from './invoice.js';
 import { sweepTemp } from './media.js';
+import { outboundFor, purgeOutbound } from './outboundStore.js';
 import {
   all,
   get,
@@ -118,6 +119,9 @@ export function exportContact(rawNumber) {
   const experimentSends = featureOn('businessBrain')
     ? all('SELECT experiment_id, variant, outcome, created_at FROM experiment_sends WHERE number = ?', [number])
     : [];
+  // Outgoing messages held only so a recipient's retry can be answered. They are
+  // this person's messages, so they appear in their export and leave with them.
+  const retryableMessages = outboundFor(number);
   const orderIds = all('SELECT id FROM orders WHERE chat = ? OR chat = ?', [number, jid]).map((row) => row.id);
   const orderHistory = orderIds.length
     ? all(`SELECT * FROM order_events WHERE order_id IN (${orderIds.map(() => '?').join(',')}) ORDER BY id`, orderIds)
@@ -164,13 +168,14 @@ export function exportContact(rawNumber) {
     notes,
     sourceLink,
     orderHistory,
+    retryableMessages,
     ...(featureOn('multiAgent') ? { agentChats, agentEvents } : {}),
     ...(featureOn('marketingAgents') ? { growthMessages } : {}),
     ...(featureOn('businessBrain') ? { brainDecisions, experimentSends } : {}),
   };
 
   const counts = Object.fromEntries(
-    Object.entries({ messages, facts, leads, bookings, orders, followups, referrals, reviews, intake, calls, intents, consents, tags, notes, sourceLink, orderHistory, ...(featureOn('multiAgent') ? { agentChats, agentEvents } : {}), ...(featureOn('marketingAgents') ? { growthMessages } : {}), ...(featureOn('businessBrain') ? { brainDecisions, experimentSends } : {}) })
+    Object.entries({ messages, facts, leads, bookings, orders, followups, referrals, reviews, intake, calls, intents, consents, tags, notes, sourceLink, orderHistory, retryableMessages, ...(featureOn('multiAgent') ? { agentChats, agentEvents } : {}), ...(featureOn('marketingAgents') ? { growthMessages } : {}), ...(featureOn('businessBrain') ? { brainDecisions, experimentSends } : {}) })
       .map(([key, rows]) => [key, rows.length])
   );
 
@@ -218,6 +223,7 @@ export const CONTACT_TABLES = [
   { table: 'orders', where: 'chat = ? OR chat = ?' },
   { table: 'tool_calls', where: 'chat = ? OR chat = ?' },
   { table: 'outbox', where: 'jid = ? OR jid = ?' },
+  { table: 'outbound_messages', where: 'chat = ? OR chat = ?' },
   { table: 'cloud_messages', where: 'number = ?' },
   // Conversation Control: the decision log and the review votes are about this
   // person too. A brief has no table of its own — it is a view of `intake`,
@@ -269,6 +275,9 @@ export function forgetContact(rawNumber, { reason = 'owner_request', now = new D
   const jid = jidFor(number);
   const contact = get('SELECT * FROM contacts WHERE number = ?', [number]);
   const forgottenMarker = contact?.category === 'forgotten';
+  // Outgoing messages held only so a recipient's retry can be answered. They are
+  // this person's messages, so they appear in their export and leave with them.
+  const retryableMessages = outboundFor(number);
   const orderIds = all('SELECT id FROM orders WHERE chat = ? OR chat = ?', [number, jid]).map((row) => row.id);
 
   const removed = {};
@@ -470,6 +479,10 @@ export function purgeRetention({ days = retentionDays(), now = new Date() } = {}
   );
   // Seen-message cache holds raw text for deletion tracking; same window.
   run('DELETE FROM seen_messages WHERE created_at < ?', [cutoff]);
+  // Outgoing payloads kept for retries have their own (much shorter) window;
+  // the general retention pass takes them too, so nothing outlives the messages
+  // it belongs to.
+  const retryPurged = purgeOutbound({ now });
 
   let media = 0;
   try {
@@ -499,9 +512,9 @@ export function purgeRetention({ days = retentionDays(), now = new Date() } = {}
       subjectHash: null,
       detail: { days: window, messages: before, media },
     });
-    logEvent('privacy_retention', null, { messages: before, media, days: window });
+    logEvent('privacy_retention', null, { messages: before, media, days: window, retry: retryPurged });
   }
-  return { ok: true, purged: before, media, days: window, cutoff };
+  return { ok: true, purged: before, media, days: window, cutoff, retryPurged };
 }
 
 let retentionTimer = null;

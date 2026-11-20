@@ -10,6 +10,7 @@ import { initDB, startAutoSave, getSetting, logEvent } from './utils/db.js';
 import { startServer } from './server.js';
 import { startHealthMonitor } from './services/health.js';
 import { startRetention } from './services/privacy.js';
+import { startOutboundPurge } from './services/outboundStore.js';
 import { botState, setStatus, bumpStat } from './state.js';
 import { handleIncoming, startPendingFlusher } from './handlers/messageHandler.js';
 import { startDailyReport } from './services/report.js';
@@ -82,6 +83,9 @@ function startServices(t) {
   // monitor. Both are no-ops unless their flag/env is set.
   startHealthMonitor({ onError: (err) => console.error('Health check failed:', err.message) });
   startRetention({ onError: (err) => console.error('Retention purge failed:', err.message) });
+  // Outgoing payloads kept for retries expire after 48h by default; hourly is
+  // plenty, and the timer is unref'd so it never holds the process open.
+  startOutboundPurge({ onError: (err) => console.error('Retry-store purge failed:', err.message) });
   startOutboxLoop(t);
 }
 
