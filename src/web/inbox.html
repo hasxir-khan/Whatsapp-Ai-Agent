@@ -44,6 +44,12 @@
   #sources .src b { color:var(--txt); }
   #sources .src.stale { border-color:#5a3a1f; color:#e0a458; }
   #sources .src a { color:var(--accent); text-decoration:none; margin-left:6px; }
+  /* Payments strip: counts and amounts only. Accepting or rejecting happens in
+     WhatsApp (or the admin panel) with the owner's own hand. */
+  #payments { display:none; gap:10px; align-items:center; flex-wrap:wrap; padding:7px 14px; border-bottom:1px solid var(--line); background:#12151c; }
+  #payments .pay { border:1px solid var(--line); border-radius:8px; padding:2px 8px; font-size:12px; color:var(--dim); white-space:nowrap; }
+  #payments .pay b { color:var(--txt); }
+  #payments .pay.overdue { border-color:#5a3a1f; color:#e0a458; }
   #note { padding:6px 14px; font-size:12px; color:var(--dim); border-top:1px solid var(--line); min-height:26px; }
   #crm { display:none; gap:6px; flex-wrap:wrap; padding:0 14px 10px; align-items:center; }
   #crm.on { display:flex; }
@@ -62,6 +68,7 @@
   <span class="tag" id="counts">loading…</span>
 </header>
 <div id="sources" aria-label="Tracked sources (read-only)"></div>
+<div id="payments" aria-label="Payments waiting for a decision (read-only)"></div>
 <div id="demobar" style="display:none; padding:8px 14px; background:#1b2330; border-bottom:1px solid var(--line); gap:8px; align-items:center; flex-wrap:wrap;">
   <span id="demomode" style="font-size:12px; color:var(--dim); white-space:nowrap;"></span>
   <span style="font-size:12px; color:var(--dim); white-space:nowrap;">Type as a customer:</span>
@@ -192,10 +199,42 @@
     box.innerHTML = '<span class="tag">Sources:</span>' + chips.join('');
   }
 
+  function renderPayments(p) {
+    const box = $('payments');
+    if (!p || !p.enabled || !p.summary) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+    const s = p.summary;
+    const chips = [];
+    chips.push(`<span class="pay">Pending <b>${s.pending}</b></span>`);
+    if (s.recheck) chips.push(`<span class="pay">Recheck <b>${s.recheck}</b></span>`);
+    if (s.overdue) chips.push(`<span class="pay overdue">Overdue <b>${s.overdue}</b></span>`);
+    if (s.pendingAmount) chips.push(`<span class="pay">Claims <b>${esc(s.currency)} ${Number(s.pendingAmount).toLocaleString()}</b></span>`);
+    chips.push(`<span class="pay">Today <b>${s.acceptedToday}</b> accepted · <b>${s.rejectedToday}</b> rejected</span>`);
+    chips.push(`<span class="pay">Avg decision <b>${s.avgDecisionMinutes === null ? 'n/a' : s.avgDecisionMinutes + ' min'}</b></span>`);
+    box.style.display = 'flex';
+    box.innerHTML = '<span class="tag">Payments:</span>' + chips.join('') +
+      '<span class="pay">read-only · answer in WhatsApp</span>';
+  }
+
+  let paymentsAt = 0;
+  async function loadPayments() {
+    if (Date.now() - paymentsAt < 30000) return;
+    paymentsAt = Date.now();
+    try {
+      renderPayments(await api('/api/inbox/payments'));
+    } catch {
+      /* the strip is a nicety; the inbox must keep working without it */
+    }
+  }
+
   let sourcesAt = 0;
   async function loadSources() {
     if (Date.now() - sourcesAt < 30000) return;
     sourcesAt = Date.now();
+    loadPayments();
     try {
       renderSources(await api('/api/inbox/sources'));
     } catch {

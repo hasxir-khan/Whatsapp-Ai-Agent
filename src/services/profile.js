@@ -22,6 +22,9 @@ import { validateConversation } from './conversation.js';
 // The same idea for the owner-defined intake fields: the list is data, and the
 // place that validates data is here, next to the catalog and the FAQs.
 import { validateIntake } from '../core/projectIntake.js';
+// Owner decisions own their own block (the team, the chains, the proof rules),
+// and validate it exactly the way Conversation Control validates its settings.
+import { validateDecisions } from './decisionTeam.js';
 
 /** Every feature flag the bot knows about. Anything else in owner.json is ignored. */
 export const FEATURE_KEYS = [
@@ -70,6 +73,9 @@ export const FEATURE_KEYS = [
   'reasoning',
   // phase 7
   'conversationControl',
+  // phase 8 — owner decisions + payment review (off by default)
+  'ownerDecisions',
+  'paymentReview',
 ];
 
 export const FEATURE_LABELS = {
@@ -113,6 +119,8 @@ export const FEATURE_LABELS = {
   businessBrain: 'Business brain: impact numbers, daily brief, weekly strategy, goals, experiments, next-best-action (.brain)',
   reasoning: 'Reasoning router: complex turns get plan → act → verify before answering',
   conversationControl: 'Conversation Control: a decision per message (reply, clarify, redirect, handover, react, ignore), scope and off-topic rules, abuse boundaries, owner-defined intake fields and a written brief',
+  ownerDecisions: 'Human decision requests (payments, discounts, refunds): the owner answers, the AI never does',
+  paymentReview: 'Read payment proofs, run deterministic checks, and put a short card in front of the owner',
 };
 
 // ── live profile access ─────────────────────────────────────
@@ -477,6 +485,16 @@ export function setPath(dotted, value) {
     const check = parts[1] === 'conversation' ? validateConversation(next) : validateIntake(next);
     if (check.errors.length) throw new Error(check.errors[0]);
   }
+
+  // Owner decisions: the team, the chains and the proof rules are checked before
+  // the write, so a bad chain (a member who is not on the team, a negative
+  // delay) is refused instead of saved and quietly ignored at 2 a.m.
+  if (parts[0] === 'business' && parts[1] === 'decisions') {
+    const current = readOverrides()?.business?.decisions || {};
+    const next = deepMerge(current, parts.length <= 2 ? value : patch.business.decisions);
+    const check = validateDecisions(next);
+    if (check.errors.length) throw new Error(check.errors[0]);
+  }
   return savePatch(patch);
 }
 
@@ -552,6 +570,10 @@ export function validateProfile(p = profile()) {
   const intakeCheck = validateIntake(p.business?.intake);
   intakeCheck.errors.forEach((e) => push(errors, e));
   intakeCheck.warnings.forEach((w) => push(warnings, w));
+
+  const decisionsCheck = validateDecisions(p.business?.decisions);
+  decisionsCheck.errors.forEach((e) => push(errors, e));
+  decisionsCheck.warnings.forEach((w) => push(warnings, w));
 
   const b = p.business || {};
   for (const key of ['name', 'type', 'city', 'hours']) {

@@ -1264,6 +1264,72 @@ async function checkSourceLinks() {
   }
 }
 
+async function checkOwnerDecisions() {
+  const D = await import('../src/services/decisionTeam.js');
+  const P = await import('../src/services/paymentReview.js');
+  const b = business() || {};
+  const settings = D.decisionSettings();
+  const flagsOn = P.paymentReviewOn() || P.ownerDecisionsOn();
+
+  section('Owner decisions + payment review');
+
+  if (!flagsOn) {
+    ok('both flags are off — the bot behaves exactly as before');
+    notes.push('Turn them on with: .set features.paymentReview true (proof reading) and .set features.ownerDecisions true (discounts, refunds, the team).');
+    return;
+  }
+
+  if (!(b.payment?.account || b.payment?.accountTail || b.payment?.accountName)) {
+    warn('no business.payment account is configured — the receiver check can only answer "unknown"');
+    notes.push('Add business.payment.account (or accountTail and accountName) so a proof can be compared with your own account.');
+  }
+
+  if (!settings.members.length) {
+    warn('no decision team: every request waits on the owner alone');
+    notes.push('Add someone with: .team add Ayesha 923001112233 payments,chat — or accept that you are the only decision-maker.');
+  } else {
+    // A chain that names someone who cannot decide that type would strand the
+    // request at the worst moment.
+    for (const [type, chain] of Object.entries(settings.chains)) {
+      for (const step of chain) {
+        if (step.who === 'owner') continue;
+        if (!D.canDecide(step.who, type)) {
+          warn(`chain for ${type} names +${step.who}, who has no role that can decide it`);
+          notes.push(`Give them the right role, or fix the chain: .chain ${type} owner:0,<number>:15`);
+        }
+      }
+    }
+  }
+
+  const open = P.paymentsSummary();
+  if (open.overdue) {
+    warn(`${open.overdue} payment request(s) are past their deadline`);
+    notes.push('Open them with .requests; a decision that sits is worse than a fast no.');
+  } else if (open.pending || open.recheck) {
+    ok(`${open.pending} waiting, ${open.recheck} on recheck, average decision ${open.avgDecisionMinutes === null ? 'n/a' : `${open.avgDecisionMinutes} min`}`);
+  } else {
+    ok('nothing waiting');
+  }
+
+  const { proofDir } = await import('../src/services/paymentProofs.js');
+  try {
+    const fs = await import('node:fs');
+    if (fs.existsSync(proofDir())) {
+      const mode = fs.statSync(proofDir()).mode & 0o777;
+      if (mode & 0o077) warn(`the proof folder is ${mode.toString(8)} — it should be 700`);
+      else ok('proof files live in the tenant folder, mode 700/600');
+    } else {
+      ok('no proofs stored yet');
+    }
+  } catch {
+    /* a read-only filesystem is not an emergency */
+  }
+
+  if (!settings.expectedResponseMinutes) {
+    notes.push('No expected response time is set, so the customer is never promised one. Set it with: .set business.decisions.expectedResponseMinutes 30');
+  }
+}
+
 async function main() {
   // `npm run doctor -- gemini` runs only the checks whose name matches.
   const args = process.argv.slice(2);
@@ -1297,6 +1363,7 @@ async function main() {
   if (want('orders', 'crm', 'tags')) await checkOrdersAndCrm();
   if (want('eval', 'golden')) await checkEval();
   if (want('links', 'sources', 'qr', 'poster')) await checkSourceLinks();
+  if (want('decisions', 'payments', 'payment', 'proof', 'proofs')) await checkOwnerDecisions();
   if (want('whatsapp', 'session')) await checkWhatsApp();
 
   section('Summary');

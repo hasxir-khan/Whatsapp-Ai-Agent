@@ -231,7 +231,9 @@
     "crm": false,
     "marketingAgents": false,
     "businessBrain": false,
-    "reasoning": false
+    "reasoning": false,
+    "ownerDecisions": false,
+    "paymentReview": false
   },
   "marketing": {
     "approvalMode": true,

@@ -125,8 +125,44 @@
 
     app.appendChild(tenantList());
     app.appendChild(newTenantCard());
+    if (state.slug) app.appendChild(paymentsCard());
     if (state.slug) app.appendChild(detailCard());
     app.appendChild(accountCard());
+  }
+
+  // Payments review, read-only. The bot owns the decisions; this card shows the
+  // counts it wrote into the tenant's data folder (mounted mode) and says so
+  // plainly when there is nothing to read (hosted mode).
+  function paymentsCard() {
+    var card = el('div', { class: 'card' });
+    card.appendChild(el('h2', { text: 'Payments' }));
+    var box = el('div', { class: 'muted', text: 'Reading…' });
+    card.appendChild(box);
+    card.appendChild(
+      el('p', {
+        class: 'small',
+        text: 'Read-only. Accepting or rejecting a proof is a person\'s act, done in WhatsApp with .accept, .reject or .partial.',
+      })
+    );
+    call('/api/platform/tenants/' + encodeURIComponent(state.slug) + '/payments').then(function (res) {
+      if (res.status !== 200) {
+        box.textContent = 'Could not read payments.';
+        return;
+      }
+      var d = res.data;
+      if (!d.available || !d.summary) {
+        box.textContent = d.hint || 'No payments summary yet.';
+        return;
+      }
+      var s = d.summary;
+      box.textContent =
+        (s.pending || 0) + ' waiting · ' +
+        (s.recheck || 0) + ' recheck · ' +
+        (s.overdue || 0) + ' overdue · ' +
+        (s.acceptedToday || 0) + ' accepted today, ' + (s.rejectedToday || 0) + ' rejected · ' +
+        'avg ' + (s.avgDecisionMinutes === null || s.avgDecisionMinutes === undefined ? 'n/a' : s.avgDecisionMinutes + ' min');
+    });
+    return card;
   }
 
   function tenantList() {

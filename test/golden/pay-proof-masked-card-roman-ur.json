@@ -1,0 +1,63 @@
+{
+  "id": "pay-proof-masked-card-roman-ur",
+  "title": "A screenshot with a full account number is masked on the owner card",
+  "template": "shop",
+  "category": "privacy",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "paymentReview": true,
+      "ownerDecisions": true
+    },
+    "business": {
+      "payment": {
+        "accountTail": "1234",
+        "accountName": "Test Studio"
+      }
+    }
+  },
+  "seed": {
+    "orders": [
+      {
+        "total": 5000,
+        "status": "awaiting_payment",
+        "hoursAgo": 3
+      }
+    ],
+    "contact": {
+      "message_count": 4
+    }
+  },
+  "turns": [
+    {
+      "image": true,
+      "user": "",
+      "caption": "Payment kar di hai Rs 5,000 account ****3456 TID 88776655",
+      "expect": "the receiver tail is all the card keeps; a full number never reaches it"
+    },
+    {
+      "owner": ".more DR-1",
+      "expect": "the card can be asked for again, still masked"
+    }
+  ],
+  "assert": {
+    "numbers": false,
+    "events": [
+      "payment_proof_received"
+    ],
+    "require": [
+      {
+        "match": "Payment to review",
+        "stream": "owner",
+        "why": "the owner sees the card"
+      },
+      {
+        "match": "3456",
+        "stream": "owner",
+        "why": "the last four are enough to recognise the account"
+      }
+    ],
+    "forbid": [],
+    "maxLength": 900
+  }
+}

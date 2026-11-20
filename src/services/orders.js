@@ -559,6 +559,14 @@ export function startOrderLoop(opts = {}, extra = {}) {
     runPaymentReminders({ transport, now: new Date() }).catch((err) => {
       if (onError) onError(err);
     });
+    // Owner decisions ride the same tick: reminders, escalation and the honest
+    // dues. Off (both flags false) this import resolves to a function that does
+    // nothing, so the old loop's behaviour is unchanged.
+    import('./paymentReview.js')
+      .then(({ runPaymentReview }) => runPaymentReview({ transport, now: new Date() }))
+      .catch((err) => {
+        if (onError) onError(err);
+      });
   }, Math.max(60_000, intervalMs));
   timer.unref?.();
   return timer;

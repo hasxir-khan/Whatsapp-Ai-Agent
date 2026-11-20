@@ -1,0 +1,72 @@
+{
+  "id": "pay-proof-accepted-en",
+  "title": "A payment proof goes to the owner and only an accept marks the order paid",
+  "template": "agency",
+  "category": "payment",
+  "language": "en",
+  "profile": {
+    "features": {
+      "paymentReview": true,
+      "ownerDecisions": true
+    },
+    "business": {
+      "payment": {
+        "accountTail": "1234",
+        "accountName": "Test Studio"
+      }
+    }
+  },
+  "seed": {
+    "orders": [
+      {
+        "total": 7500,
+        "status": "awaiting_payment",
+        "hoursAgo": 2
+      }
+    ],
+    "contact": {
+      "message_count": 6
+    }
+  },
+  "turns": [
+    {
+      "image": true,
+      "user": "",
+      "caption": "Payment done Rs 7,500 TID 55667788 to Test Studio",
+      "expect": "the customer hears that the owner is checking, not that it is paid"
+    },
+    {
+      "owner": ".accept DR-1",
+      "expect": "a person accepts; the order becomes paid through the existing path"
+    }
+  ],
+  "assert": {
+    "numbers": false,
+    "ownerNotified": true,
+    "events": [
+      "payment_proof_received",
+      "order_paid"
+    ],
+    "require": [
+      {
+        "match": "owner is checking|payment proof",
+        "stream": "customer",
+        "why": "the customer is told it is being checked"
+      },
+      {
+        "match": "Payment confirmed",
+        "stream": "customer",
+        "why": "after a person accepts, the customer is told honestly"
+      },
+      {
+        "match": "Payment to review",
+        "stream": "owner",
+        "why": "the owner gets the card"
+      }
+    ],
+    "forbid": [
+      "fake|fraud"
+    ],
+    "maxLength": 700
+  }
+}

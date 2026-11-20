@@ -1,0 +1,66 @@
+{
+  "id": "pay-proof-duplicate-reference-en",
+  "title": "A duplicate transaction id gets its own polite reason and next step",
+  "template": "agency",
+  "category": "decision",
+  "language": "en",
+  "profile": {
+    "features": {
+      "paymentReview": true,
+      "ownerDecisions": true
+    },
+    "business": {
+      "payment": {
+        "accountTail": "1234",
+        "accountName": "Test Studio"
+      }
+    }
+  },
+  "seed": {
+    "orders": [
+      {
+        "total": 7500,
+        "status": "awaiting_payment",
+        "hoursAgo": 2
+      }
+    ],
+    "contact": {
+      "message_count": 6
+    }
+  },
+  "turns": [
+    {
+      "image": true,
+      "user": "",
+      "caption": "Payment done Rs 7,500 TID 55667788",
+      "expect": "the proof is carded"
+    },
+    {
+      "owner": ".reject DR-1 6",
+      "expect": "reason 6 is the duplicate transaction id"
+    }
+  ],
+  "assert": {
+    "numbers": false,
+    "events": [
+      "payment_proof_received",
+      "decision_rejected"
+    ],
+    "require": [
+      {
+        "match": "already been used|own transaction ID",
+        "stream": "customer",
+        "why": "the reason is specific and actionable"
+      },
+      {
+        "match": "duplicate_reference",
+        "stream": "owner",
+        "why": "the owner's reply names the reason code"
+      }
+    ],
+    "forbid": [
+      "fake|fraud|stolen"
+    ],
+    "maxLength": 700
+  }
+}

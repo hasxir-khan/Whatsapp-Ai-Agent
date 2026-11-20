@@ -25,6 +25,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config, normalizePhone } from '../config/env.js';
 import { featureOn } from './profile.js';
+import { proofsForExport, forgetProofsFor } from './paymentProofs.js';
+import { decisionSettings } from './decisionTeam.js';
 import { clearAgentState } from './agents.js';
 import { invoiceDir } from './invoice.js';
 import { sweepTemp } from './media.js';
@@ -126,6 +128,20 @@ export function exportContact(rawNumber) {
   const orderHistory = orderIds.length
     ? all(`SELECT * FROM order_events WHERE order_id IN (${orderIds.map(() => '?').join(',')}) ORDER BY id`, orderIds)
     : [];
+  // Owner decisions: the payment proofs this person sent (their reading and the
+  // checks — never the image bytes) and the request history that hangs off them.
+  // Only when the flags are on, so an existing export keeps its exact shape.
+  const decisionsOn = featureOn('ownerDecisions') || featureOn('paymentReview');
+  const paymentProofs = decisionsOn ? proofsForExport(number) : [];
+  const decisionRequests = decisionsOn
+    ? all('SELECT id, type, order_id, status, created_at, resolved_at, resolved_by, reason_code, reason_text FROM decision_requests WHERE contact = ?', [number])
+    : [];
+  const decisionHistory = decisionRequests.length
+    ? all(
+        `SELECT request_id, actor, kind, from_status, to_status, reason_code, reason_text, created_at FROM decision_events WHERE request_id IN (${decisionRequests.map(() => '?').join(',')}) ORDER BY id`,
+        decisionRequests.map((d) => d.id)
+      )
+    : [];
 
   const payload = {
     format: 'wa-assistant-contact-export',
@@ -172,10 +188,11 @@ export function exportContact(rawNumber) {
     ...(featureOn('multiAgent') ? { agentChats, agentEvents } : {}),
     ...(featureOn('marketingAgents') ? { growthMessages } : {}),
     ...(featureOn('businessBrain') ? { brainDecisions, experimentSends } : {}),
+    ...(decisionsOn ? { decisionRequests, decisionEvents: decisionHistory, paymentProofs } : {}),
   };
 
   const counts = Object.fromEntries(
-    Object.entries({ messages, facts, leads, bookings, orders, followups, referrals, reviews, intake, calls, intents, consents, tags, notes, sourceLink, orderHistory, retryableMessages, ...(featureOn('multiAgent') ? { agentChats, agentEvents } : {}), ...(featureOn('marketingAgents') ? { growthMessages } : {}), ...(featureOn('businessBrain') ? { brainDecisions, experimentSends } : {}) })
+    Object.entries({ messages, facts, leads, bookings, orders, followups, referrals, reviews, intake, calls, intents, consents, tags, notes, sourceLink, orderHistory, retryableMessages, ...(featureOn('multiAgent') ? { agentChats, agentEvents } : {}), ...(featureOn('marketingAgents') ? { growthMessages } : {}), ...(featureOn('businessBrain') ? { brainDecisions, experimentSends } : {}), ...(decisionsOn ? { decisionRequests, decisionHistory, paymentProofs } : {}) })
       .map(([key, rows]) => [key, rows.length])
   );
 
@@ -231,6 +248,15 @@ export const CONTACT_TABLES = [
   { table: 'decisions', where: 'number = ?' },
   { table: 'reply_reviews', where: 'number = ?' },
 ];
+
+/** `.forget` keeps the money side (anonymised) when the owner asked for it. */
+function decisionsAnonymiseOn() {
+  try {
+    return decisionSettings().anonymiseOnForget === true;
+  } catch {
+    return false;
+  }
+}
 
 function countRows(table, where, params) {
   try {
@@ -325,6 +351,44 @@ export function forgetContact(rawNumber, { reason = 'owner_request', now = new D
       total += before;
     }
   }
+  // Owner decisions and the proof files behind them. Gated on the flags so a
+  // tenant that never turned them on deletes exactly what it deleted before.
+  if (featureOn('ownerDecisions') || featureOn('paymentReview')) {
+    const anonymise = featureOn('ownerDecisions') && decisionsAnonymiseOn();
+    const requestIds = all('SELECT id FROM decision_requests WHERE contact = ?', [number]).map((r) => r.id);
+    // The files always go; that is the point of the retention promise.
+    const proofs = forgetProofsFor(number);
+    if (proofs.deleted) {
+      removed.payment_proofs = proofs.deleted;
+      total += proofs.deleted;
+    }
+    if (anonymise && requestIds.length) {
+      // Accounting needs the amounts; the person still has the right to be
+      // forgotten. The contact becomes a stable anonymous id, the free-text
+      // reasons (which may name them) go, and the chain is kept as a record of
+      // who decided what.
+      const anon = `anon:${subjectHash(number).slice(0, 12)}`;
+      const holes = requestIds.map(() => '?').join(',');
+      run(`UPDATE decision_events SET reason_text = NULL, actor = 'admin' WHERE request_id IN (${holes})`, requestIds);
+      run(`UPDATE decision_requests SET contact = ?, reason_text = NULL, payload = '{"anonymised":true}' WHERE id IN (${holes})`, [anon, ...requestIds]);
+      run(`UPDATE payment_proofs SET contact = ? WHERE contact = ?`, [anon, number]);
+      removed.decision_requests_anonymised = requestIds.length;
+      total += 0;
+    } else if (requestIds.length) {
+      const holes = requestIds.map(() => '?').join(',');
+      const before = get(`SELECT COUNT(*) AS n FROM decision_events WHERE request_id IN (${holes})`, requestIds)?.n || 0;
+      if (before) {
+        run(`DELETE FROM decision_events WHERE request_id IN (${holes})`, requestIds);
+        removed.decision_events = before;
+        total += before;
+      }
+      const requests = get('SELECT COUNT(*) AS n FROM decision_requests WHERE contact = ?', [number])?.n || 0;
+      run('DELETE FROM decision_requests WHERE contact = ?', [number]);
+      removed.decision_requests = requests;
+      total += requests;
+    }
+  }
+
   for (const { table, where } of CONTACT_TABLES) {
     const params = where.includes('OR') ? [number, jid] : [number];
     const before = countRows(table, where, params);

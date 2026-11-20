@@ -138,6 +138,13 @@
       </section>
 
       <section>
+        <h2>Payments</h2>
+        <div class="kv" id="payments-note">Read-only strip. Accepting or rejecting a payment proof is a person's act, done from WhatsApp with <code>.accept</code>, <code>.reject</code> or <code>.partial</code>.</div>
+        <table style="margin-top:8px;"><thead><tr><th>waiting</th><th>recheck</th><th>overdue</th><th>claims</th><th>today</th><th>avg decision</th></tr></thead>
+        <tbody id="payments"><tr><td colspan="6" class="msg">…</td></tr></tbody></table>
+      </section>
+
+      <section>
         <h2>Tracked links</h2>
         <div class="kv" id="sources-note">Read-only. Create and print them from WhatsApp: <code>.link</code>, <code>.qr</code>, <code>.poster</code>.</div>
         <table style="margin-top:8px;"><thead><tr><th>source</th><th>chats</th><th>leads</th><th>paid</th><th>revenue</th><th>files</th></tr></thead>
@@ -229,6 +236,32 @@
       .join('');
   }
 
+  // Read-only: counts, amounts and timing. No accept/reject button lives here —
+  // that decision belongs to a person, in WhatsApp, where the history is.
+  async function loadPayments() {
+    const body = $('payments');
+    if (!body) return;
+    let data;
+    try {
+      data = await api('/api/admin/payments');
+    } catch (err) {
+      body.innerHTML = '<tr><td colspan="6" class="msg">Could not read payments: ' + String(err.message).replace(/[<>&]/g, '') + '</td></tr>';
+      return;
+    }
+    if (!data.enabled) {
+      $('payments-note').textContent = 'Owner decisions are off for this tenant. Turn them on with .set features.paymentReview true in WhatsApp.';
+      body.innerHTML = '<tr><td colspan="6" class="msg">—</td></tr>';
+      return;
+    }
+    const s = data.summary || {};
+    body.innerHTML = '<tr><td>' + (s.pending || 0) + '</td>' +
+      '<td>' + (s.recheck || 0) + '</td>' +
+      '<td>' + (s.overdue || 0) + '</td>' +
+      '<td>' + (s.pendingAmount ? (s.currency || '') + ' ' + Number(s.pendingAmount).toLocaleString() : '—') + '</td>' +
+      '<td>' + (s.acceptedToday || 0) + ' accepted · ' + (s.rejectedToday || 0) + ' rejected</td>' +
+      '<td>' + (s.avgDecisionMinutes === null || s.avgDecisionMinutes === undefined ? 'n/a' : s.avgDecisionMinutes + ' min') + '</td></tr>';
+  }
+
   async function loadTemplates() {
     // Templates come from the server-side list via the create endpoint's errors;
     // keep the picker simple and honest instead of guessing.
@@ -289,8 +322,9 @@
     say('run-msg', ''); say('profile-msg', ''); say('keys-msg', ''); say('upload-msg', ''); say('del-msg', '');
     const { profile } = await api('/api/admin/tenants/' + encodeURIComponent(slug) + '/profile');
     $('profile').value = JSON.stringify(profile, null, 2);
-    // Best-effort: the sources list is about the running tenant's database.
+    // Best-effort: these strips read the running tenant's database.
     loadSources();
+    loadPayments();
   }
 
   async function withBusy(id, fn) {

@@ -57,6 +57,12 @@ const HELP = `*Bot commands*
 .reset 92300… – clear project intake for a chat
 .quote 92300… – rebuild + send a quote
 .team – who's on the team + workload
+.team add Name 92300… payments,chat 09:00-21:00 – add a decision-maker
+.chain payment – who gets a payment question, and after how long
+.payments – pending, overdue, today's decisions, average decision time
+.requests – the open decision requests (.decision DR-3 for one)
+.accept DR-3 / .reject DR-3 1 / .partial DR-3 4000 / .recheck DR-3 30
+.timeline 12 – order + decision history, in order
 .mine – chats assigned to me
 .takeover 92300… – I'm handling this one (bot steps back)
 .release 92300… – give it back to the bot
@@ -276,6 +282,25 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
 
   if (!known) {
     return { handled: true, reply: 'This bot is private. Commands only work for the owner and the team.' };
+  }
+
+  // ── owner decisions + payment review ─────────────────────
+  // These commands have their own role rules (payments, discounts, admin), so
+  // they are routed before the generic permission table. `.team add|set|remove`
+  // joins the existing `.team` roster command; a bare `.team` still prints the
+  // roster in the switch below.
+  if (/^\.(accept|reject|partial|recheck|more|decision|requests|reverse|timeline|payments|chain)\b/i.test(input) ||
+      /^\.team\s+(add|set|remove)\b/i.test(input)) {
+    try {
+      const { isDecisionCommand, handleDecisionCommand } = await import('../services/paymentReview.js');
+      if (isDecisionCommand(input)) {
+        const out = await handleDecisionCommand({ text: input, from: sender, now: nowDate, transport: sock });
+        if (out.handled) return out;
+      }
+    } catch (err) {
+      // A half-written owner.json must not take the command router down.
+      return { handled: true, reply: `Decision command failed: ${String(err.message).slice(0, 160)}` };
+    }
   }
 
   const needed = COMMAND_PERMISSION[cmd];
@@ -708,7 +733,28 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
 
     case 'decisions': {
       const { decisionsText } = await import('../services/decision.js');
-      return { handled: true, reply: decisionsText(/^\d+$/.test(String(args[0] || '')) ? Number(args[0]) : 20) };
+      const body = decisionsText(/^\d+$/.test(String(args[0] || '')) ? Number(args[0]) : 20);
+      // When owner decisions are on, the payment side of the same command shows
+      // its own list underneath — one place to look for "what needs a person".
+      const { ownerDecisionsOn, openDecisionLines } = await import('../services/paymentReview.js');
+      if (!ownerDecisionsOn()) return { handled: true, reply: body };
+      return { handled: true, reply: `${body}\n\n${openDecisionLines()}` };
+    }
+
+    case 'payments': {
+      const { paymentsStrip } = await import('../services/paymentReview.js');
+      return { handled: true, reply: paymentsStrip() };
+    }
+
+    case 'requests': {
+      const { openDecisionLines } = await import('../services/paymentReview.js');
+      return { handled: true, reply: openDecisionLines() };
+    }
+
+    case 'timeline': {
+      const { timelineText } = await import('../services/paymentReview.js');
+      if (!args.length) return { handled: true, reply: 'Usage: .timeline 12  (order id) or .timeline 92300…' };
+      return { handled: true, reply: timelineText(args[0]) };
     }
 
     case 'control': {
@@ -739,7 +785,11 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       // Metrics from the event log only; anything we do not measure says so.
       const { accuracyReport, accuracyText } = await import('../services/accuracy.js');
       const days = /^\d+$/.test(String(args[0] || '')) ? Number(args[0]) : 7;
-      return { handled: true, reply: accuracyText(accuracyReport({ days })) };
+      const body = accuracyText(accuracyReport({ days }));
+      // The payment side of the same question: how fast did a person answer?
+      const { ownerDecisionsOn, paymentsStrip } = await import('../services/paymentReview.js');
+      if (!ownerDecisionsOn()) return { handled: true, reply: body };
+      return { handled: true, reply: `${body}\n\n${paymentsStrip()}` };
     }
 
     case 'review': {

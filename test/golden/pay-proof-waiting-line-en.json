@@ -1,0 +1,62 @@
+{
+  "id": "pay-proof-waiting-line-en",
+  "title": "While a payment is pending the customer gets one short honest line",
+  "template": "agency",
+  "category": "payment",
+  "language": "en",
+  "profile": {
+    "features": {
+      "paymentReview": true,
+      "ownerDecisions": true
+    },
+    "business": {
+      "payment": {
+        "accountTail": "1234",
+        "accountName": "Test Studio"
+      }
+    }
+  },
+  "seed": {
+    "orders": [
+      {
+        "total": 7500,
+        "status": "awaiting_payment",
+        "hoursAgo": 1
+      }
+    ],
+    "contact": {
+      "message_count": 3
+    }
+  },
+  "turns": [
+    {
+      "image": true,
+      "user": "",
+      "caption": "Payment done Rs 7,500 TID 99887766",
+      "expect": "proof received"
+    },
+    {
+      "user": "did my payment go through?",
+      "expect": "one short waiting line, no new demand for money"
+    }
+  ],
+  "assert": {
+    "numbers": false,
+    "events": [
+      "payment_proof_received",
+      "payment_waiting_line"
+    ],
+    "require": [
+      {
+        "match": "checking|confirm|with the owner",
+        "stream": "customer",
+        "why": "the wait is acknowledged"
+      }
+    ],
+    "forbid": [
+      "send (it|the money) again|pay now|urgent"
+    ],
+    "maxLength": 400,
+    "oneReplyPerTurn": true
+  }
+}

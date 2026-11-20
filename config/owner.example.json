@@ -16,7 +16,8 @@
     "conversation.maxBotTurnsBeforeHuman": "How many replies the assistant may send in one conversation before a human takes over.",
     "intake.fields": "What the assistant must find out, e.g. name, area, budget. Up to twelve fields.",
     "replyTiming": "'natural' (typing delay like a person), 'instant', or 'business hours only'.",
-    "documents": "A menu, price list or policy as PDF, DOCX, TXT or CSV, up to 5 MB. The assistant quotes from it."
+    "documents": "A menu, price list or policy as PDF, DOCX, TXT or CSV, up to 5 MB. The assistant quotes from it.",
+    "decisions": "Set up the decision team with .team add Name 92300… payments,chat, then .chain payment owner:0,92300…:15. The AI never accepts or rejects a payment; a person does."
   },
   "owner": {
     "_help": "EXAMPLE SECTION — every value here is a placeholder, not a real person. Replace them with your own. name and brand are what the bot says when a customer asks who they are talking to; location and timezone decide when it may promise a reply. services, addons, process and payment are the only prices and payment facts it may quote. team = people the bot can hand a chat to; friends = people who skip the sales script. Write numbers as country code + number, no plus sign and no spaces: 923001234567.",
@@ -682,7 +683,11 @@
         "number": ""
       },
       "stripeLink": "",
-      "cod": false
+      "cod": false,
+      "account": "",
+      "accountTail": "",
+      "accountName": "",
+      "rejectReasons": {}
     },
     "policies": {
       "//": "maxDiscountPercent is the only discount the closer may offer. Remove it and every discount request goes to you.",
@@ -721,6 +726,47 @@
     "emergency": {
       "label": "emergency services",
       "number": ""
+    },
+    "decisions": {
+      "team": {
+        "members": []
+      },
+      "chains": {
+        "payment": [
+          {
+            "who": "owner",
+            "afterMinutes": 0
+          }
+        ],
+        "discount_above_cap": [
+          {
+            "who": "owner",
+            "afterMinutes": 0
+          }
+        ],
+        "refund": [
+          {
+            "who": "owner",
+            "afterMinutes": 0
+          }
+        ]
+      },
+      "enabledTypes": [
+        "payment",
+        "discount_above_cap",
+        "refund"
+      ],
+      "reminderMinutes": [
+        15,
+        60,
+        180
+      ],
+      "maxRemindersPerDay": 4,
+      "expectedResponseMinutes": null,
+      "proofs": {
+        "retentionDays": 90,
+        "maxPerDay": 5
+      }
     }
   },
   "catalog": {
@@ -838,7 +884,9 @@
     "businessBrain": false,
     "reasoning": false,
     "//marketing": "the marketing team is owner-facing drafts: .marketing to see it",
-    "//brain": "the business brain reads your own numbers and proposes; it never sends on its own: .brain to see it"
+    "//brain": "the business brain reads your own numbers and proposes; it never sends on its own: .brain to see it",
+    "ownerDecisions": false,
+    "paymentReview": false
   },
   "_brainHelp": "EXAMPLE SECTION — the business brain reads this. minutesPerConversation feeds the 'time saved' figure. thinDataConversations is the point below which it says 'not enough data'. dailyReasoningCalls caps how many reasoning-model calls one tenant may make per day. autoRun lists action types the brain may run without asking (leave empty unless you mean it).",
   "brain": {

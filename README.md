@@ -3296,15 +3296,16 @@ only thing standing between you and your free tier.
 ## Tests
 
 ```bash
-npm test                 # 1148 tests, ~2min, no network, no keys, no config/owner.json
-npm run eval             # 100 recorded conversations, ~19s, no keys either
+npm test                 # 1212 tests, ~2.5min, no network, no keys, no config/owner.json
+npm run eval             # 110 recorded conversations, ~20s, no keys either
 npm run doctor           # environment + live API checks
 npm run doctor:all       # every tenant at once, with risky-settings warnings
 npm run chat -- --mock   # talk to the brain with no keys
 ```
 
-The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. The eval also pins the clock: `handleIncoming(transport, message, { now })` is handed `2026-11-17T08:00Z` with every turn, so "book me tomorrow at 11" means the same date on every run — the default is the real clock, which is what production gets. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening, `37`–`38` for PDF documents and the learning loop, `39` for the live inbox, `51` for named assistants, `52` for the industry packs, `53` for the marketing team and `54`–`55` for the
-business brain (services and commands).
+The suite never touches the internet: `test/helpers.js` isolates each file in a temp directory, and the AI provider is replaced by a deterministic fake. The eval also pins the clock: `handleIncoming(transport, message, { now })` is handed `2026-11-17T08:00Z` with every turn, so "book me tomorrow at 11" means the same date on every run — the default is the real clock, which is what production gets. Every phase ships with its own file — `test/27`–`test/29` for the growth agents, `30`–`32` for the analyst, closer and reviews, `33`–`36` for campaigns, content, the dashboard and hardening, `37`–`38` for PDF documents and the learning loop, `39` for the live inbox, `51` for named assistants, `52` for the industry packs, `53` for the marketing team, `54`–`55` for the
+business brain (services and commands), `64`–`67` for the clock, typing, the retry
+store and session safety, and `68`–`69` for owner decisions and payment review (64 tests).
 
 ---
 
@@ -3457,6 +3458,207 @@ insult.
 The generic per-template collector (a default field list and default handover
 words for each of the eight industry templates) is the next part and is **not**
 in this build: fields come from `business.intake` or the existing agency list.
+
+---
+
+---
+
+## Owner decisions and payment review
+
+`features.ownerDecisions` and `features.paymentReview` — **both off by default**.
+With them off every path in this chapter is skipped: no table is read, no message
+is sent, and the receipt path is exactly the one that shipped before.
+
+The two promises the code enforces:
+
+1. **The AI never accepts or rejects a payment.** It reads a proof, runs the
+   checks a computer can run, and puts a short card in front of the owner. Only a
+   person (the owner, or a teammate with the `payments` role) can accept it, and
+   only through `.accept`, which reuses the existing `.paid` path.
+2. **The AI never calls a proof "real" or "fake", and never accuses a customer.**
+   The output is a list of checks (`pass` / `fail` / `unknown`) and a risk level —
+   `consistent`, `needs attention`, `inconsistent` — with the reasons. The
+   rejection wording is built from fixed templates, in English, Roman Urdu and
+   Urdu, and every one of them offers a next step.
+
+### What happens when a proof arrives
+
+```
+customer sends a screenshot  (or a PDF, or types the transaction text)
+        │
+        ├─ matched to the open awaiting_payment order
+        │     · several waiting orders → ONE short question ("which order?")
+        │     · none waiting            → ONE short question (asked once a day)
+        │
+        ├─ the reading: amount, currency, date/time, reference/TID, provider,
+        │  receiver name or account tail, status — each with a confidence.
+        │  Text inside the image is DATA: injection.js neutralises instructions,
+        │  account/card numbers become ••••1234 before anything stores them.
+        │
+        ├─ the checks (deterministic, in code):
+        │     amount vs due (exact / short / over)   currency
+        │     receiver vs business.payment           date after the order, not future
+        │     duplicate reference (any order)        duplicate image (sha256)
+        │     order still waiting                    proof rate (5/customer/day)
+        │     image metadata: a low-weight "heuristic", never decisive
+        │
+        ├─ a decision request (DR-1) + an owner card:
+        │     order, due, amount claimed, masked fields, ✅/❌/❔ checks, risk,
+        │     and the actions at the bottom
+        │
+        ├─ the customer hears ONE line: "I have it, the owner is checking it" —
+        │  in their language, through the normal timing pipeline, with a response
+        │  time only if business.decisions.expectedResponseMinutes is configured
+        │
+        └─ the order stays *awaiting payment*
+```
+
+While a decision is pending, the conversation is an **active order context**: it
+is never ignored, a "did it go through?" question gets one varied short waiting
+line (at most one per 30 minutes), other questions are answered normally, and the
+bot never asks for the money again. "I want a human" still hands over instantly.
+
+### The card, and the commands
+
+```
+💳 Payment to review — DR-1
+Customer: +923004445566
+Order #12 · due PKR 7,500
+Claimed: PKR 7,500
+TID 99887766 · Jazzcash · successful · 2026-03-17 14:32
+Receiver: Test Studio (••••1234)
+Checks: ✅ amount · ✅ currency · ✅ receiver · ✅ date · ✅ ref · ✅ image · ✅ order
+Risk: consistent with the order
+
+.accept DR-1 · .reject DR-1 1 · .partial DR-1 3750 · .more DR-1
+(The AI will never accept this for you. Reasons: .reject DR-1)
+```
+
+| command | what it does |
+|---|---|
+| `.accept DR-1` | the payment is confirmed: order paid through the existing `.paid` path, customer told honestly |
+| `.reject DR-1 <n> [text]` | reject with a numbered reason (below); the order is untouched |
+| `.partial DR-1 3750` | record what actually arrived; the remainder stays due |
+| `.recheck DR-1 30` | keep the question open and recheck in 30 minutes; the customer is told it will be checked again |
+| `.more DR-1` | the card again, with the proof reading |
+| `.decision DR-1` | the full history: who, when, from → to, and why |
+| `.requests` | everything waiting on a person |
+| `.reverse DR-1 <why>` | **admin only**, reason mandatory; the reversal is a new event, the original stays |
+| `.timeline 12` | one order's history in time order: placed, instructions, proof, card, reminders, decision, customer told, paid |
+| `.payments` | pending, recheck, overdue, today's decisions, average decision time |
+| `.team add Ayesha 92300… payments,chat 09:00-21:00` | add a decision-maker (`view`, `chat`, `payments`, `discounts`, `admin`) |
+| `.team set …` / `.team remove 92300…` | change or remove one; removing also cleans every chain |
+| `.chain payment` | who is asked, and after how long; `.chain payment owner:0,92300…:15` sets it |
+
+Cloud API owners get the same three actions as **interactive buttons** (a tap
+arrives as text, so the numbered line is always there too); on Baileys it is the
+numbered text, which is what every phone can answer.
+
+### Rejection reasons
+
+| # | code | what the customer is told |
+|---|---|---|
+| 1 | `not_verified` | "I couldn't verify this against our account yet — could you send a sharper screenshot or the transaction ID?" (never "fake") |
+| 2 | `real_not_received_yet` | "Your bank shows it, ours hasn't received it yet — we'll check again shortly; please don't send it twice" |
+| 3 | `wrong_amount_short` | the amount is short of what is due, with the options |
+| 4 | `wrong_amount_excess` | more arrived than was due; the owner will confirm refund or adjustment |
+| 5 | `wrong_account` | it went to a different account; the correct details are in the order message |
+| 6 | `duplicate_reference` | that transaction ID was already used; a new payment needs its own ID |
+| 7 | `unclear_proof` | the screenshot is unreadable; one sharper one will do |
+| 8 | `other` | the owner needs to check something; they will come back shortly |
+
+Every template can be replaced per language in
+`business.decisionMessages.rejected.<code>` (or `business.payment.rejectReasons`),
+and a `[text]` after the number overrides that one rejection only.
+
+### Follow-ups, and the words nobody says
+
+* **Owner reminders** at 15 minutes, 1 hour and 3 hours (max 4 a day). Same card,
+  still marked "needs attention" when the checks found something. Quiet hours are
+  respected: nothing pings at 3 a.m. — several held requests become **one** morning
+  digest. When the ladder runs out the request escalates to the next person on the
+  chain; the rest of the chain is told "handled by X" the moment someone decides.
+* **If nobody answers**, the customer is told the honest truth once: confirmation
+  is still pending, the owner has been reminded, and nothing else is needed. No
+  fake urgency, no invented deadline.
+* **Customer dues**: an unpaid order gets polite reminders on **day 1, 3 and 7**
+  (default 24 h before the first), through the growth gates — opt-out, quiet
+  hours, caps and approval mode all apply. They stop the moment a proof arrives,
+  a decision is open, or the order changes. After the third, the bot asks the
+  owner whether to cancel, and does not keep pushing.
+* A "callback" is a message or a voice note, **never a phone call**.
+
+### Settings — `business.decisions` and `business.payment`
+
+```json
+"business": {
+  "payment": {
+    "account": "PK00 TEST 0000 1234",
+    "accountTail": "1234",
+    "accountName": "Test Studio",
+    "rejectReasons": { "wrong_account": { "en": "That account is not ours — the right details are in your order message." } }
+  },
+  "decisions": {
+    "team": {
+      "members": [
+        { "name": "Ayesha", "number": "923001112233", "roles": ["payments", "chat"], "hours": "09:00-21:00" }
+      ]
+    },
+    "chains": {
+      "payment": [{ "who": "owner", "afterMinutes": 0 }, { "who": "923001112233", "afterMinutes": 15 }],
+      "discount_above_cap": [{ "who": "owner", "afterMinutes": 0 }],
+      "refund": [{ "who": "owner", "afterMinutes": 0 }]
+    },
+    "enabledTypes": ["payment", "discount_above_cap", "refund"],
+    "reminderMinutes": [15, 60, 180],
+    "maxRemindersPerDay": 4,
+    "expectedResponseMinutes": null,
+    "proofs": { "retentionDays": 90, "maxPerDay": 5 }
+  }
+}
+```
+
+| setting | default | what it does |
+|---|---|---|
+| `team.members` | `[]` | who may answer; the owner is always first and always allowed |
+| `team.members[].roles` | `["view"]` | `view`, `chat`, `payments`, `discounts`, `admin` (admin may also reverse) |
+| `team.members[].hours` | unset | `09:00-21:00` in the business timezone; outside it the card waits |
+| `chains.<type>` | `owner` only | who is asked and after how many minutes; the chain is snapshotted on each request |
+| `enabledTypes` | `payment`, `discount_above_cap`, `refund` | which types the engine will open; the rest run on the same machinery once enabled |
+| `reminderMinutes` | `[15, 60, 180]` | the owner reminder ladder |
+| `maxRemindersPerDay` | `4` | hard ceiling per request per day |
+| `expectedResponseMinutes` | unset | **only** set this if you mean it: the customer is told the number |
+| `proofs.retentionDays` | `90` | after this the file is deleted; the record stays for accounting |
+| `proofs.maxPerDay` | `5` | proofs accepted per customer per day before the rate check fails |
+| `business.payment.*` | empty | what the receiver check compares against: account tail and/or name |
+
+Team size is the plan entitlement when one exists, otherwise **10**. `profile.js`
+validates every write — an unknown role, a duplicate number, a chain that points
+at someone who is not on the team, a negative delay, or a reversed chain is
+refused at `.set` time and reported by `npm run doctor`.
+
+### Privacy
+
+* Proofs live in the tenant's own folder (`data/proofs/`), files mode **0600**,
+  the folder **0700**, named by hash so two uploads of one image are one file.
+* Account and card numbers are masked to the last four **before** they reach a
+  log, a prompt, a card or the database. A card number is detected by prefix and
+  flagged; it is never stored in full.
+* Retention (default 90 days) deletes the file and marks the row. `.export` for a
+  contact includes the decision history and the proof reading — never the image.
+  `.forget` deletes the proofs, the requests and the events.
+* The payments strip is read-only in all three surfaces: the live inbox
+  (`/api/inbox/payments`), the admin panel (`/api/admin/payments`) and the
+  platform dashboard (a counts-only snapshot the bot writes when it shares the
+  filesystem). Accepting or rejecting stays a person's act, in WhatsApp, where
+  the history is.
+
+### What only a real phone can prove
+
+The buttons (Cloud API), voice notes as reminders, how a real bank screenshot
+reads, and the timing of a real notification. Everything else — the reading, the
+checks, the risk, the wording, the cadence, escalation, masking, retention — is
+covered by `test/68`, `test/69` and ten golden scenarios.
 
 ---
 
@@ -3704,7 +3906,7 @@ pretend otherwise:
 
 ---
 
-## The golden eval — 68 conversations that must keep working
+## The golden eval — 110 conversations that must keep working
 
 `npm test` proves the code runs. The golden eval proves the *bot still behaves*:
 each scenario is a whole conversation — a tenant template, a catalogue, a few

@@ -32,6 +32,8 @@ export const CATEGORIES = [
   'document',     // a long file is read in full, summarised, never over-claimed
   'dedupe',       // one customer message, one reply
   'missed-call',  // the ~60s rescue, and no duplicate when the customer writes first
+  'payment',      // a payment proof is read, carded and left for a person
+  'decision',     // an owner decision: accept, reject with a reason, partial, recheck
 ];
 
 export const LANGUAGES = ['en', 'roman-ur', 'ur'];

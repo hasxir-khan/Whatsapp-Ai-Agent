@@ -1,0 +1,67 @@
+{
+  "id": "pay-proof-accept-ur",
+  "title": "In Urdu, the customer is told the proof is being checked and then confirmed",
+  "template": "clinic",
+  "category": "payment",
+  "language": "ur",
+  "profile": {
+    "features": {
+      "paymentReview": true,
+      "ownerDecisions": true
+    },
+    "business": {
+      "payment": {
+        "accountTail": "1234",
+        "accountName": "Test Studio"
+      }
+    }
+  },
+  "seed": {
+    "orders": [
+      {
+        "total": 7500,
+        "status": "awaiting_payment",
+        "hoursAgo": 2
+      }
+    ],
+    "contact": {
+      "message_count": 5,
+      "language": "ur"
+    }
+  },
+  "turns": [
+    {
+      "image": true,
+      "user": "",
+      "caption": "ادائیگی ہو گئی Rs 7,500 TID 22334455",
+      "expect": "the acknowledgement is in Urdu"
+    },
+    {
+      "owner": ".accept DR-1",
+      "expect": "the confirmation is in Urdu too"
+    }
+  ],
+  "assert": {
+    "numbers": false,
+    "events": [
+      "payment_proof_received",
+      "order_paid"
+    ],
+    "require": [
+      {
+        "match": "جانچ|پروف",
+        "stream": "customer",
+        "why": "the customer is told a person is checking"
+      },
+      {
+        "match": "تصدیق",
+        "stream": "customer",
+        "why": "the acceptance is honest and in Urdu"
+      }
+    ],
+    "forbid": [
+      "fake|fraud"
+    ],
+    "maxLength": 700
+  }
+}

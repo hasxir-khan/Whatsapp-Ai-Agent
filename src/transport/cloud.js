@@ -384,6 +384,36 @@ export class CloudTransport extends Transport {
     return this.outsideWindow(number, jid, payload, message);
   }
 
+  /**
+   * Interactive buttons. Cloud API allows up to three; the caller always sends a
+   * numbered text fallback too (Baileys has no buttons here), and a tap comes
+   * back as a plain text message whose body is the button title.
+   */
+  async sendButtons(jid, { text = '', buttons = [] } = {}) {
+    const number = jidToNumber(jid);
+    if (!number) throw new TransportError(`cloud: no phone number in "${jid}"`, { code: 'bad_jid', permanent: true });
+    const usable = (buttons || []).slice(0, 3).filter((b) => b && b.title);
+    if (!usable.length) return this.send(jid, { text });
+    if (!this.windowOpen(number)) return this.outsideWindow(number, jid, { text }, { text });
+    return this.postMessage(
+      number,
+      {
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text: String(text).slice(0, 1024) },
+          action: {
+            buttons: usable.map((b, i) => ({
+              type: 'reply',
+              reply: { id: String(b.id || `b${i}`).slice(0, 256), title: String(b.title).slice(0, 20) },
+            })),
+          },
+        },
+      },
+      { kind: 'interactive' }
+    );
+  }
+
   async sendVoice(jid, { buffer, mimetype = 'audio/ogg; codecs=opus' } = {}) {
     return this.send(jid, { audio: buffer, mimetype, ptt: true });
   }

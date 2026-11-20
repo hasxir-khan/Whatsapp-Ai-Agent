@@ -803,6 +803,17 @@ export async function handleAdminRoute(req, res, url) {
     return await sendSourceAsset(req, res, pathname, { auth: 'admin', secure });
   }
 
+  if (pathname === '/api/admin/payments' && method === 'GET') {
+    const P = await import('./services/paymentReview.js');
+    return respond(200, {
+      ok: true,
+      tenant: config.tenant.slug,
+      enabled: P.paymentReviewOn() || P.ownerDecisionsOn(),
+      summary: P.paymentsSummary(),
+      counters: P.decisionCounters(),
+    });
+  }
+
   if (pathname === '/api/admin/audit' && method === 'GET') {
     return respond(200, { ok: true, entries: recentAudit(url.searchParams.get('limit') || 50) });
   }
@@ -1106,6 +1117,32 @@ async function handleInboxRoute(req, res, url) {
 
   if (pathname.startsWith('/api/inbox/sources/') && (req.method === 'GET' || !req.method)) {
     return await sendSourceAsset(req, res, pathname, { auth: 'inbox' });
+  }
+
+  // The payments strip: counts and amounts only, read-only. The actions stay in
+  // WhatsApp (and the admin panel's own routes), so nothing here can accept a
+  // payment with a stray click.
+  if (pathname === '/api/inbox/payments' && (req.method === 'GET' || !req.method)) {
+    const P = await import('./services/paymentReview.js');
+    if (!P.paymentReviewOn() && !P.ownerDecisionsOn()) {
+      sendJson(res, 200, { enabled: false, summary: null, decisions: [] });
+      return true;
+    }
+    sendJson(res, 200, {
+      enabled: true,
+      summary: P.paymentsSummary(),
+      decisions: (await import('./services/decisions.js')).listDecisions({ limit: 20 }).map((d) => ({
+        id: d.id,
+        type: d.type,
+        status: d.status,
+        createdAt: d.created_at,
+        orderId: d.order_id,
+        // The number is masked here too: the strip is a dashboard, not a phone book.
+        contact: `••••${String(d.contact).slice(-4)}`,
+        risk: d.payload?.risk || null,
+      })),
+    });
+    return true;
   }
 
   if (pathname === '/api/inbox' && (req.method === 'GET' || !req.method)) {

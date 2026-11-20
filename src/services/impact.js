@@ -271,6 +271,31 @@ export function impactReport({ now = new Date() } = {}) {
   } catch {
     /* the table exists only once the feature has been used */
   }
+  // Owner decisions: money questions that needed a person, and how long that
+  // took. Absent until the feature has been used, so the report reads exactly as
+  // before on a tenant that never turned it on.
+  try {
+    if (featureOn('ownerDecisions') || featureOn('paymentReview')) {
+      const opened = db.get('SELECT COUNT(*) AS n FROM decision_requests WHERE created_at >= ?', [w.from])?.n || 0;
+      if (opened) {
+        const decided = db.all(
+          'SELECT created_at, resolved_at, status FROM decision_requests WHERE created_at >= ? AND resolved_at IS NOT NULL',
+          [w.from]
+        );
+        const accepted = decided.filter((d) => ['accepted', 'partial'].includes(d.status)).length;
+        const rejected = decided.filter((d) => d.status === 'rejected').length;
+        const avg = decided.length
+          ? Math.round(decided.reduce((sum, d) => sum + (Date.parse(d.resolved_at) - Date.parse(d.created_at)) / 60_000, 0) / decided.length)
+          : null;
+        lines.push('');
+        lines.push(
+          `Decisions needing a person: ${opened} opened · ${decided.length} answered${avg === null ? '' : ` · ${avg} min average`} · ${accepted} accepted, ${rejected} rejected`
+        );
+      }
+    }
+  } catch {
+    /* the table exists only once the feature has been used */
+  }
   lines.push('');
   lines.push('Every number is a SQL count over this week. Definitions: README › How the Business Brain thinks.');
 

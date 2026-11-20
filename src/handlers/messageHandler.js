@@ -30,6 +30,7 @@ import {
 import { isOrderQuestion, orderStatusAnswer, orderTrackingEnabled } from '../services/orders.js';
 import { bookingAgentEnabled, handleBookingTurn } from '../services/bookingAgent.js';
 import { jidForms } from '../services/transportAudit.js';
+import { featureOn } from '../services/profile.js';
 import { alternateJid } from '../services/typingTest.js';
 import { cancelFor as cancelFollowUpDrafts } from '../services/followUpAgent.js';
 import { closerAgentEnabled, handleCloserTurn, readyToBuy, startOrder, handleReceipt } from '../services/closerAgent.js';
@@ -889,12 +890,24 @@ async function runBatch(sock, jid, number, items, ctx) {
     }
 
     if (decision.action === 'ignore') {
-      // Silence, but not accidental silence: the reason is in `.decisions`, and
-      // the two-in-a-row limit means nobody is ghosted for long.
-      memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, decision: decision.reason });
-      channel.claim();
-      db.logEvent('decision_ignore', number, { reason: decision.reason });
-      return;
+      // A pending payment decision is an active order context: that customer is
+      // never silently ignored, whatever the conversation rules think.
+      let pendingDecision = null;
+      try {
+        const review = await import('../services/paymentReview.js');
+        if (review.ownerDecisionsOn()) pendingDecision = review.pendingDecisionFor(number);
+      } catch {
+        /* the review module must never break the conversation path */
+      }
+      if (!pendingDecision) {
+        // Silence, but not accidental silence: the reason is in `.decisions`, and
+        // the two-in-a-row limit means nobody is ghosted for long.
+        memory.saveUserTurn(number, humanText, parts.length > 1 ? 'mixed' : parts[0].kind, { lang: langInfo.code, decision: decision.reason });
+        channel.claim();
+        db.logEvent('decision_ignore', number, { reason: decision.reason });
+        return;
+      }
+      db.logEvent('decision_ignore_overridden', number, { reason: decision.reason, decision: pendingDecision.id });
     }
 
     if (decision.action === 'react') {
@@ -1015,6 +1028,72 @@ async function runBatch(sock, jid, number, items, ctx) {
       db.logEvent('visual_reply_error', number, err.message);
     }
     return;
+  }
+
+  // ── payment proof (Owner Decisions + Payment Review) ───
+  // With features.paymentReview on, a proof becomes a decision request: read,
+  // checked, carded to the owner, and answered by a person. This block returns
+  // before the older receipt path below, which is left exactly as it was for
+  // when the flag is off.
+  if (featureOn('paymentReview')) {
+    try {
+      const review = await import('../services/paymentReview.js');
+      // A screenshot or a PDF of a receipt: both are evidence to look at.
+      const picture = parts.find((p) => (p.kind === 'image' || p.kind === 'document') && (p.text || p.caption)) || null;
+      const order = db.orderFor(`${number}@s.whatsapp.net`);
+      const waiting = order && ['awaiting_payment', 'placed'].includes(order.status);
+
+      // A customer asking "did my payment go through?" gets one short, honest,
+      // rate-limited line — never a second demand for money.
+      if (waiting && (review.asksAboutPayment(humanText) || picture)) {
+        const line = review.waitingLine({ number, lang: langInfo.code, now: ctx.clock() });
+        if (line) {
+          try {
+            const sentWait = await channel.say(line, { incomingText: humanText });
+            memory.saveUserTurn(number, humanText || '[photo]', picture ? 'image' : 'text', { lang: langInfo.code, waitingLine: true });
+            memory.saveAssistantTurn(number, line, 'text');
+            noteSent([sentWait?.key?.id]);
+            db.logEvent('payment_waiting_line', number, { lang: langInfo.code });
+          } catch (err) {
+            db.logEvent('payment_waiting_error', number, err.message);
+          }
+          return;
+        }
+      }
+
+      const proofText = textOnly && waiting && review.looksLikeProofText(humanText);
+      if ((picture && waiting) || proofText) {
+        const proof = await review.handlePaymentProof({
+          number,
+          text: picture ? picture.text : humanText,
+          kind: picture ? (picture.kind === 'document' ? 'document' : 'image') : 'text',
+          mimetype: picture?.mimetype || 'image/jpeg',
+          transport: sock,
+          now: ctx.clock(),
+          lang: langInfo.code,
+          // The customer's own file, fetched once, so the proof we keep is the
+          // proof they sent. A failed download still leaves the reading.
+          download: picture ? () => sock.getMedia(items[0]?.incoming) : null,
+        });
+        if (proof.handled) {
+          memory.saveUserTurn(number, humanText || '[photo]', picture ? 'image' : 'text', {
+            lang: langInfo.code,
+            paymentProof: proof.decision?.id || null,
+          });
+          channel.claim();
+          noteSent([]);
+          db.logEvent('payment_proof_handled', number, {
+            decision: proof.decision?.id || null,
+            reason: proof.reason || 'opened',
+          });
+          return;
+        }
+      }
+    } catch (err) {
+      // Never lose the conversation because of a review failure: fall through to
+      // the normal pipeline, and leave the reason in the log.
+      db.logEvent('payment_review_error', number, String(err.message).slice(0, 200));
+    }
   }
 
   // ── payment proof ──────────────────────────────────────

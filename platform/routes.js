@@ -382,6 +382,23 @@ export async function handlePlatformRoute(req, res, url) {
       }), true;
     }
 
+    // Payments review, read-only. In mounted mode the bot writes a small
+    // counts-only snapshot into the tenant's data folder; in hosted mode there
+    // is no shared filesystem, so the answer says so instead of pretending.
+    if (rest === '/payments' && method === 'GET') {
+      const { readPaymentsSnapshot } = await import('../src/services/paymentReview.js');
+      const root = process.env.TENANTS_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'tenants');
+      const dir = path.join(root, slug, 'data');
+      const snapshot = readPaymentsSnapshot(dir);
+      return sendJson(res, 200, {
+        ok: true,
+        slug,
+        available: Boolean(snapshot),
+        summary: snapshot,
+        hint: snapshot ? null : 'Payments review lives in the bot. The platform reads a counts-only snapshot when it shares the filesystem (mounted mode).',
+      }), true;
+    }
+
     if (rest === '/provision' && method === 'POST') {
       if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
       const result = await retryProvisioning(slug, { accountId: account.id, ip });

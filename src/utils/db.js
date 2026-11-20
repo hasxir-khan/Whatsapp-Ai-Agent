@@ -508,6 +508,74 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at  TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_key ON orders(key);
+-- What the customer has actually paid so far. A partial payment leaves the
+-- order open with the remainder due, so the number has to live on the order.
+-- ("paid" is the status; this is the money.)
+
+-- Owner decisions (payments, discounts, refunds…): one row per question that
+-- needs a human. The AI opens it; only a person answers it.
+CREATE TABLE IF NOT EXISTS decision_requests (
+  id               TEXT PRIMARY KEY,
+  tenant           TEXT,
+  type             TEXT,              -- payment | discount_above_cap | refund | custom_quote | cancellation | delivery_exception | other
+  contact          TEXT,              -- customer number
+  order_id         INTEGER,
+  payload          TEXT,              -- JSON, already masked (last 4 only)
+  status           TEXT DEFAULT 'pending',
+  created_at       TEXT,
+  deadline_at      TEXT,
+  step             INTEGER DEFAULT 0, -- where we are in the escalation chain
+  chain            TEXT,              -- JSON array of chain steps
+  assignee         TEXT,              -- who it is waiting on right now
+  resolved_at      TEXT,
+  resolved_by      TEXT,
+  reason_code      TEXT,
+  reason_text      TEXT,
+  customer_notified INTEGER DEFAULT 0,
+  updated_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decision_requests_status ON decision_requests(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_decision_requests_contact ON decision_requests(contact, status);
+CREATE INDEX IF NOT EXISTS idx_decision_requests_order ON decision_requests(order_id);
+
+-- Append-only: who did what, when, and why. Rows are never updated or deleted,
+-- so a reversal is visible in the history rather than hidden by an edit.
+CREATE TABLE IF NOT EXISTS decision_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id  TEXT,
+  actor       TEXT,
+  kind        TEXT,               -- opened | notified | reminded | decided | reversed | expired | escalated | note
+  from_status TEXT,
+  to_status   TEXT,
+  reason_code TEXT,
+  reason_text TEXT,
+  detail      TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decision_events_request ON decision_events(request_id, id);
+
+-- Payment proofs: the file stays in the tenant folder, the row keeps the hash,
+-- the masked reading and the deterministic checks. Never card numbers.
+CREATE TABLE IF NOT EXISTS payment_proofs (
+  id          TEXT PRIMARY KEY,
+  request_id  TEXT,
+  contact     TEXT,
+  order_id    INTEGER,
+  kind        TEXT,               -- image | document | text
+  file        TEXT,               -- path relative to the tenant folder
+  sha256      TEXT,
+  mimetype    TEXT,
+  bytes       INTEGER,
+  extracted   TEXT,               -- JSON, masked
+  checks      TEXT,               -- JSON
+  risk        TEXT,               -- consistent | needs_attention | inconsistent
+  created_at  TEXT,
+  expires_at  TEXT,
+  deleted_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_payment_proofs_request ON payment_proofs(request_id);
+CREATE INDEX IF NOT EXISTS idx_payment_proofs_hash ON payment_proofs(sha256);
+CREATE INDEX IF NOT EXISTS idx_payment_proofs_contact ON payment_proofs(contact, created_at);
 
 -- Which specialist answered, and how we decided (phase 2 step 3).
 -- Conversation Control: one row per inbound batch. The decision, its reason code
@@ -769,6 +837,7 @@ function migrate() {
   add('leads', 'next_action', 'TEXT');
   add('orders', 'eta', 'TEXT');
   add('orders', 'updated_at', 'TEXT');
+  add('orders', 'paid_amount', 'INTEGER DEFAULT 0');
   add('knowledge', 'embedding_model', 'TEXT');
   add('knowledge', 'embedded_hash', 'TEXT');
 }
@@ -1921,6 +1990,14 @@ export function orderFor(chat) {
 
 export function setOrderStatus(id, status) {
   run('UPDATE orders SET status = ? WHERE id = ?', [status, id]);
+  saveDB(true);
+  return get('SELECT * FROM orders WHERE id = ?', [id]);
+}
+
+/** How much of an order has been paid. A partial payment leaves the rest due. */
+export function setOrderPaidAmount(id, amount) {
+  const n = Math.max(0, Math.round(Number(amount) || 0));
+  run('UPDATE orders SET paid_amount = ? WHERE id = ?', [n, id]);
   saveDB(true);
   return get('SELECT * FROM orders WHERE id = ?', [id]);
 }
