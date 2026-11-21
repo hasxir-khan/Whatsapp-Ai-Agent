@@ -201,6 +201,17 @@ test('actual isolated live-worker env and timer: fake provider fallback, key gen
     const body = fs.readFileSync(path.join(data, file), 'utf8');
     assert.ok(!body.includes('PRIVATE_WORKER_UTTERANCE') && !body.includes('12025550178'));
   }
+  const attempts = fs.readFileSync(path.join(data, 'usage-events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const legacyInput = crypto.createHash('sha256').update('12025550178@s.whatsapp.net').digest('hex').slice(0, 16);
+  const install = db.get('SELECT salt FROM number_identity_salt').salt;
+  const { alias } = await import('../src/services/reportContract.js');
+  const expected = alias(legacyInput, install + '\0' + s, 'chat');
+  assert.deepEqual(
+    attempts.map((e) => e.conversation),
+    [expected, expected, null]
+  );
+  assert.ok(!JSON.stringify(attempts).includes(legacyInput));
+  assert.equal(admin.readTenantEnv(s).TENANT_METER_KEY, undefined, 'only delivered in the live process env');
   await store.reconcileTenant(s);
   const d = view(s, 'usage');
   assert.equal(d.metrics.calls, 3);

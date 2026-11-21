@@ -3721,7 +3721,7 @@ Three rules keep the layers apart:
 | `PLATFORM_PUBLIC_URL` | — | Public HTTPS origin used to choose cookie security and form webhook URLs. |
 | `PLATFORM_KEY_SECRET` | — | Independent, stable, random master secret (≥32 characters) for tenant AI keys. Missing/unusable ⇒ no BYOK delivery. |
 | `PLATFORM_BLOCK_DISPOSABLE` | off | Refuse disposable mail domains outright instead of flagging them. |
-| `PLATFORM_DB_DIALECT` | `sqlite` | `postgres` rewrites `?` placeholders to `$1…` and uses the Postgres DDL. |
+| `PLATFORM_DB_DIALECT` | `sqlite` | Keep `sqlite` in deployments. `postgres` translates placeholders and core DDL only; it does not connect to a Postgres server. |
 
 ### Run it locally
 
@@ -3759,7 +3759,7 @@ The generic `run-all` supervisor skips them; it does not have their AI keys.
 | file | responsibility |
 |---|---|
 | `env.js` | flags, paths, consent versions, help texts from `owner.example.json` |
-| `db.js` + `schema.js` | the platform database: one schema, SQLite now, Postgres-ready SQL |
+| `db.js` + `schema.js` | the sql.js platform database, core DDL and placeholder translation |
 | `crypto.js` | scrypt passwords, HMAC one-time codes, random ids |
 | `accounts.js` | signup → code → password, login, reset, consent, export, delete |
 | `session.js` | signed HttpOnly `wa_platform` cookie + `wa_platform_csrf` double submit |
@@ -3868,7 +3868,7 @@ before any platform request.
 `usage_events` is written at the **single** `llm.js` call site and carries
 tenant, time (plus materialised `day`/`month`), provider, model, agent, kind
 (`chat`, `router`, `reasoning`, `tts`, `vision`, `embedding`), prompt/completion
-tokens, an `estimated` flag, latency, and a **hashed** conversation key. When a
+tokens, an `estimated` flag, latency, and a **tenant-keyed HMAC** conversation ID. When a
 provider reports tokens they are believed; when it reports nothing,
 `estimateTokens()` fills in ~4 characters per token and the row is flagged
 `estimated=1`, so a dashboard can say which numbers are guesses.
@@ -3881,8 +3881,8 @@ counts. A worker that is not the platform writes the same events to
 ### Privacy and abuse
 
 - No customer message content in the platform: `audit.js` drops message-like
-  fields before storing, usage rows hold counts only, and the conversation key is
-  a truncated SHA-256.
+  fields before storing. Usage records contain counts and a keyed conversation
+  ID, not a phone number or its plain hash. See [how report IDs are derived](#report-identifiers).
 - Export first, then delete: `POST /api/platform/account/export` writes the JSON
   and records `exported_at`; deletion is refused (`409 export_first`) until that
   exists, then stops the workers, removes the folders, revokes sessions and
@@ -3987,6 +3987,12 @@ rollup is chat-worker telemetry, not the provider’s billing statement.
   liveness. Doctor warns about a production file outbox and about dev codes.
   Test a restore and the final phone-link/mail/provider round trips on staging.
 
+### When to move the platform DB to Postgres
+
+Keep **one** sql.js writer while it meets your latency, import-lag and RAM budgets. The file is loaded into memory; a transaction checkpoint exports the whole image and writes it synchronously on the HTTP event loop. In the [50-tenant × 90-day test](docs/phase-7-part-3-follow-up.md#50-tenants--90-days), the DB was 23.5 MiB and a full checkpoint took 59.4 ms (median of five). Eight concurrent mixed customer reads had 65.7 ms warm p95; one burst alongside a changed 90-date import reached 253.9 ms p95, with serving-process peak RSS of 221.5 MiB after the import. These are fixture measurements, **not a 50-tenant capacity limit**.
+
+Re-run `npm run benchmark:dashboard` on your target storage; also measure page p95 **during writes**, time to drain imports and peak RSS under your actual load. Plan a Postgres migration when repeated export/import pauses exceed your response budget, imports can't keep up, or there is insufficient RAM for the DB **and** export copies. Migrate **before** deploying multiple platform writers or requiring database failover. `PLATFORM_DB_DIALECT=postgres` is **not** a working backend: a driver/adapter, port of SQLite-specific rollup SQL, data migration and verified restore are still required. Don't point a second sql.js process at the same file.
+
 ### Known risks
 
 - The platform CSP still permits **`unsafe-inline`** scripts/styles. Same-origin
@@ -4040,17 +4046,27 @@ pretend otherwise:
 
 ## Dashboard metrics
 
-[What customers see](docs/customer-dashboard.md) · [Part 3 delivery and benchmark](docs/phase-7-part-3.md)
+[What customers see](docs/customer-dashboard.md) · [Part 3 delivery](docs/phase-7-part-3.md) · [50-tenant follow-up measurements](docs/phase-7-part-3-follow-up.md)
 
 **Enable on the control plane:** set `PLATFORM_ENABLED=1` and `PLATFORM_DASHBOARD=1`, keep the existing HTTPS, session and BYOK configuration, and restart the platform and its managed live workers. Open **Your assistants → Open customer dashboard**. No analytics routes, worker loop or operator login are added to an ordinary bot. No external scripts, provider calls, or LLM-generated counts are used to render reports.
 
 **How the numbers travel.** A live worker periodically reconciles its retained business dates (on startup, then every five minutes), yielding between dates. It atomically publishes a private, versioned `data/dashboard-v1.jsonl` beside the existing per-call journal. Only count/enum projections, numeric outcomes and tenant-keyed aliases cross the boundary. A single platform writer consumes closed batches every minute, committing before acknowledgement. A checksum and generation timestamp replace changed dates instead of adding duplicate totals. Model attempts use their original timestamp and a monotone insert-ID checkpoint. A new worker, missed import, late event or timezone change is reconciled from retained evidence. Backfill includes empty observed dates. Before the tenant’s normal 30-day event purge, only necessary counters are retained for longer reports; missing pre-install events cannot be reconstructed. Selections before archive coverage carry a lower-bound warning for event-based measures.
 
-**Retention and scope.** `limits.dashboard_days` on the assigned plan gates custom ranges immediately; free/starter/growth defaults are **31/60/90** calendar dates. The supported entitlement is 31–90 days (keeps a full quota month). The importer purges expired buckets, masked projections and the per-call replay ledger, even for paused tenants. Confirmed account deletion uses the existing supervisor cleanup and removes its reporting rows. Older backups remain governed by the host’s backup policy. Pages read indexed, cached hourly and daily rollups or bounded masked lists, not event tables. Lists have 25 rows per page; weekday/hour maps have a fixed 168 cells. `Updated` is the worker’s observation time, not the page-load time. A missing sample or denominator is shown as **—**, not a prediction. Local calendar endpoints handle DST; ISO timestamps identify exact instants. BYOK rate estimates are optional, owner-entered and never a platform price.
+**Retention and scope.** `limits.dashboard_days` on the assigned plan gates custom ranges immediately; free/starter/growth defaults are **31/60/90** calendar dates. The supported entitlement is 31–90 days (keeps a full quota month). The importer purges expired buckets, masked projections and the per-call replay ledger, even for paused tenants. Confirmed account deletion uses the existing supervisor cleanup and removes its reporting rows. Older backups remain governed by the host’s backup policy. Pages read indexed, cached hourly and daily rollups or bounded masked lists, not event tables. Lists have 25 rows per page; weekday/hour maps have a fixed 168 cells. `Updated N min ago` is the age of the worker observation at page load, not time since the importer last ran. Every section warns when it is **over 15 minutes** old; with no retained snapshot it reports unknown freshness. Fleet health shows the newest worker observation and labels each worker separately. A missing sample or denominator is shown as **—**, not a prediction. Local calendar endpoints handle DST; ISO timestamps identify exact instants. BYOK rate estimates are optional, owner-entered and never a platform price.
 
 **Authorization.** Customer HTML: `/platform/reports/<slug>/<section>`; matching JSON: `/api/platform/tenants/<slug>/reports/<section>`. Both check the same signed session, consent and membership. Owners alone see Payments and Export & data, can download aggregate/lead exports (POST with CSRF; audited; four/hour/account/tenant), or request a five-minute intake-brief grant. The collected values are served **only** by the tenant live inbox with its own credential. `PLATFORM_INBOX_ORIGIN` can be a tenant HTTPS origin template containing `{slug}`. Business-number/trial uniqueness uses blind lookup IDs, not stored phone numbers. Configuration and sensitive undo patches belong in tenant files, not analytics. On the first upgrade, mount existing tenant volumes before starting the writer: if a live customer’s previous undo patch cannot be moved, migration rolls back rather than losing it. Wizard resume stores only generic document labels, byte/chunk counts and timestamps.
 
 **Operations.** `/platform/operator` and `/api/platform/operator` have separate HTTPS Basic auth: username `operator`, independent random `PLATFORM_OPERATOR_TOKEN` of at least 32 characters. Unset disables the fleet view. A customer session is never an operator credential. Do not put operator credentials in tenant files or URLs. `npm run doctor -- platform` checks the reporting schema, credential separation and stale active workers. Share the existing tenant **data** volume with the single platform writer (same requirement as journal ingest); without it, reports cannot refresh. Do not open a second writable sql.js connection to the live database for cron or reporting.
+
+### Report identifiers
+
+For participant rows, leads and activity cards, the worker takes the part of the contact number before `@`, then computes `HMAC-SHA256(PLATFORM_TENANT_TOKEN, "contact" || NUL || number)` over UTF-8. `alias()` keeps the first eight bytes, maps hex digits `0…f` to letters `a…p`, and prefixes `id-`. The key, not the alphabet or truncation, prevents testing phone-number guesses against an exported ID. Provisioning generates the token once per tenant from 24 random bytes. Within that tenant repeats join; the same number in another tenant has an unrelated handle.
+
+Monthly **metered chats** use a separate per-tenant key and namespace. The managed launcher passes only that tenant’s effective 32-byte meter key in the live process environment. The usage writer applies the HMAC **before** a journal or sink sees a conversation; without a key it records the call but no conversation ID. The legacy digest is an input to this HMAC, never the stored ID. This preserves existing monthly distinct counts across the upgrade. [Exact meter derivation and regression checks](docs/phase-7-part-3-follow-up.md#identity).
+
+These are pseudonyms, not anonymous records. Protect `platform.db` and its backups (they contain the tenant tokens and installation secret), tenant `.env` files, and worker environments. Someone with the corresponding key **can** test guesses. Restart managed workers on upgrade; the writer protects older journal labels on import and rekeys unmasked ledger rows on open. It cannot revoke old journal copies or backups.
+
+### Metric definitions
 
 <!-- dashboard-definitions -->
 | Metric / section | Definition |
@@ -4147,7 +4163,7 @@ pretend otherwise:
 | Reply review votes | Up/down vote rows in the selected range, separate from the current draft queue. |
 | Key state | Active slot’s last recorded health and last use. No key or fingerprint. |
 | Active tenants | Count of tenant rows in active lifecycle state. |
-| Fleet health | Per assistant: plan, lifecycle, latest message or model attempt, monthly conversations left, unhealthy active keys, open incidents and trial end. Tenant handles cannot identify contacts. |
+| Fleet health | Per assistant: plan, lifecycle, worker snapshot age (overdue after 15 minutes), latest message or model attempt, monthly conversations left, unhealthy active keys, open incidents and trial end. Tenant handles cannot identify contacts. |
 | Fleet usage | Sum of retained tenant-local daily usage rollups by provider. Retention may differ by tenant. |
 <!-- /dashboard-definitions -->
 

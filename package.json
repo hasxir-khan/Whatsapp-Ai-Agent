@@ -17,6 +17,7 @@
     "chat": "node scripts/simulate.js",
     "session": "node scripts/session-backup.js",
     "test": "node --test test/*.test.js",
+    "benchmark:dashboard": "node scripts/benchmark-dashboard.mjs",
     "hooks": "node scripts/install-hooks.js",
     "scan": "node scripts/scan-secrets.js --all --history",
     "prepare": "node scripts/install-hooks.js",

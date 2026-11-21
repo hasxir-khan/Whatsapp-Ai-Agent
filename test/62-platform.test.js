@@ -1053,7 +1053,7 @@ test('no customer message content reaches the platform log', () => {
 });
 
 test('usage rows contain no phone numbers', () => {
-  usage.record({ tenant: 'cha-cha-chai', kind: 'chat', conversation: usage.conversationHash('923001112233@s.whatsapp.net'), promptTokens: 5 });
+  usage.record({ tenant: 'cha-cha-chai', kind: 'chat', chatKey: '923001112233@s.whatsapp.net', promptTokens: 5 });
   const rows = JSON.stringify(db.all("SELECT * FROM usage_events WHERE tenant = 'cha-cha-chai'"));
   assert.ok(!rows.includes('923001112233'));
 });

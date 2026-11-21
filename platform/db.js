@@ -2,15 +2,14 @@
 // The platform's own database. Separate file, separate process from any bot.
 //
 // Engine: sql.js (SQLite compiled to wasm) — the same choice the bot makes, for
-// the same reason: no native build step on a free host. The queries themselves
-// avoid SQLite-only syntax (`INSERT OR REPLACE`, `datetime()`, `AUTOINCREMENT`
-// in anything but the id definition) and `?` placeholders are rewritten for
-// Postgres by `toDialect()`, so moving to a server database is a config change
-// plus a connection object, not a rewrite of every call site.
+// the same reason: no native build step. toDialect() can translate placeholders
+// and the core schema has a Postgres DDL variant. There is no Postgres driver,
+// connection pool or port of the SQLite-specific report queries in this adapter.
 
 import { draftMetadata } from './draftMetadata.js';
 import { writeTenantUndo } from '../src/services/adminPanel.js';
 import { migrateNumbers } from './numberIdentity.js';
+import { migrateMeterIdentities } from './meterIdentity.js';
 import { migrateReports } from './reportSchema.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -101,7 +100,8 @@ export async function initPlatformDb({ file: target = platformDbFile() } = {}) {
       db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     }
     compact = migrateReports(db);
-    migrateNumbers(db);
+    const installSalt = migrateNumbers(db);
+    compact = migrateMeterIdentities(db, installSalt) || compact;
     for (const r of all(
       "SELECT slug,token,before FROM settings_undo WHERE before!='tenant-backup' ORDER BY created_at"
     )) {

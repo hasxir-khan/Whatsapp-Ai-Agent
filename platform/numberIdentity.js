@@ -14,4 +14,5 @@ export function migrateNumbers(db) {
     for (const [number] of legacy)
       db.run(`UPDATE ${t} SET number=? WHERE number=?`, [numberId(number, salt), number]);
   }
+  return salt;
 }

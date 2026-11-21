@@ -12,7 +12,8 @@ export function retention(plan) {
 export const masked = (s) => typeof s === 'string' && /^id-[a-p]{16}$/.test(s);
 export function alias(value, secret, namespace = 'contact') {
   if (!secret) throw new Error('dashboard_identity_missing');
-  // 64 bits, alphabetic rendering: neither phone suffixes nor cross-tenant joins.
+  // The secret (not the encoding) prevents offline guessing from the ID alone.
+  // Render the first 64 HMAC bits alphabetically to avoid phone-like labels.
   const hex = crypto.createHmac('sha256', secret).update(`${namespace}\0${value}`).digest('hex').slice(0, 16);
   return 'id-' + [...hex].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join('');
 }

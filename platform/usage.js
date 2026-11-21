@@ -11,22 +11,19 @@
 //   • worker process → the bot appends to a private journal in its own data
 //     directory, and `ingestJournal()` imports it here (idempotent by uid).
 //
-// Nothing here stores a message. `conversation` is a truncated SHA-256 of the
-// chat key, which is enough to count one conversation and useless for reading
-// one.
+// Nothing here stores a message. Both paths key conversation labels before
+// writing, including when dashboard reporting is disabled.
 
 import { dashboardEnabled } from './env.js';
 import { safeUsageLabels, bounds, replayIdentity } from './reportContext.js';
-import crypto from 'node:crypto';
+import { tenantMeterKey } from './meterIdentity.js';
+import { alias, masked } from '../src/services/reportContract.js';
 import path from 'node:path';
 import { get, all, run, lastId, flush } from './db.js';
-import { setUsageRecorder, consumeUsageJournal, validKeyRef } from '../src/services/usageEvents.js';
+import { conversationId, setUsageRecorder, consumeUsageJournal, validKeyRef } from '../src/services/usageEvents.js';
 
-/** A stable, non-reversible conversation handle. */
-export function conversationHash(chatKey) {
-  if (!chatKey) return null;
-  return crypto.createHash('sha256').update(String(chatKey)).digest('hex').slice(0, 16);
-}
+const installSalt = () => get('SELECT salt FROM number_identity_salt').salt;
+export const meterKeyForTenant = (tenant) => tenantMeterKey(installSalt(), tenant);
 
 export const KINDS = ['chat', 'router', 'reasoning', 'voice', 'tts', 'vision', 'embedding'];
 
@@ -62,18 +59,28 @@ function monthOf(iso) {
  * than a gap.
  */
 export function record(event = {}) {
+  return writeEvent(event, false);
+}
+
+function writeEvent(event, fromWorker) {
   const tenant = String(event.tenant || '').trim();
   if (!tenant) return { ok: false, error: 'no_tenant' };
   const reporting = dashboardEnabled();
+  if (reporting && !get('SELECT 1 FROM tenants WHERE slug=?', [tenant])) return { ok: false, error: 'unknown_tenant' };
+  const salt = reporting || event.chatKey || event.conversation ? installSalt() : null;
+  let conversation = null;
+  if (fromWorker && masked(event.conversation))
+    conversation = event.conversation; // already keyed at the source
+  else if (event.chatKey) conversation = conversationId(event.chatKey, tenantMeterKey(salt, tenant));
+  else if (event.conversation) conversation = alias(event.conversation, tenantMeterKey(salt, tenant), 'chat');
   let uid = String(event.uid || event.eventUid || '').slice(0, 40) || null;
   if (reporting) {
-    if (!get('SELECT 1 FROM tenants WHERE slug=?', [tenant])) return { ok: false, error: 'unknown_tenant' };
     const id = replayIdentity(
       tenant,
       uid,
-      event.conversation,
+      conversation,
       event.errorCategory,
-      get('SELECT salt FROM number_identity_salt').salt
+      salt
     );
     // A pre-dashboard batch may replay before its legacy row is backfilled.
     if (uid && uid !== id.uid && get('SELECT id FROM usage_events WHERE tenant=? AND event_uid=?', [tenant, uid]))
@@ -108,7 +115,7 @@ export function record(event = {}) {
       event.model ? String(event.model).slice(0, 80) : null,
       event.agent ? String(event.agent).slice(0, 40) : null,
       normaliseKind(event.kind),
-      event.conversation ? String(event.conversation).slice(0, 32) : null,
+      conversation,
       prompt,
       completion,
       total,
@@ -135,11 +142,11 @@ export function record(event = {}) {
 export function attachUsageSink() {
   setUsageRecorder((event) => {
     try {
-      return record(event);
+      return writeEvent(event, true);
     } catch {
       return { ok: false };
     }
-  });
+  }, meterKeyForTenant);
   return true;
 }
 
@@ -333,7 +340,7 @@ export function ingestJournal({ slug, dataDir, keepFile = false } = {}) {
       for (const line of lines) {
         let event;
         try { event = JSON.parse(line); } catch { continue; }
-        const result = record({ ...event, tenant: slug });
+        const result = writeEvent({ ...event, tenant: slug }, true);
         if (result.duplicate) duplicates++;
         else if (result.ok) imported++;
       }
@@ -351,7 +358,6 @@ export default {
   record,
   attachUsageSink,
   detachUsageSink,
-  conversationHash,
   daily,
   monthly,
   byKind,

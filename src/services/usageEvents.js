@@ -8,21 +8,23 @@
 //
 // When the platform is *not* in this process (a bot worker), it can ask the
 // worker to keep a local journal (PLATFORM_USAGE_JOURNAL=1) which it imports
-// later. The journal never holds a phone number: the chat key is hashed before
-// it is written.
+// later. The journal never holds a phone number: the conversation is tenant-keyed before
+// either the sink or the filesystem sees it.
 
-import { dimension } from './reportContract.js';
+import { alias, dimension } from './reportContract.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config/env.js';
 
 let recorder = null;
+let meterKeyFor = null;
 const seenUids = new Set();
 const SEEN_LIMIT = 5000;
 
 /** Replace the sink. `null` switches recording off. */
-export function setUsageRecorder(fn) {
+export function setUsageRecorder(fn, resolveMeterKey = null) {
+  meterKeyFor = fn ? resolveMeterKey : null;
   recorder = typeof fn === 'function' ? fn : null;
   return recorder;
 }
@@ -40,10 +42,20 @@ export function journalFile() {
   return path.join(config.paths.data, 'usage-events.jsonl');
 }
 
-/** Stable, non-reversible conversation handle — a hash, never a number. */
-export function conversationHash(chatKey) {
-  if (!chatKey) return null;
-  return crypto.createHash('sha256').update(String(chatKey)).digest('hex').slice(0, 16);
+// The old worker persisted the first 16 hex digits of SHA256(chatKey). That
+// label is guessable. It is ONLY a compatibility input to the HMAC now: never
+// return, log, journal or send it. This yields the same keyed ID as importing
+// an old journal, even for already-materialised Part 3 months.
+export function conversationId(chatKey, key) {
+  if (!chatKey || !key) return null;
+  const legacyInput = crypto.createHash('sha256').update(String(chatKey)).digest('hex').slice(0, 16);
+  return alias(legacyInput, key, 'chat');
+}
+
+function meterKey(tenant) {
+  if (meterKeyFor) return meterKeyFor(tenant);
+  const hex = process.env.TENANT_METER_KEY;
+  return /^[a-f0-9]{64}$/.test(hex || '') ? Buffer.from(hex, 'hex') : null;
 }
 
 /** Is anything listening? Lets the call site skip the arithmetic entirely. */
@@ -86,10 +98,19 @@ export function recordUsage(event = {}) {
   // the platform off is exactly what it was before the platform existed.
   if (!isRecording()) return { ok: false, mode: 'off' };
 
+  const tenant = event.tenant || config.tenant?.slug || 'default';
+  let conversation = null;
+  if (event.chatKey || event.conversation) {
+    try {
+      const key = meterKey(tenant);
+      // Even a caller-supplied (possibly raw or mask-shaped) label must be keyed.
+      if (key) conversation = event.chatKey ? conversationId(event.chatKey, key) : alias(event.conversation, key, 'chat');
+    } catch { /* missing key: keep the call counts, omit the identifier */ }
+  }
   const enriched = {
     uid: event.uid || crypto.randomUUID(),
     at: new Date(event.at || Date.now()).toISOString(),
-    tenant: event.tenant || config.tenant?.slug || 'default',
+    tenant,
     provider: event.provider || null,
     model: event.model || null,
     agent:
@@ -97,7 +118,7 @@ export function recordUsage(event = {}) {
         ? dimension('agent', event.agent || 'unknown', process.env.PLATFORM_TENANT_TOKEN)
         : event.agent || null,
     kind: event.kind || 'chat',
-    conversation: event.conversation || conversationHash(event.chatKey),
+    conversation,
     promptTokens: Math.max(0, Number(event.promptTokens) || 0),
     completionTokens: Math.max(0, Number(event.completionTokens) || 0),
     totalTokens: Math.max(0, Number(event.totalTokens) || 0),
@@ -157,7 +178,7 @@ export function consumeUsageJournal(dir, importBatch, { keepFile = false, filena
 /** Test hook: forget which uids were handled. */
 export function _resetUsageEvents() {
   seenUids.clear();
-  recorder = null;
+  setUsageRecorder(null);
 }
 
 export default {
@@ -167,6 +188,6 @@ export default {
   isRecording,
   journalEnabled,
   journalFile,
-  conversationHash,
+  conversationId,
   estimateTokens,
 };

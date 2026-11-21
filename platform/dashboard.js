@@ -2,6 +2,7 @@
 // consumes a journal, or queries usage_events. All list queries are bounded.
 import { all, get } from './db.js';
 import { bounds } from './reportStore.js';
+import { workerFreshness, staleBefore } from './reportFreshness.js';
 import { planForTenant, monthlyAllowanceLeft } from './plans.js';
 import { validDay, shiftDay, localDateString, DAY_MS } from '../src/services/reportCalendar.js';
 import { impactTotals, savedHours } from '../src/services/impactMetrics.js';
@@ -55,6 +56,7 @@ export function dashboard(slug, name, q = new URLSearchParams(), { owner = false
     page: name,
     owner,
     updated: st?.at || null,
+    freshness: workerFreshness(st?.at, now),
     meterUpdated: get('SELECT at FROM r_cursor WHERE slug=?', [slug])?.at || null,
     conversations: coverage ? conv : null,
     thin: coverage > 0 && conv < 20,
@@ -321,9 +323,16 @@ export function operatorOverview(q, now = new Date()) {
     PAGE_SIZE + 1,
     off,
   ]);
+  const fleet = get(
+    `SELECT MAX(s.at) updated, COUNT(CASE WHEN t.status='active' THEN 1 END) active,
+    COUNT(CASE WHEN t.status='active' AND s.at<? THEN 1 END) stale,
+    COUNT(CASE WHEN t.status='active' AND s.at IS NULL THEN 1 END) missing
+    FROM tenants t LEFT JOIN r_state s ON t.slug=s.slug`,
+    [staleBefore(now)]
+  );
   const rows = tenants.slice(0, PAGE_SIZE).map((t) => {
     const { today } = bounds(t.slug, now),
-      state = get('SELECT current FROM r_state WHERE slug=?', [t.slug]);
+      state = get('SELECT current,at FROM r_state WHERE slug=?', [t.slug]);
     const h = state ? JSON.parse(state.current).health : null;
     const used = scalar('SELECT COUNT(DISTINCT who) n FROM r_meter WHERE slug=? AND day BETWEEN ? AND ?', [
       t.slug,
@@ -334,6 +343,7 @@ export function operatorOverview(q, now = new Date()) {
       tenant: alias(t.slug, platformSecret(), 'operator'),
       plan: t.plan_id,
       status: t.status,
+      workerReport: workerFreshness(state?.at, now),
       lastActive:
         [h?.lastMessage, get('SELECT last_call FROM r_cursor WHERE slug=?', [t.slug])?.last_call]
           .filter(Boolean)
@@ -351,8 +361,9 @@ export function operatorOverview(q, now = new Date()) {
     };
   });
   return {
-    meta: { page: 'operator', updated: now.toISOString() },
-    metrics: { activeTenants: scalar("SELECT COUNT(*) n FROM tenants WHERE status='active'", []) },
+    meta: { page: 'operator', updated: fleet.updated, freshness: workerFreshness(fleet.updated, now),
+      staleWorkers: fleet.stale, missingWorkers: fleet.missing },
+    metrics: { activeTenants: fleet.active },
     tables: {
       tenants: { rows, page: off / PAGE_SIZE + 1, more: tenants.length > PAGE_SIZE },
       providerTotals: {

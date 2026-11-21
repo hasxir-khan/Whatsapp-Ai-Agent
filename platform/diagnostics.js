@@ -1,6 +1,7 @@
 // One read-only check shared by doctor and readiness. No provider traffic and no
 // key values, fingerprints, account IDs or tenant slugs in the result.
 import fs from 'node:fs';
+import { STALE_MINUTES, staleBefore } from './reportFreshness.js';
 import { readSnapshot } from './db.js';
 import { platformDbFile, platformEnabled, dashboardEnabled, platformSecret, secureOrigin, transportProblem } from './env.js';
 import { keySecretProblem, decryptValue } from './crypto.js';
@@ -32,7 +33,7 @@ export function diagnostics(rows) {
     if (rows)
       try {
         if (rows('SELECT MAX(version) v FROM report_schema')[0]?.v !== 1) errors.push('report_schema');
-        const cutoff = new Date(Date.now() - 15 * 60000).toISOString();
+        const cutoff = staleBefore(Date.now());
         if (
           rows(
             "SELECT 1 FROM tenants t LEFT JOIN r_state s ON s.slug=t.slug WHERE t.status='active' AND (s.at IS NULL OR s.at<?) LIMIT 1",
@@ -64,7 +65,7 @@ export async function doctorDiagnostics() {
 export const remedy = {
   report_schema: 'Restart the platform writer to apply the dashboard schema migration.',
   report_stale:
-    'An active assistant has not published a dashboard snapshot in 15 minutes. Check its live worker, shared tenant data mount and platform importer.',
+    `An active assistant has not published a dashboard snapshot in ${STALE_MINUTES} minutes. Check its live worker, shared tenant data mount and platform importer.`,
   report_operator_disabled: 'Fleet view is disabled. Set a separate strong PLATFORM_OPERATOR_TOKEN only if needed.',
   report_operator_credential: 'Use a random, independent operator credential of at least 32 characters.',
   platform_secret_missing: 'Set PLATFORM_SECRET for session signing.',

@@ -1,6 +1,7 @@
 import { page, esc } from './views.js';
 import { definitions, definitionFor } from './reportMetrics.js';
 import { pages, ownerPages } from './dashboard.js';
+import { STALE_MINUTES } from './reportFreshness.js';
 const titles = {
   overview: 'Overview',
   agents: 'Agents & activity',
@@ -40,6 +41,17 @@ const link = (label, url, active = false) =>
   `<a class="chip${active ? ' selected' : ''}" ${active ? 'aria-current="page"' : ''} href="${esc(url)}">${esc(label)}</a>`;
 const field = (name, label, value = '', type = 'text', attrs = '') =>
   `<label>${esc(label)}<input type="${type}" name="${esc(name)}" value="${esc(value)}" ${attrs}></label>`;
+function stamp({ minutes, state }) {
+  return state === 'missing' ? 'Updated: unknown' : `Updated ${minutes} min ago`;
+}
+function workerNotice({ minutes, state }) {
+  if (state === 'fresh') return '';
+  const message =
+    state === 'missing'
+      ? 'No worker report available. Awaiting a worker snapshot.'
+      : `Worker report overdue: no report received for ${minutes} min. Showing the last snapshot.`;
+  return `<strong class="worker-warning" role="status">${message}</strong>`;
+}
 function heat(rows) {
   const max = Math.max(1, ...rows.map((r) => r.count)),
     map = new Map(rows.map((r) => [r.weekday + '-' + r.hour, r.count]));
@@ -153,11 +165,17 @@ export function reportPage({ meta: m, metrics, tables }, query) {
         ? `<div class="pager">${t.page > 1 ? link('Previous', params({ ['p.' + id]: t.page - 1 })) : ''}<span>Page ${t.page}</span>${t.more ? link('Next', params({ ['p.' + id]: t.page + 1 })) : ''}</div>`
         : '';
     const brief = id === 'leads' && m.owner;
-    return `<section class="panel"><h2>${esc(definitions[definitionFor(name, id)]?.[0] || human(id))} ${help(id)}</h2>${id === 'accuracy' ? '<p class="small">Price mismatches: target 0. Blocked is not sent. Owner edits/corrections: not instrumented.</p>' : ''}${id === 'heatmap' ? (m.covered ? heat(rows) : '') : ['daily', 'monthly', 'funnel'].includes(id) ? chart(rows, id === 'funnel' ? 'count' : 'calls') : ''}${!rows.length ? '<p class="small">No observations in this selection.</p>' : id === 'heatmap' ? '' : `<div class="table-wrap" tabindex="0"><table><thead><tr>${columns.map((k) => `<th>${esc(human(k))}</th>`).join('')}${brief ? '<th>Intake brief</th>' : ''}</tr></thead><tbody>${rows.map((r) => `<tr ${id === 'accuracy' && r.category === 'priceMismatch' && r.count > 0 ? 'class="red"' : ''}>${columns.map((k) => `<td>${k === 'order' && r[k] ? `<a href="${esc(params({ order: r[k], 'p.history': 1 }))}">${esc(r[k])}</a>` : esc(show(r[k]))}</td>`).join('')}${brief ? `<td><button data-brief="${esc(r.contact)}">Open brief</button></td>` : ''}</tr>`).join('')}</tbody></table></div>`}${pager}</section>`;
+    function cell(k, row) {
+      if (k === 'workerReport') return stamp(row[k]) + workerNotice(row[k]);
+      if (k === 'order' && row[k])
+        return `<a href="${esc(params({ order: row[k], 'p.history': 1 }))}">${esc(row[k])}</a>`;
+      return esc(show(row[k]));
+    }
+    return `<section class="panel"><h2>${esc(definitions[definitionFor(name, id)]?.[0] || human(id))} ${help(id)}</h2>${id === 'accuracy' ? '<p class="small">Price mismatches: target 0. Blocked is not sent. Owner edits/corrections: not instrumented.</p>' : ''}${id === 'heatmap' ? (m.covered ? heat(rows) : '') : ['daily', 'monthly', 'funnel'].includes(id) ? chart(rows, id === 'funnel' ? 'count' : 'calls') : ''}${!rows.length ? '<p class="small">No observations in this selection.</p>' : id === 'heatmap' ? '' : `<div class="table-wrap" tabindex="0"><table><thead><tr>${columns.map((k) => `<th>${esc(human(k))}</th>`).join('')}${brief ? '<th>Intake brief</th>' : ''}</tr></thead><tbody>${rows.map((r) => `<tr ${id === 'accuracy' && r.category === 'priceMismatch' && r.count > 0 ? 'class="red"' : ''}>${columns.map((k) => `<td>${cell(k, r)}</td>`).join('')}${brief ? `<td><button data-brief="${esc(r.contact)}">Open brief</button></td>` : ''}</tr>`).join('')}</tbody></table></div>`}${pager}</section>`;
   }
   const note = op
-    ? 'Operator authentication · separate from customer sessions'
-    : `<b>${m.updated ? 'Updated ' + Math.max(0, Math.floor((Date.now() - Date.parse(m.updated)) / 60000)) + ' min ago' : 'Awaiting first worker snapshot'}</b> · ${esc(m.zone)} · ${esc(m.first)} — ${esc(m.last)}${m.currency ? ' · ' + esc(m.currency) : ''}<br>${m.covered}/${m.expected} dates published${m.covered < m.expected ? ' · partial history, missing dates are unknown' : ''}${m.eventDatesComplete < m.covered ? ' · event-based counts are lower bounds before archive coverage' : ''}${m.thin ? ' · Thin data: fewer than 20 conversations. Read counts before percentages.' : ''}`;
+    ? `Latest worker snapshot · <b>${stamp(m.freshness)}</b> · Operator authentication${m.staleWorkers || m.missingWorkers ? `<strong class="worker-warning" role="status">Active workers: ${m.staleWorkers} overdue (over ${STALE_MINUTES} min without a report); ${m.missingWorkers} with no worker report.</strong>` : ''}`
+    : `<b>${stamp(m.freshness)}</b> · ${esc(m.zone)} · ${esc(m.first)} — ${esc(m.last)}${m.currency ? ' · ' + esc(m.currency) : ''}<br>${m.covered}/${m.expected} dates published${m.covered < m.expected ? ' · partial history, missing dates are unknown' : ''}${m.eventDatesComplete < m.covered ? ' · event-based counts are lower bounds before archive coverage' : ''}${m.thin ? ' · Thin data: fewer than 20 conversations. Read counts before percentages.' : ''}${workerNotice(m.freshness)}`;
   const download = (kind, format) =>
     `<button data-export="${kind}" data-format="${format}">Download ${kind} ${format.toUpperCase()}</button>`;
   const actions =

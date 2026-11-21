@@ -24,7 +24,7 @@ import { planForTenant } from './plans.js';
 //     model until the owner overrides it explicitly.
 
 import { get, all, run, flush } from './db.js';
-import { platformKeyUsage } from './usage.js';
+import { meterKeyForTenant, platformKeyUsage } from './usage.js';
 import { providerIds, provider as providerInfo, isSupportedModel, defaultModel, helpFor, keyShapeProblem } from './models.js';
 import {
   randomId, encryptValue, decryptValue, keyFingerprint, keyFingerprintHash, keySecretProblem,
@@ -435,6 +435,7 @@ export async function deliverKeysAtStart(slug, { start = false, linkOnly = false
   const fn = start ? keyHooks.startTenant || adminHooks.start : keyHooks.restartTenant || adminHooks.restart;
   try {
     const res = await fn(slug, { isolated: true, extraEnv: { ...built.env, PAIRING_NUMBER: pairingNumber,
+      TENANT_METER_KEY: linkOnly ? '' : meterKeyForTenant(slug).toString('hex'),
       TENANT_DASHBOARD: dashboardEnabled() && !linkOnly ? '1' : '0', TENANT_REPORT_DAYS: String(retention(planForTenant(slug)?.plan)),
       TENANT_WORKER_MODE: linkOnly ? 'link' : 'live' } });
     if (res?.ok === false) throw new Error();

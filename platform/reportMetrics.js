@@ -245,7 +245,7 @@ export const definitions = {
   activeTenants: ['Active tenants', 'Count of tenant rows in active lifecycle state.'],
   tenants: [
     'Fleet health',
-    'Per assistant: plan, lifecycle, latest message or model attempt, monthly conversations left, unhealthy active keys, open incidents and trial end. Tenant handles cannot identify contacts.',
+    'Per assistant: plan, lifecycle, worker snapshot age (overdue after 15 minutes), latest message or model attempt, monthly conversations left, unhealthy active keys, open incidents and trial end. Tenant handles cannot identify contacts.',
   ],
   providerTotals: [
     'Fleet usage',
