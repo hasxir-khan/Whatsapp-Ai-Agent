@@ -212,7 +212,9 @@ export function sourceLabel(hit) {
  */
 export function looksFactual(text = '') {
   const s = String(text);
-  if (s.includes('?')) return true;
+  // Urdu is written with its own question mark, and a missed question is a
+  // missed question whichever one the customer typed.
+  if (s.includes('?') || s.includes('\u061F')) return true;
   return /\b(price|prices|cost|charge|fee|rate|how much|kitna|kitne|policy|policies|refund|return|delivery|deliver|shipping|timing|timings|hours|open|close|closed|stock|available|availability|warranty|guarantee|discount|payment|advance|menu|fee structure|admission)\b/i.test(
     s
   );

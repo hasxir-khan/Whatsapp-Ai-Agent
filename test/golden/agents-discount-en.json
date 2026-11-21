@@ -1,0 +1,68 @@
+{
+  "id": "agents-discount-en",
+  "title": "An assistant cannot approve a discount the owner has not approved",
+  "template": "restaurant",
+  "category": "discount",
+  "language": "en",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "sales",
+        "name": "Menu",
+        "role": "sales",
+        "routing": [
+          "price",
+          "menu",
+          "order",
+          "discount"
+        ],
+        "instructions": "Quote prices and totals from the catalogue only. Discounts belong to the owner.",
+        "tools": [
+          "check_stock"
+        ],
+        "enabled": true,
+        "default": true
+      },
+      {
+        "id": "bookings",
+        "name": "Bookings",
+        "role": "booking",
+        "routing": [
+          "table",
+          "reserve",
+          "book a table"
+        ],
+        "instructions": "Offer real slots only; confirm party size and time.",
+        "tools": [],
+        "enabled": true
+      }
+    ]
+  },
+  "turns": [
+    {
+      "user": "give me 50% off or I'll order somewhere else",
+      "model": [
+        {
+          "text": "That is the owner's call, not mine — I will ask them and come back to you."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agent": "sales",
+    "minReplies": 1,
+    "language": "en",
+    "require": [
+      {
+        "match": "owner",
+        "why": "discounts belong to the owner"
+      }
+    ],
+    "forbid": [
+      "50% off is fine|I can do 50"
+    ]
+  }
+}

@@ -11,6 +11,8 @@
 //     *customer* opens. Outside it, only an approved template goes through.
 //     Anything else is held and the owner is told — never dropped silently.
 
+import { boundedMedia, mediaByteLimit, mediaTimeout, MediaTooBigError } from '../services/media.js';
+import { isPrivateMedia } from '../services/ephemeralMedia.js';
 import crypto from 'node:crypto';
 import { config } from '../config/env.js';
 import * as db from '../utils/db.js';
@@ -29,7 +31,13 @@ export const CLOUD_CAPABILITIES = {
   document: true,
   mediaDownload: true,
   markRead: true,
-  presence: false, // no typing indicator exists on the Cloud API
+  // No presence protocol on the Cloud API. Typing still exists — it rides on
+  // the read receipt (POST /messages with status=read + typing_indicator) — so
+  // it has its own capability flag rather than pretending to be presence.
+  presence: false,
+  typingIndicator: true,
+  typingMaxSeconds: 25, // Meta drops the label after 25 s; the call must repeat
+  typingKinds: ['text'], // 'recording' has no Cloud equivalent
   deleteMessage: false, // you cannot unsend on the Cloud API
   deliveryReceipts: true,
   templates: true,
@@ -73,6 +81,27 @@ const TYPE_MAP = {
   unsupported: 'other',
 };
 
+/**
+ * Click-to-WhatsApp: the first message from someone who tapped an ad carries a
+ * `referral` object. We keep the headline and the source url — enough to say
+ * "the Eid ad brought 12 people" — and deliberately drop `ctwa_clid`, which is
+ * a per-click identifier with no use outside Meta's own reporting.
+ */
+export function normalizeReferral(referral) {
+  if (!referral || typeof referral !== 'object') return null;
+  const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const out = {
+    sourceUrl: clean(referral.source_url),
+    sourceType: clean(referral.source_type),
+    headline: clean(referral.headline),
+    body: clean(referral.body),
+    // Only whether it was there, never the value.
+    hasClickId: Boolean(referral.ctwa_clid),
+  };
+  if (!out.sourceUrl && !out.headline && !out.sourceType) return null;
+  return out;
+}
+
 /** One Cloud API `message` object → our normalised shape. */
 export function normalizeCloudMessage(message = {}, { pushName = null } = {}) {
   const kind = TYPE_MAP[message.type] || 'other';
@@ -98,7 +127,7 @@ export function normalizeCloudMessage(message = {}, { pushName = null } = {}) {
     caption,
     mimetype: mediaNode?.mime_type || '',
     fileName: message.document?.filename || '',
-    seconds: 0,
+    seconds: Number(mediaNode?.seconds) || 0,
     isVoice: !!message.audio?.voice,
     location: message.location
       ? { lat: message.location.latitude, lng: message.location.longitude, name: message.location.name || '' }
@@ -106,6 +135,7 @@ export function normalizeCloudMessage(message = {}, { pushName = null } = {}) {
     contactName: message.contacts?.[0]?.name?.formatted_name || null,
     timestamp: message.timestamp ? new Date(Number(message.timestamp) * 1000).toISOString() : new Date().toISOString(),
     mediaRef: mediaNode ? { mediaId: mediaNode.id, kind, mimetype: mediaNode.mime_type } : null,
+    referral: normalizeReferral(message.referral),
     raw: message,
   });
 }
@@ -222,12 +252,32 @@ export class CloudTransport extends Transport {
     const { messages, statuses } = this.parseWebhook(body);
 
     for (const status of statuses) this.applyStatus(status);
-    for (const message of messages) await this.emit(message);
+
+    // Meta retries a webhook until it gets a 2xx, and a restart between "handled"
+    // and "answered" used to mean the same customer got two replies. The id is
+    // written to cloud_messages *before* the message is acted on, so the ledger
+    // survives a restart and a retry is a no-op.
+    let duplicates = 0;
+    for (const message of messages) {
+      if (message.id && db.cloudInboundSeen(message.id)) {
+        duplicates += 1;
+        db.logEvent('cloud_webhook_duplicate', message.number, { wa_id: message.id, slug: this.slug });
+        continue;
+      }
+      if (message.id) db.cloudInboundMark(message.id, { tenant: this.slug, number: message.number });
+      await this.emit(message);
+    }
 
     if (!messages.length && !statuses.length) {
       db.logEvent('cloud_webhook_empty', null, { slug: this.slug });
     }
-    return { status: 200, body: 'ok', messages: messages.length, statuses: statuses.length };
+    return {
+      status: 200,
+      body: 'ok',
+      messages: messages.length - duplicates,
+      duplicates,
+      statuses: statuses.length,
+    };
   }
 
   /** Pull messages and statuses out of a Meta webhook body. */
@@ -328,12 +378,43 @@ export class CloudTransport extends Transport {
     const number = jidToNumber(jid);
     if (!number) throw new TransportError(`cloud: no phone number in "${jid}"`, { code: 'bad_jid', permanent: true });
 
+    if (isPrivateMedia() && !this.windowOpen(number)) throw new TransportError('outside_window', { permanent: true });
     const message = await this.toCloudMessage(number, payload);
 
     if (this.windowOpen(number)) {
       return this.postMessage(number, message, { kind: payloadKind(payload) });
     }
     return this.outsideWindow(number, jid, payload, message);
+  }
+
+  /**
+   * Interactive buttons. Cloud API allows up to three; the caller always sends a
+   * numbered text fallback too (Baileys has no buttons here), and a tap comes
+   * back as a plain text message whose body is the button title.
+   */
+  async sendButtons(jid, { text = '', buttons = [] } = {}) {
+    const number = jidToNumber(jid);
+    if (!number) throw new TransportError(`cloud: no phone number in "${jid}"`, { code: 'bad_jid', permanent: true });
+    const usable = (buttons || []).slice(0, 3).filter((b) => b && b.title);
+    if (!usable.length) return this.send(jid, { text });
+    if (!this.windowOpen(number)) return this.outsideWindow(number, jid, { text }, { text });
+    return this.postMessage(
+      number,
+      {
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text: String(text).slice(0, 1024) },
+          action: {
+            buttons: usable.map((b, i) => ({
+              type: 'reply',
+              reply: { id: String(b.id || `b${i}`).slice(0, 256), title: String(b.title).slice(0, 20) },
+            })),
+          },
+        },
+      },
+      { kind: 'interactive' }
+    );
   }
 
   async sendVoice(jid, { buffer, mimetype = 'audio/ogg; codecs=opus' } = {}) {
@@ -352,6 +433,8 @@ export class CloudTransport extends Transport {
    * owner. Nothing is ever silently dropped.
    */
   async outsideWindow(number, jid, payload, message) {
+    // The window can expire while toCloudMessage uploads a thumbnail.
+    if (isPrivateMedia()) throw new TransportError('outside_window', { permanent: true });
     const template = this.templateMessage(payload);
     if (template) {
       const sent = await this.postMessage(number, template, { kind: 'template' });
@@ -419,7 +502,7 @@ export class CloudTransport extends Transport {
   }
 
   /** The actual Graph API call, with the token kept out of every log line. */
-  async graph(path, { method = 'GET', body = null, raw = null, contentType = 'application/json' } = {}) {
+  async graph(path, { method = 'GET', body = null, raw = null, contentType = 'application/json', signal, responseLimit } = {}) {
     if (!this.token) throw new TransportError('cloud: CLOUD_TOKEN missing', { code: 'no_token', permanent: true });
     const doFetch = this.fetchImpl || globalThis.fetch;
     const url = `${GRAPH_BASE}/${this.apiVersion}/${String(path).replace(/^\//, '')}`;
@@ -429,13 +512,13 @@ export class CloudTransport extends Transport {
 
     let res;
     try {
-      res = await doFetch(url, { method, headers, body: raw || (body ? JSON.stringify(body) : undefined) });
+      res = await doFetch(url, { method, headers, signal: signal || (isPrivateMedia() ? AbortSignal.timeout(config.media.timeoutMs) : undefined), body: raw || (body ? JSON.stringify(body) : undefined) });
     } catch (err) {
       // Network trouble is retryable — the outbox will pick it up.
       throw new TransportError(`cloud: network error (${err.message})`, { code: 'network', status: 503 });
     }
 
-    const text = await res.text();
+    const text = responseLimit ? (await boundedMedia(res.body, responseLimit)).toString('utf8') : await res.text();
     let data = null;
     try {
       data = text ? JSON.parse(text) : null;
@@ -491,22 +574,23 @@ export class CloudTransport extends Transport {
   }
 
   /** Two-step Graph download: metadata → file URL → bytes. */
-  async getMedia(incoming) {
+  async getMedia(incoming, { maxBytes, timeoutMs = 30000 } = {}) {
     const ref = incoming?.mediaRef;
     if (!ref?.mediaId) throw new TransportError('cloud: nothing to download', { code: 'no_media', permanent: true });
 
-    const meta = await this.graph(ref.mediaId, { method: 'GET' });
+    if (['voice','audio'].includes(incoming.kind || ref.kind) && incoming.seconds > config.stt.maxSeconds)
+      throw new MediaTooBigError('media_limit');
+    const signal = AbortSignal.timeout(mediaTimeout(timeoutMs));
+    const meta = await this.graph(ref.mediaId, { method: 'GET', signal, responseLimit: 64 * 1024 });
+    const kind = incoming.kind || ref.kind || (meta?.mime_type || ref.mimetype || '').split('/')[0];
+    const limit = mediaByteLimit(kind, maxBytes);
+    if (Number(meta?.file_size) > limit) throw new MediaTooBigError('too_large');
     if (!meta?.url) throw new TransportError('cloud: media url missing', { code: 'no_media_url' });
-
     const doFetch = this.fetchImpl || globalThis.fetch;
-    const res = await doFetch(meta.url, { headers: { Authorization: `Bearer ${this.token}` } });
-    if (!res.ok) throw new TransportError(`cloud: media download failed (${res.status})`, { status: res.status });
-
-    const arrayBuffer = await res.arrayBuffer();
-    return {
-      buffer: Buffer.from(arrayBuffer),
-      mimetype: meta.mime_type || ref.mimetype || 'application/octet-stream',
-    };
+    const res = await doFetch(meta.url, { signal, headers: { Authorization: `Bearer ${this.token}` } });
+    if (!res.ok) { await res.body?.cancel(); throw new TransportError(`cloud: media download failed (${res.status})`, { status: res.status }); }
+    if (Number(res.headers?.get('content-length')) > limit) { await res.body?.cancel(); throw new MediaTooBigError('too_large'); }
+    return { buffer: await boundedMedia(res.body, limit), mimetype: meta.mime_type || ref.mimetype || 'application/octet-stream' };
   }
 
   async markRead(keys = []) {
@@ -521,16 +605,53 @@ export class CloudTransport extends Transport {
     }
   }
 
-  /** The Cloud API has no typing indicator. Say so instead of pretending. */
+  /** No presence protocol on the Cloud API: this stays a no-op. */
   async setPresence() {
     return null;
+  }
+
+  /**
+   * Typing, the Cloud API way: mark the customer's message read *and* raise the
+   * typing label in one call. Meta's documented shape is
+   *   { messaging_product: 'whatsapp', status: 'read', message_id,
+   *     typing_indicator: { type: 'text' } }
+   * The label is dropped when the next message is sent, or after 25 s — so it
+   * is refreshed while a slow reply is being written. There is no `paused`,
+   * `available` or `recording`: those are accepted and ignored.
+   *
+   * @param {string} messageId the inbound wamid to acknowledge
+   * @param {{state?:string}} [opts]
+   * @returns {Promise<{sent:boolean, reason?:string}>}
+   */
+  async sendTypingIndicator(messageId = null, { state = 'composing' } = {}) {
+    if (state !== 'composing') return { sent: false, reason: `cloud: no ${state} state` };
+    if (!messageId) return { sent: false, reason: 'cloud: typing needs the inbound message id' };
+    try {
+      await this.graph(`${this.phoneId}/messages`, {
+        method: 'POST',
+        body: {
+          messaging_product: 'whatsapp',
+          status: 'read',
+          message_id: messageId,
+          typing_indicator: { type: 'text' },
+        },
+      });
+      return { sent: true };
+    } catch (err) {
+      // A cosmetic indicator must never fail a reply: record it, carry on.
+      this.lastError = err.message;
+      this.typingError = err.message;
+      return { sent: false, reason: err.message };
+    }
   }
 
   // ── Baileys-compatible spellings ─────────────────────────
   // humanizer.js and older call sites speak Baileys. These two lines mean the
   // rest of the bot does not need to know which transport is underneath.
   async sendPresenceUpdate() {
-    return null; // nothing to send; presence is not part of the Cloud API
+    // Presence is not part of the Cloud API; typing comes from the read receipt
+    // above, which needs the message id that this call does not carry.
+    return null;
   }
 
   async readMessages(keys = []) {

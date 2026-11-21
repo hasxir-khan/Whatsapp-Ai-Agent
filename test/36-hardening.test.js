@@ -237,6 +237,87 @@ test('a careful setup produces no warnings', async () => {
   assert.deepEqual(clean, []);
 });
 
+test('doctor warns about PDF invoices that cannot be paid or filled in', async () => {
+  const { growthSettingsWarnings } = await import('../scripts/doctor.js');
+
+  const risky = growthSettingsWarnings(
+    { features: { pdfInvoices: true }, business: { name: '', payment: {}, invoice: { logo: 'assets/missing.png' } } },
+    {}
+  );
+  assert.ok(risky.some((w) => /payment is empty/i.test(w)), risky.join('\n'));
+  assert.ok(risky.some((w) => /does not exist/i.test(w)));
+  assert.ok(risky.some((w) => /business\.name is empty/i.test(w)));
+
+  const clean = growthSettingsWarnings(
+    { features: { pdfInvoices: true }, business: { name: 'Demo Cafe', payment: { cod: true } } },
+    {}
+  );
+  assert.deepEqual(clean, []);
+});
+
+test('doctor refuses to be quiet about an inbox with no token', async () => {
+  const { growthSettingsWarnings } = await import('../scripts/doctor.js');
+
+  const exposed = growthSettingsWarnings(
+    { features: { liveInbox: true }, business: { name: 'Demo Cafe' } },
+    { HOST: '0.0.0.0', DASHBOARD_TOKEN: '' }
+  );
+  // UPDATED in the security pass: an empty token no longer means "anyone can read
+  // every conversation" — it means the dashboard does not serve at all. The
+  // warning now says which routes stay up, because the bot and its webhooks do.
+  assert.ok(exposed.some((w) => /bind HOST=127\.0\.0\.1 or set DASHBOARD_TOKEN/.test(w)), exposed.join('\n'));
+  assert.ok(exposed.some((w) => /0\.0\.0\.0/.test(w)));
+  assert.ok(exposed.some((w) => /Webhooks \(\/webhook\/<slug>\) and \/health stay up/.test(w)));
+
+  const noWeb = growthSettingsWarnings(
+    { features: { liveInbox: true }, business: { name: 'Demo Cafe' } },
+    { ENABLE_WEB: 'false', DASHBOARD_TOKEN: 'x' }
+  );
+  assert.ok(noWeb.some((w) => /ENABLE_WEB is false/i.test(w)));
+
+  const safe = growthSettingsWarnings(
+    { features: { liveInbox: true }, business: { name: 'Demo Cafe' } },
+    { HOST: '127.0.0.1', DASHBOARD_TOKEN: 'something-long', ENABLE_WEB: 'true' }
+  );
+  assert.deepEqual(safe, []);
+});
+
+test('doctor warns when rule proposals outnumber what anyone would review', async () => {
+  const { growthSettingsWarnings } = await import('../scripts/doctor.js');
+  const loud = growthSettingsWarnings(
+    { features: { selfHealing: true }, business: {} },
+    { SELF_HEALING_MAX_PER_DAY: '9', MY_NUMBER: '923001234567' }
+  );
+  assert.ok(loud.some((w) => /SELF_HEALING_MAX_PER_DAY is 9/i.test(w)), loud.join('\n'));
+  const quiet = growthSettingsWarnings(
+    { features: { selfHealing: true }, business: {} },
+    { SELF_HEALING_MAX_PER_DAY: '3', MY_NUMBER: '923001234567' }
+  );
+  assert.deepEqual(quiet, []);
+});
+
+test('doctor notices a learning loop that has nobody to tell', async () => {
+  const { growthSettingsWarnings } = await import('../scripts/doctor.js');
+  // The demo placeholder: proposals would be stored and never announced.
+  const placeholder = growthSettingsWarnings(
+    { features: { selfHealing: true }, business: {} },
+    { SELF_HEALING_MAX_PER_DAY: '3', MY_NUMBER: '920000000000' }
+  );
+  assert.ok(placeholder.some((w) => /MY_NUMBER is a placeholder/i.test(w)), placeholder.join('\n'));
+
+  const missing = growthSettingsWarnings({ features: { selfHealing: true }, business: {} }, { SELF_HEALING_MAX_PER_DAY: '3' });
+  assert.ok(missing.some((w) => /MY_NUMBER is a placeholder/i.test(w)), missing.join('\n'));
+
+  // A real number, and the flag off, are both quiet.
+  const fine = growthSettingsWarnings(
+    { features: { selfHealing: true }, business: {} },
+    { SELF_HEALING_MAX_PER_DAY: '3', MY_NUMBER: '+92 300 1234567' }
+  );
+  assert.deepEqual(fine, []);
+  const off = growthSettingsWarnings({ features: {}, business: {} }, { MY_NUMBER: '920000000000' });
+  assert.deepEqual(off, []);
+});
+
 test('every growth flag is a known feature key', async () => {
   const { FEATURE_KEYS } = await import('../src/services/profile.js');
   for (const flag of ['reactivationAgent', 'contentAgent', 'closerAgent', 'reviewAgent', 'analystAgent', 'bookingAgent', 'followUpAgent', 'growthApproval']) {

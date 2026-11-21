@@ -1,0 +1,26 @@
+{
+  "id": "fix-provider-timeout-fallback-en",
+  "title": "A timed-out model falls back once, and the customer gets one finished answer",
+  "template": "restaurant",
+  "category": "provider",
+  "language": "roman-ur",
+  "mode": "both",
+  "profile": { "features": { "businessProfile": true } },
+  "turns": [
+    {
+      "user": "Bhai family platter mein kya kya aata hai?",
+      "expect": "the primary model times out, the fallback answers in the same language",
+      "model": [
+        { "timeout": true },
+        { "text": "Family platter mein grilled chicken, seekh kebab, naan, salad aur do drinks aate hain. Chaar logon ke liye kaafi hai." }
+      ]
+    }
+  ],
+  "assert": {
+    "language": "roman-ur",
+    "providerFallback": true,
+    "maxReplies": 1,
+    "oneReplyPerTurn": true,
+    "require": [{ "match": "chicken|kebab|naan", "why": "the fallback produced the real answer" }]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "rest-order-status-en",
+  "title": "Where is my order is answered from the order row, not the model",
+  "template": "restaurant",
+  "category": "status",
+  "language": "en",
+  "profile": { "features": { "orderTracking": true } },
+  "seed": {
+    "orders": [{ "status": "preparing", "total": 1450, "items": [{ "name": "Chicken Karahi", "qty": 1 }], "hoursAgo": 2 }]
+  },
+  "fixture": { "numbers": [5, 10] },
+  "turns": [
+    {
+      "user": "where is my order?",
+      "expect": "the deterministic order-status path answers without the LLM"
+    }
+  ],
+  "assert": {
+    "events": ["order_question_answered"],
+    "require": [{ "match": "preparing", "why": "the real status, not a guess" }],
+    "numbers": "hard"
+  }
+}

@@ -166,7 +166,7 @@ test('reloadProfile updates the live object modules already hold', () => {
   assert.equal(held.bio, 'Burgers, wraps and very good fries.', 'no stale copy after an edit');
 
   // MY_NAME in .env still wins over the profile, as it always has
-  process.env.MY_NAME = 'Hashir';
+  process.env.MY_NAME = 'Test Owner';
   P.reloadProfile();
-  assert.equal(config.owner.profile.owner.name, 'Hashir');
+  assert.equal(config.owner.profile.owner.name, 'Test Owner');
 });

@@ -182,7 +182,7 @@ export function buildHistoryMessages(dossier, limit = config.llm.historyTurns) {
     } else if (msg.role === 'owner') {
       // The owner replying personally is important context — the bot should
       // not contradict what he said.
-      out.push({ role: 'assistant', content: `(Hashir himself replied: ${String(msg.content).slice(0, 500)})` });
+      out.push({ role: 'assistant', content: `(the owner replied himself: ${String(msg.content).slice(0, 500)})` });
     }
   }
   // Models dislike two consecutive user turns — merge them

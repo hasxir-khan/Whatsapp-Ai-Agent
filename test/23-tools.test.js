@@ -381,7 +381,7 @@ test('a reply that leaks tool JSON is cleaned before sending', async () => {
 test('.tools lists the last calls', async () => {
   await T.executeTool('check_stock', { item: 'zinger burger' }, ctx());
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
-  const res = await handleOwnerCommand({}, '923169896229@s.whatsapp.net', '.tools');
+  const res = await handleOwnerCommand({}, '923001234567@s.whatsapp.net', '.tools');
   assert.match(res.reply, /\*Tools\* ✅ on/);
   assert.match(res.reply, /check_stock/);
   assert.match(res.reply, /Calls logged/);

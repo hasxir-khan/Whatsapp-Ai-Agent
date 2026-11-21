@@ -1,0 +1,37 @@
+{
+  "id": "clinic-price-roman-ur",
+  "title": "A consultation fee asked in Roman Urdu is quoted from the price list",
+  "template": "clinic",
+  "category": "price",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "toolCalling": true
+    }
+  },
+  "turns": [
+    {
+      "user": "consultation kitne ki hai?",
+      "model": [
+        {
+          "tool": "check_stock",
+          "args": {
+            "item": "general consultation"
+          }
+        },
+        {
+          "text": "General consultation 2000 PKR hai. Follow-up 1000 PKR ka hota hai."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [
+      {
+        "match": "2000"
+      }
+    ],
+    "sideEffects": "none"
+  }
+}

@@ -288,7 +288,7 @@ test('.report week gives the same numbers on demand', async () => {
   seedWeek({ conversations: 6, at: new Date(Date.now() - 24 * 3600 * 1000).toISOString() });
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const sock = fakeSock();
-  const { reply } = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', '.report week');
+  const { reply } = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', '.report week');
   assert.match(reply, /Weekly report/);
   assert.match(reply, /6 conversations/);
 });
@@ -296,7 +296,7 @@ test('.report week gives the same numbers on demand', async () => {
 test('.report (no argument) is still the daily brief', async () => {
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const sock = fakeSock();
-  const { reply } = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', '.report');
+  const { reply } = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', '.report');
   assert.match(reply, /Daily brief/);
 });
 

@@ -1,0 +1,24 @@
+{
+  "id": "rest-price-en",
+  "title": "A price question is answered from the catalogue via a stock lookup",
+  "template": "restaurant",
+  "category": "price",
+  "language": "en",
+  "profile": { "features": { "toolCalling": true, "catalog": true } },
+  "turns": [
+    {
+      "user": "How much is the chicken karahi?",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "chicken karahi" } },
+        { "text": "Chicken Karahi is 1450 PKR, serves 2 to 3 with naan." }
+      ],
+      "expect": "the model may only quote a price it looked up"
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "1450", "why": "the catalogue price, exactly" }],
+    "sideEffects": "none",
+    "maxLength": 400
+  }
+}

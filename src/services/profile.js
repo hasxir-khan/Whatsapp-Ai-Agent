@@ -1,3 +1,4 @@
+import {workerAccess} from './billingLease.js';
 // src/services/profile.js
 // One universal business profile, readable and writable at runtime.
 //
@@ -14,6 +15,17 @@ import path from 'node:path';
 import { config, reloadProfile } from '../config/env.js';
 
 export { reloadProfile };
+
+// A single validator for `business.conversation`, living next to the defaults it
+// checks against. The cycle is safe: both modules only call each other inside
+// functions, never while they are being evaluated.
+import { validateConversation } from './conversation.js';
+// The same idea for the owner-defined intake fields: the list is data, and the
+// place that validates data is here, next to the catalog and the FAQs.
+import { validateIntake } from '../core/projectIntake.js';
+// Owner decisions own their own block (the team, the chains, the proof rules),
+// and validate it exactly the way Conversation Control validates its settings.
+import { validateDecisions } from './decisionTeam.js';
 
 /** Every feature flag the bot knows about. Anything else in owner.json is ignored. */
 export const FEATURE_KEYS = [
@@ -44,6 +56,29 @@ export const FEATURE_KEYS = [
   'analyst',   // deprecated alias of analystAgent
   // phase 4
   'injectionGuard',
+  'pdfInvoices',
+  'selfHealing',
+  'adminPanel',
+  'visualSearch',
+  'liveInbox',
+  'mcpTools',
+  'mcpWriteTools',
+  'healthAlerts',
+  'privacyTools',
+  // phase 5
+  'sourceLinks',
+  // phase 6
+  'multiAgent',
+  'marketingAgents',
+  'businessBrain',
+  'reasoning',
+  // phase 7
+  'conversationControl',
+  // phase 8 — owner decisions + payment review (off by default)
+  'ownerDecisions',
+  'paymentReview',
+  'voiceLanguagePolicy',
+  'videoUnderstanding',
 ];
 
 export const FEATURE_LABELS = {
@@ -72,6 +107,25 @@ export const FEATURE_LABELS = {
   reviews: 'Deprecated alias of reviewAgent',
   analyst: 'Deprecated alias of analystAgent',
   injectionGuard: 'Extra prompt-injection defence',
+  pdfInvoices: 'PDF quotes, invoices and receipts on WhatsApp',
+  selfHealing: 'Learn FAQ rules from your own manual replies (owner-approved)',
+  adminPanel: 'Browser control panel for every tenant (needs ADMIN_TOKEN)',
+  visualSearch: 'Match customer photos to catalogue images locally (free, no API)',
+  liveInbox: 'Live inbox on the dashboard: read, reply and take over chats',
+  mcpTools: 'Operator-approved external tool servers (MCP), read-only unless writes are switched on',
+  mcpWriteTools: 'Allow MCP tools that take actions — still needs the customer to confirm each one',
+  healthAlerts: 'Tell the owner when WhatsApp, the AI, disk, backups or an unanswered chat go wrong',
+  privacyTools: 'Data export and deletion: .export <number>, .forget <number> <number>',
+  sourceLinks: 'Tracked wa.me links, QR codes and printable posters: .link, .links, .qr, .poster',
+  multiAgent: 'Custom named assistants per business, routed automatically (.agents, .agent)',
+  marketingAgents: 'Owner-facing marketing team: plan, content, offers, promos, reviews, channels, ad copy (.marketing)',
+  businessBrain: 'Business brain: impact numbers, daily brief, weekly strategy, goals, experiments, next-best-action (.brain)',
+  reasoning: 'Reasoning router: complex turns get plan → act → verify before answering',
+  conversationControl: 'Conversation Control: a decision per message (reply, clarify, redirect, handover, react, ignore), scope and off-topic rules, abuse boundaries, owner-defined intake fields and a written brief',
+  ownerDecisions: 'Human decision requests (payments, discounts, refunds): the owner answers, the AI never does',
+  voiceLanguagePolicy: 'Allowlisted spoken language and matching voice replies',
+  videoUnderstanding: 'Private, bounded video observations and owner review',
+  paymentReview: 'Read payment proofs, run deterministic checks, and put a short card in front of the owner',
 };
 
 // ── live profile access ─────────────────────────────────────
@@ -100,6 +154,28 @@ export const FEATURE_ALIASES = {
   analyst: 'analystAgent',
   reactivation: 'reactivationAgent',
   content: 'contentAgent',
+  invoices: 'pdfInvoices',
+  pdf: 'pdfInvoices',
+  healing: 'selfHealing',
+  inbox: 'liveInbox',
+  admin: 'adminPanel',
+  panel: 'adminPanel',
+  visual: 'visualSearch',
+  images: 'visualSearch',
+  mcp: 'mcpTools',
+  mcptools: 'mcpTools',
+  mcptools_write: 'mcpWriteTools',
+  mcpwrite: 'mcpWriteTools',
+  alerts: 'healthAlerts',
+  health: 'healthAlerts',
+  privacy: 'privacyTools',
+  gdpr: 'privacyTools',
+  agents: 'multiAgent',
+  multiagent: 'multiAgent',
+  marketing: 'marketingAgents',
+  marketingteam: 'marketingAgents',
+  brain: 'businessBrain',
+  businessbrain: 'businessBrain',
 };
 
 /** Flags that are ON unless explicitly turned off. */
@@ -108,6 +184,9 @@ export const FEATURE_DEFAULT_ON = new Set(['growthApproval']);
 export function featureOn(name) {
   const f = features();
   const key = FEATURE_ALIASES[name] || name;
+  const lease = workerAccess();
+  // Safety/consent switches are not paid features, including when paused.
+  if (lease && !['privacyTools','growthApproval','injectionGuard'].includes(key) && (!lease.canRun || !lease.features.includes(key))) return false;
   if (f[key] === true) return true;
   // A tenant may still have only the old key set.
   if (f[name] === true) return true;
@@ -297,15 +376,22 @@ export function toPkrAmount(amount) {
 export function effectiveServices() {
   const seen = new Set();
   const out = [];
+  // The same service can exist twice: once in the catalogue the customer sees
+  // and once in a legacy `owner.services` list. Quoting matched whichever came
+  // first, so one project could be priced 120,000–350,000 on the price list and
+  // 25,000–75,000 from the old list in the same chat. The name decides, and the
+  // catalogue entry wins.
+  const nameKey = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
   for (const raw of catalogItems()) {
     const item = normalizeItem(raw);
     // Products are quotable too (a burger, a lawn suit) — only free or
     // price-less entries stay out of the quote engine.
     if (item.min === null || item.min <= 0) continue;
-    const key = item.id || item.name.toLowerCase();
-    if (seen.has(key)) continue;
+    const key = item.id || nameKey(item.name);
+    if (seen.has(key) || seen.has(`name:${nameKey(item.name)}`)) continue;
     seen.add(key);
+    seen.add(`name:${nameKey(item.name)}`);
     out.push({
       id: item.id,
       name: item.name,
@@ -321,9 +407,10 @@ export function effectiveServices() {
 
   for (const raw of profile().owner?.services || []) {
     const id = raw.id || slugId(raw.name);
-    const key = id || String(raw.name || '').toLowerCase();
-    if (seen.has(key)) continue;
+    const key = id || nameKey(raw.name);
+    if (seen.has(key) || seen.has(`name:${nameKey(raw.name)}`)) continue;
     seen.add(key);
+    seen.add(`name:${nameKey(raw.name)}`);
     out.push(raw);
   }
 
@@ -396,6 +483,26 @@ export function setPath(dotted, value) {
   }
   let patch = value;
   for (let i = parts.length - 1; i >= 0; i -= 1) patch = { [parts[i]]: patch };
+
+  // The two blocks Conversation Control owns are validated *before* the write,
+  // so `.set business.conversation.scope nonsense` is refused rather than saved
+  // into a state the rules cannot run with.
+  if (parts[0] === 'business' && (parts[1] === 'conversation' || parts[1] === 'intake')) {
+    const current = readOverrides()?.business?.[parts[1]] || {};
+    const next = deepMerge(current, parts.length <= 2 ? value : patch.business[parts[1]]);
+    const check = parts[1] === 'conversation' ? validateConversation(next) : validateIntake(next);
+    if (check.errors.length) throw new Error(check.errors[0]);
+  }
+
+  // Owner decisions: the team, the chains and the proof rules are checked before
+  // the write, so a bad chain (a member who is not on the team, a negative
+  // delay) is refused instead of saved and quietly ignored at 2 a.m.
+  if (parts[0] === 'business' && parts[1] === 'decisions') {
+    const current = readOverrides()?.business?.decisions || {};
+    const next = deepMerge(current, parts.length <= 2 ? value : patch.business.decisions);
+    const check = validateDecisions(next);
+    if (check.errors.length) throw new Error(check.errors[0]);
+  }
   return savePatch(patch);
 }
 
@@ -455,10 +562,26 @@ export function addFaq(q, a) {
 
 // ── validation (doctor + every write) ───────────────────────
 
-export function validateProfile(p = profile()) {
+export function validateProfile(p = profile(), decisionContext) {
   const errors = [];
   const warnings = [];
   const push = (list, msg) => list.push(msg);
+
+  // Conversation Control settings: the enums and ranges are checked on every
+  // write (`.set`, the admin panel, a hand-edited owner.json) as well as by the
+  // doctor. A typo becomes a warning; a value the rules cannot run with is an
+  // error, so it can never be saved into a half-working state.
+  const conversationCheck = validateConversation(p.business?.conversation);
+  conversationCheck.errors.forEach((e) => push(errors, e));
+  conversationCheck.warnings.forEach((w) => push(warnings, w));
+
+  const intakeCheck = validateIntake(p.business?.intake);
+  intakeCheck.errors.forEach((e) => push(errors, e));
+  intakeCheck.warnings.forEach((w) => push(warnings, w));
+
+  const decisionsCheck = validateDecisions(p.business?.decisions, decisionContext);
+  decisionsCheck.errors.forEach((e) => push(errors, e));
+  decisionsCheck.warnings.forEach((w) => push(warnings, w));
 
   const b = p.business || {};
   for (const key of ['name', 'type', 'city', 'hours']) {

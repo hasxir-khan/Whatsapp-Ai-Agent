@@ -6,7 +6,7 @@
 //
 //   npm run session
 
-import { backupSession, sessionFiles } from '../src/utils/sessionBackup.js';
+import { backupSession, sessionFiles, sessionVerified } from '../src/utils/sessionBackup.js';
 import { config } from '../src/config/env.js';
 
 const files = sessionFiles();
@@ -16,7 +16,18 @@ if (!files.length) {
   process.exit(1);
 }
 
-const blob = backupSession();
+// Only a session that has actually connected is worth backing up: a blob taken
+// from keys that were never proven is how a "restore" ends up rolling the bot
+// back to a session the phone no longer recognises.
+const verified = sessionVerified();
+if (!verified.verified && String(process.env.SESSION_BACKUP_FORCE || '') !== '1') {
+  console.log(`\n⚠️  This session has not had a successful connection: ${verified.reason}.`);
+  console.log('   Start the bot until it shows "connected", then run this again.');
+  console.log('   Deliberately backing up an unproven session? SESSION_BACKUP_FORCE=1 npm run session\n');
+  process.exit(1);
+}
+
+const blob = backupSession({ requireConnected: true });
 if (!blob) {
   console.log('Could not build the backup.');
   process.exit(1);

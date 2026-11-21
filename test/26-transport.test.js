@@ -396,11 +396,9 @@ test('media is downloaded through the Graph API in two steps', async () => {
   // metadata, then the file itself
   t.fetchImpl = async (url, options = {}) => {
     requests.push({ url, method: options.method || 'GET', headers: options.headers });
-    if (String(url).endsWith('/MEDIA-42')) return jsonResponse({ url: 'https://lookaside.example/file', mime_type: 'image/jpeg' });
-    return {
-      ...jsonResponse({}),
-      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-    };
+    if (String(url).endsWith('/MEDIA-42'))
+      return Response.json({ url: 'https://lookaside.example/file', mime_type: 'image/jpeg' });
+    return new Response(new Uint8Array([1, 2, 3]));
   };
 
   const { buffer, mimetype } = await t.getMedia({ mediaRef: { mediaId: 'MEDIA-42' } });

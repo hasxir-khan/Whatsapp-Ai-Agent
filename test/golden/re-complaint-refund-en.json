@@ -1,0 +1,19 @@
+{
+  "id": "re-complaint-refund-en",
+  "title": "A refund demand goes to the owner, with nothing promised first",
+  "template": "real-estate",
+  "category": "complaint",
+  "language": "en",
+  "turns": [
+    {
+      "user": "I paid token money and now you are ignoring me. I want a refund.",
+      "model": [{ "text": "I am sorry — I am passing this to the owner now, they will call you today." }]
+    }
+  ],
+  "assert": {
+    "events": ["escalation"],
+    "ownerNotified": true,
+    "forbid": ["refund has been", "we will refund"],
+    "minReplies": 1
+  }
+}

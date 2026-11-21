@@ -189,7 +189,7 @@ test('the wrong day sends nothing', async () => {
 test('.content now gives a pack on demand', async () => {
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const sock = fakeSock();
-  const { reply } = await handleOwnerCommand(sock, '923169896229@s.whatsapp.net', '.content now');
+  const { reply } = await handleOwnerCommand(sock, '923001234567@s.whatsapp.net', '.content now');
   assert.match(reply, /Content pack/);
   assert.match(reply, /3 statuses/);
   assert.match(reply, /Best times/);

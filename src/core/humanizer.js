@@ -5,6 +5,12 @@
 
 import { config } from '../config/env.js';
 import { sendReliable } from '../services/outbox.js';
+import { replyTiming, planReplyDelay, createTypingSession, typingCapabilities, readDelayMs, scaled, holdingLine } from './timing.js';
+import * as timeline from '../services/timeline.js';
+import * as providerTrace from '../services/providerTrace.js';
+import { isNumberHeavy } from './brevity.js';
+import { presenceChannel } from '../transport/contract.js';
+import { noteTyping } from '../services/transportAudit.js';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -101,11 +107,41 @@ export function humanDelay({ replyText = '', incomingText = '', isVoice = false 
   );
 }
 
-async function setPresence(sock, jid, state) {
+export async function setPresence(sock, jid, state) {
   try {
-    await sock.sendPresenceUpdate(state, jid);
-  } catch {
+    // One place knows the argument order (see src/transport/contract.js): the
+    // transport's method is (jid, state), a raw socket's is (state, jid).
+    const channel = presenceChannel(sock);
+    if (!channel) return;
+    await channel.send(state, jid);
+    noteTyping({ jid, state, via: channel.via, order: channel.order, sock, ok: true });
+  } catch (err) {
+    noteTyping({ jid, state, via: 'unknown', order: 'broken', sock, ok: false, error: err?.message });
     /* presence is cosmetic — never fail a message because of it */
+  }
+}
+
+/**
+ * A reaction instead of a whole reply — for "ok", "thanks", "👍".
+ * @returns {Promise<boolean>} false when the transport cannot do it
+ */
+export async function sendReaction(sock, jid, key, emoji = '👍') {
+  if (!key) return false;
+  // The transport wrapper and a raw Baileys socket answer to different names;
+  // ask the capability matrix rather than guessing.
+  const cap = typingCapabilities(sock);
+  if (!cap.reactions) return false;
+  const messageKey = typeof key === 'string' ? { remoteJid: jid, id: key, fromMe: false } : key;
+  try {
+    if (typeof sock?.sendReaction === 'function') {
+      await sock.sendReaction(jid, messageKey, emoji);
+      return true;
+    }
+    // Baileys spells it as a message payload.
+    await sendReliable(sock, jid, { react: { text: emoji, key: messageKey } });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -119,14 +155,189 @@ export async function markRead(sock, keys = []) {
 }
 
 /**
- * Send a reply like a person would: pause, show typing, send in 1–3 bubbles
- * with short gaps, then go back to "offline".
+ * Read receipt after 1–3 s, like someone glancing at the phone — not the
+ * instant the message lands. Returns a handle so a test (or shutdown) can flush
+ * it; nothing waits for it, because the customer should not wait for a tick.
+ *
+ * @returns {{at:number, done:Promise<void>, cancel:()=>void}}
  */
-export async function sendHuman(sock, jid, text, { incomingText = '', voice = null } = {}) {
-  const bubbles = splitIntoBubbles(text);
+export function scheduleRead(sock, keys = [], { chat = null } = {}) {
+  const timing = replyTiming();
+  if (timing.enabled === false) {
+    return { at: 0, done: markRead(sock, keys), cancel: () => {} };
+  }
+  const at = readDelayMs(timing);
+  let timer = null;
+  let cancelled = false;
+  const done = new Promise((resolve) => {
+    timer = setTimeout(async () => {
+      if (cancelled) return resolve();
+      timeline.mark(chat, 'read');
+      await markRead(sock, keys);
+      resolve();
+    }, at);
+    timer.unref?.();
+  });
+  // In tests (and in a burst) the env scale makes this a few milliseconds.
+  return {
+    at,
+    done,
+    cancel: () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    },
+  };
+}
+
+/**
+ * Send a reply like a person would.
+ *
+ * With `replyTiming` on (the default) the wait is planned from the *target
+ * window* — see timing.js — and an indicator that is already running (the one
+ * the batch opened while the model worked) is reused instead of a second
+ * `composing` that would look like a restart. With it off, this is the old
+ * behaviour, byte for byte.
+ *
+ * @param {{incomingText?:string, voice?:object|null, session?:object, receivedAt?:number, chat?:string}} opts
+ */
+export async function sendHuman(
+  sock,
+  jid,
+  text,
+  { incomingText = '', voice = null, session = null, receivedAt = null, chat = null, lang = 'en', shouldSend = null, companionText = false, holdingManaged = false } = {}
+) {
+  const bubbles = companionText ? [String(text || '').trim()].filter(Boolean) : splitIntoBubbles(text);
+  if (!bubbles.length) return [];
+
+  const timing = replyTiming();
+  if (timing.enabled === false) return legacySendHuman(sock, jid, text, { incomingText, voice, companionText, shouldSend });
+
+  const key = chat || String(jid || '').split('@')[0];
+  const ownSession = session || createTypingSession(sock, jid, { voice: !!voice, timing });
+  const sent = [];
+  const readyAt = Date.now();
+  // The reply exists: whatever happens next, `.debug last` should know when the
+  // text was ready and which model produced it.
+  markProviderDone(key, chat || key);
+
+  try {
+    // A reply that took longer than 30 s has already cost the customer a wait;
+    // one short line says "still here" without pretending nothing happened.
+    if (!holdingManaged && receivedAt && readyAt - receivedAt > timing.holdingAfterMs && !voice) {
+      await ownSession.stop({ paused: true });
+      await sendTyping(sock, jid, holdingLine(lang), { delay: scaled(400, timing) });
+      timeline.markHold(key);
+    }
+
+    const plan = planReplyDelay({
+      text: bubbles.join('\n'),
+      voice: !!voice,
+      receivedAt: receivedAt || ownSession.startedAt,
+      readyAt: Date.now(),
+      timing,
+    });
+
+    if (plan.waitMs > 0) await sleep(plan.waitMs);
+    // Last look before the first word: the owner may have taken over while we
+    // were composing, or the call may have been answered after all.
+    if (typeof shouldSend === 'function' && !shouldSend()) {
+      await ownSession.stop({ paused: true });
+      return [];
+    }
+    if (!ownSession.alive) await setPresence(sock, jid, voice ? 'recording' : 'composing');
+
+    // Number-heavy replies (a quote, a price band) are never voice-only: a
+    // price the customer cannot see is a price they will ask for again.
+    const keepTextWithVoice = !!voice?.payload?.audio && (companionText || looksNumberHeavy(text));
+
+    for (let i = 0; i < bubbles.length; i += 1) {
+      const bubble = bubbles[i];
+      if (i > 0) {
+        // A short pause between bubbles, with the indicator back on: two
+        // messages with nothing in between read like a script.
+        await setPresence(sock, jid, 'composing');
+        await sleep(scaled(rand(400, 900), timing));
+      }
+      await ownSession.stop({ paused: true });
+
+      const voiceBubble = !!voice?.payload?.audio && i === bubbles.length - 1 && !keepTextWithVoice;
+      if (voiceBubble) {
+        await setPresence(sock, jid, 'recording');
+        await sleep(scaled(rand(500, 1100), timing));
+        try {
+          const msg = await sendReliable(sock, jid, voice.payload);
+          sent.push(msg);
+        } catch {
+          // Voice note refused (permanent) — fall back to the same text
+          await sendReliable(sock, jid, { text: bubble }).catch(() => {});
+          sent.push(null);
+        } finally {
+          // "recording…" must not survive the note, whether it was sent or not.
+          ownSession.pause();
+        }
+      } else {
+        const msg = await sendReliable(sock, jid, { text: bubble });
+        sent.push(msg);
+      }
+    }
+
+    // Voice *and* text for a quote: the audio is a courtesy, the text is the
+    // record the customer can scroll back to.
+    if (keepTextWithVoice) {
+      await setPresence(sock, jid, 'recording');
+      await sleep(scaled(rand(500, 1100), timing));
+      try {
+        if (!shouldSend || shouldSend()) sent.push(await sendReliable(sock, jid, voice.payload));
+      } catch {
+        /* the text already went out; the voice note was a courtesy */
+      }
+    }
+
+    timeline.mark(key, 'sent', { bubbles: sent.length });
+    timeline.commit(key);
+    return sent;
+  } catch (err) {
+    // No stuck "typing…": whatever happened, clear it.
+    await ownSession.stop({ paused: true });
+    throw err;
+  } finally {
+    await ownSession.stop({ paused: true });
+  }
+}
+
+/** A quote, a price band or a table of numbers (see brevity.js). */
+function looksNumberHeavy(text) {
+  try {
+    return isNumberHeavy(text);
+  } catch {
+    return false;
+  }
+}
+
+/** Note the moment the text existed, plus who wrote it. */
+function markProviderDone(key, chat) {
+  try {
+    const rows = providerTrace.lastFor(chat || key, 1);
+    const row = rows[0];
+    const fresh = row && Date.now() - new Date(row.created_at || 0).getTime() < 120_000;
+    timeline.mark(key, 'provider_done', {
+      at: Date.now(),
+      provider: fresh ? row.provider : null,
+      model: fresh ? row.model : null,
+      ms: fresh ? row.ms : undefined,
+    });
+  } catch {
+    timeline.mark(key, 'provider_done', { at: Date.now() });
+  }
+}
+
+/** The pre-timing behaviour, kept for `REPLY_TIMING=false`. */
+async function legacySendHuman(sock, jid, text, { incomingText = '', voice = null, companionText = false, shouldSend = null } = {}) {
+  const bubbles = companionText ? [String(text || '').trim()].filter(Boolean) : splitIntoBubbles(text);
   if (!bubbles.length) return [];
 
   const sent = [];
+  const keepTextWithVoice = !!voice?.payload?.audio && (companionText || looksNumberHeavy(text));
   for (let i = 0; i < bubbles.length; i++) {
     const bubble = bubbles[i];
     await setPresence(sock, jid, 'composing');
@@ -136,15 +347,15 @@ export async function sendHuman(sock, jid, text, { incomingText = '', voice = nu
       isVoice: !!voice,
     });
     await sleep(delay);
+    if (companionText && shouldSend && !shouldSend()) { await setPresence(sock, jid, 'paused'); return sent; }
 
-    if (voice && i === bubbles.length - 1 && voice.buffer) {
+    if (!keepTextWithVoice && voice?.payload?.audio && i === bubbles.length - 1) {
       await setPresence(sock, jid, 'recording');
       await sleep(rand(900, 1800));
       try {
         const msg = await sendReliable(sock, jid, voice.payload);
         sent.push(msg);
       } catch {
-        // Voice note refused (permanent) — fall back to the same text
         await sendReliable(sock, jid, { text: bubble }).catch(() => {});
       }
     } else {
@@ -156,16 +367,27 @@ export async function sendHuman(sock, jid, text, { incomingText = '', voice = nu
     if (i < bubbles.length - 1) await sleep(rand(600, 1500));
   }
 
+  if (keepTextWithVoice && (!shouldSend || shouldSend())) {
+    try { sent.push(await sendReliable(sock, jid, voice.payload)); } catch { /* text already delivered */ }
+  }
   await setPresence(sock, jid, 'paused');
   return sent;
 }
 
 /** Plain send with a typing indicator — used for owner notifications. */
 export async function sendTyping(sock, jid, text, { delay = 600 } = {}) {
+  let session = null;
   try {
-    await setPresence(sock, jid, 'composing');
-    await sleep(delay);
-    await setPresence(sock, jid, 'paused');
+    if (replyTiming().enabled) {
+      // Short, fixed pause: these are notifications, not conversations.
+      session = createTypingSession(sock, jid, { timing: replyTiming() });
+      await sleep(delay);
+      await session.stop({ paused: true });
+    } else {
+      await setPresence(sock, jid, 'composing');
+      await sleep(delay);
+      await setPresence(sock, jid, 'paused');
+    }
     return await sendReliable(sock, jid, { text });
   } catch {
     try {
@@ -173,6 +395,8 @@ export async function sendTyping(sock, jid, text, { delay = 600 } = {}) {
     } catch {
       return null;
     }
+  } finally {
+    if (session) await session.stop({ paused: true });
   }
 }
 
@@ -243,6 +467,6 @@ export function forSpeech(text = '') {
 }
 
 export default {
-  sleep, polish, splitIntoBubbles, humanDelay, sendHuman, sendTyping,
-  markRead, isQuietNow, quietEndsAt, isRepetitive, forSpeech, ownerClock,
+  sleep, polish, splitIntoBubbles, humanDelay, sendHuman, sendTyping, sendReaction,
+  markRead, scheduleRead, isQuietNow, quietEndsAt, isRepetitive, forSpeech, ownerClock, setPresence,
 };

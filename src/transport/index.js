@@ -8,7 +8,7 @@
 import { config } from '../config/env.js';
 import { featureOn } from '../services/profile.js';
 import { TransportError } from './base.js';
-import { BaileysTransport } from './baileys.js';
+import { BaileysTransport, baileysAvailable, BAILEYS_MISSING_HINT } from './baileys.js';
 import { CloudTransport } from './cloud.js';
 
 const registry = new Map(); // slug -> transport
@@ -72,6 +72,11 @@ export function createTransport({ kind = config.transport, sock = null } = {}) {
 
   // Baileys: unchanged behaviour. If a socket is passed in we wrap it instead
   // of opening a second connection.
+  if (!sock && !baileysAvailable()) {
+    // Fail at startup, with a sentence the owner can act on, rather than inside a
+    // reconnect loop five seconds later.
+    throw new TransportError(BAILEYS_MISSING_HINT, { code: 'baileys_missing', permanent: true });
+  }
   const transport = sock ? BaileysTransport.wrap(sock) : new BaileysTransport();
   return registerTransport(transport);
 }

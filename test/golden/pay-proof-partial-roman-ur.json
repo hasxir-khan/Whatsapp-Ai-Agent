@@ -1,0 +1,66 @@
+{
+  "id": "pay-proof-partial-roman-ur",
+  "title": "A partial payment is recorded and the remainder stays due",
+  "template": "shop",
+  "category": "payment",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "paymentReview": true,
+      "ownerDecisions": true
+    },
+    "business": {
+      "payment": {
+        "accountTail": "1234",
+        "accountName": "Test Studio"
+      }
+    }
+  },
+  "seed": {
+    "orders": [
+      {
+        "total": 5000,
+        "status": "awaiting_payment",
+        "hoursAgo": 4
+      }
+    ],
+    "contact": {
+      "message_count": 4
+    }
+  },
+  "turns": [
+    {
+      "image": true,
+      "user": "",
+      "caption": "Payment kar di hai Rs 3,000 TID 445566, screenshot bhej raha hoon",
+      "expect": "the proof is read and carded, in the customer's own language"
+    },
+    {
+      "owner": ".partial DR-1 3000",
+      "expect": "only the amount that arrived is recorded"
+    }
+  ],
+  "assert": {
+    "numbers": false,
+    "events": [
+      "payment_proof_received",
+      "decision_partial"
+    ],
+    "require": [
+      {
+        "match": "Baqi|hissa|remaining",
+        "stream": "customer",
+        "why": "the customer is told what is still due"
+      },
+      {
+        "match": "partial",
+        "stream": "owner",
+        "why": "the owner sees what was recorded"
+      }
+    ],
+    "forbid": [
+      "fake|fraud|jhoot"
+    ],
+    "maxLength": 700
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "cc-human-request-roman-ur",
+  "title": "Roman Urdu request for a human is handed over, in Roman Urdu",
+  "template": "agency",
+  "category": "complaint",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "mujhe insaan se baat karni hai, bot se nahi"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision",
+      "handoff"
+    ],
+    "minReplies": 1,
+    "ownerNotified": true,
+    "language": "roman-ur"
+  }
+}

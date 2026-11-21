@@ -39,6 +39,7 @@ export const NO_CAPABILITIES = {
   mediaDownload: false,
   markRead: false,
   presence: false,
+  typingIndicator: false,
   deleteMessage: false,
   deliveryReceipts: false,
   templates: false,
@@ -63,7 +64,12 @@ export class TransportError extends Error {
  * The internal message shape.
  *
  *   { id, chat, number, fromMe, pushName, kind, text, caption, mimetype,
- *     fileName, seconds, isVoice, location, contactName, timestamp, raw }
+ *     fileName, seconds, isVoice, location, contactName, referral, timestamp,
+ *     raw }
+ *
+ * `referral` is the Cloud API's click-to-WhatsApp object, already reduced to
+ * what we keep: where the ad points, and its headline. The click id is not part
+ * of it on purpose — it is a tracking identifier, not something to store.
  *
  * `chat` is a JID-like string on purpose: memory, contacts and tools are keyed
  * by `<number>@s.whatsapp.net` today, and a transport switch must not rewrite
@@ -86,6 +92,7 @@ export function normalizeIncoming(partial = {}) {
     seconds: Number(partial.seconds) || 0,
     isVoice: !!partial.isVoice,
     location: partial.location || null,
+    referral: partial.referral || null,
     contactName: partial.contactName || null,
     timestamp: partial.timestamp || new Date().toISOString(),
     // What the transport needs to fetch media or quote the message later.

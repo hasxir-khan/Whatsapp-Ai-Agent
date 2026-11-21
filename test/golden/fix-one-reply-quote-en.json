@@ -1,0 +1,45 @@
+{
+  "id": "fix-one-reply-quote-en",
+  "title": "A price question gets exactly one reply — no quote glued on as a second bubble",
+  "template": "agency",
+  "category": "dedupe",
+  "language": "en",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    },
+    "intake": {
+      "required": [
+        "projectType",
+        "features"
+      ]
+    }
+  },
+  "turns": [
+    {
+      "user": "I need an e-commerce store with payments, checkout and an admin dashboard. Budget is around 150000 PKR and I need it in 6 weeks. What is the price?",
+      "expect": "one message: the quote, from the pricing code",
+      "model": []
+    }
+  ],
+  "assert": {
+    "maxReplies": 1,
+    "oneReplyPerTurn": true,
+    "require": [
+      {
+        "match": "120,000|350,000|155,000|395,000",
+        "why": "the quote range comes from the published band"
+      }
+    ],
+    "forbid": [
+      "Here’s the scope + price 👇\\n\\nHere’s"
+    ],
+    "samePrice": true
+  },
+  "seed": {
+    "intakeFields": {
+      "goal": "sell the bakery's products online"
+    }
+  }
+}

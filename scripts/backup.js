@@ -18,6 +18,7 @@
 // same on Linux, macOS and Windows with no tar/zip dependency.
 
 import fs from 'node:fs';
+import { ensurePrivateDir, resolveInside, tightenFile, writePrivateFile } from '../src/services/validation.js';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -78,7 +79,14 @@ export function buildBundle({ slug = 'default', dir, withKeys = false, withSessi
 
   // Optional, and off by default for good reasons.
   if (withKeys) {
-    if (fs.existsSync(path.join(dir, '.env'))) files['.env'] = fs.readFileSync(path.join(dir, '.env')).toString('base64');
+    if (fs.existsSync(path.join(dir, '.env'))) {
+      const raw = fs.readFileSync(path.join(dir, '.env'));
+      // Omit the whole file rather than trying to redact dotenv quoting, export
+      // prefixes, multiline values, comments and duplicate assignments.
+      if (/PLATFORM_(?:KEY_SECRET|TENANT_TOKEN|OPERATOR_TOKEN|OPERATOR_TOTP_SECRET)/i.test(raw.toString('utf8')))
+        skipped.push('.env (protected platform secrets; restore from your secret manager)');
+      else files['.env'] = raw.toString('base64');
+    }
   } else {
     skipped.push('.env (contains API keys — use --with-keys)');
   }
@@ -104,10 +112,12 @@ export function buildBundle({ slug = 'default', dir, withKeys = false, withSessi
 }
 
 export function writeArchive(bundle, outDir = path.join(REPO, 'backups')) {
-  fs.mkdirSync(outDir, { recursive: true });
+  // A backup is the whole tenant in one file — keys included when asked. It gets
+  // a 0700 folder and a 0600 file, so another user on the box cannot read it.
+  ensurePrivateDir(outDir);
   const stamp = bundle.createdAt.replace(/[:.]/g, '-').slice(0, 19);
-  const file = path.join(outDir, `${bundle.slug}-${stamp}.json.gz`);
-  fs.writeFileSync(file, zlib.gzipSync(Buffer.from(JSON.stringify(bundle), 'utf8')));
+  const file = resolveInside(outDir, `${bundle.slug}-${stamp}.json.gz`);
+  writePrivateFile(file, zlib.gzipSync(Buffer.from(JSON.stringify(bundle), 'utf8')));
   return file;
 }
 
@@ -120,22 +130,28 @@ export function readArchive(file) {
 
 /** Restore into a directory, keeping a copy of whatever it overwrites. */
 export function restoreArchive(bundle, { dir, keepExisting = true, now = new Date() } = {}) {
-  fs.mkdirSync(dir, { recursive: true });
+  ensurePrivateDir(dir);
   const restored = [];
   const saved = [];
 
   for (const [rel, b64] of Object.entries(bundle.files || {})) {
-    // Never let a crafted archive write outside the tenant folder.
-    const target = path.resolve(dir, rel);
-    if (!target.startsWith(path.resolve(dir) + path.sep)) throw new Error(`Refusing to write outside the tenant folder: ${rel}`);
+    // Never let a crafted archive write outside the tenant folder. One rule,
+    // shared with the admin panel and the CLI.
+    let target;
+    try {
+      target = resolveInside(dir, rel);
+    } catch {
+      throw new Error(`Refusing to write outside the tenant folder: ${rel}`);
+    }
+    if (target === path.resolve(dir)) throw new Error(`Refusing to write to the tenant folder itself: ${rel}`);
 
     if (keepExisting && fs.existsSync(target)) {
       const bak = `${target}.before-restore-${now.toISOString().replace(/[:.]/g, '-')}`;
       fs.copyFileSync(target, bak);
+      tightenFile(bak);
       saved.push(path.relative(dir, bak));
     }
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, Buffer.from(b64, 'base64'));
+    writePrivateFile(target, Buffer.from(b64, 'base64'));
     restored.push(rel);
   }
   return { restored, saved };
@@ -177,7 +193,7 @@ function main() {
   console.log(`  files: ${Object.keys(bundle.files).length}`);
   for (const s of bundle.skipped) console.log(`  ${c.yellow('skipped')} ${s}`);
   console.log(`\n  Restore: node scripts/restore.js ${path.basename(file)} --slug ${slug}\n`);
-  if (bundle.withKeys) {
+  if (bundle.files['.env']) {
     console.log(`  ${c.yellow('⚠ This archive contains .env (API keys). Keep it private.')}\n`);
   }
 }

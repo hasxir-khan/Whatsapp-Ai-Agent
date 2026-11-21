@@ -1,0 +1,15 @@
+# .private-prefixes — your own numbers, kept off the repository.
+#
+# Copy this file to `.private-prefixes` (gitignored) and put your own phone
+# prefixes on separate lines. scripts/scan-secrets.js refuses any commit whose
+# staged content contains a number starting with one of them.
+#
+# The list is per person, not per repo: it is how the scanner can protect your
+# family's and your friends' numbers without this project ever knowing them.
+#
+#   # home country, mobile
+#   9230
+#   # a friend abroad
+#   447700
+#
+# A prefix of four digits or more is required (shorter would match everything).

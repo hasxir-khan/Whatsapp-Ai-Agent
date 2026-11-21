@@ -1,0 +1,20 @@
+{
+  "id": "agency-forget-request-roman-ur",
+  "title": "A deletion request is acknowledged and put in front of the owner",
+  "template": "agency",
+  "category": "privacy",
+  "language": "roman-ur",
+  "profile": { "features": { "privacyTools": true } },
+  "turns": [
+    {
+      "user": "mera data delete kar do please",
+      "expect": "the request is recorded, acknowledged, and the owner is told"
+    }
+  ],
+  "assert": {
+    "events": ["privacy_request"],
+    "ownerNotified": true,
+    "require": [{ "match": "delete|owner|request", "why": "an honest acknowledgement" }],
+    "minReplies": 1
+  }
+}

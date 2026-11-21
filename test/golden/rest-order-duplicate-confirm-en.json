@@ -1,0 +1,53 @@
+{
+  "id": "rest-order-duplicate-confirm-en",
+  "title": "Saying yes twice does not place the order twice",
+  "template": "restaurant",
+  "category": "order",
+  "language": "en",
+  "profile": {
+    "features": {
+      "toolCalling": true,
+      "orderTracking": true
+    }
+  },
+  "turns": [
+    {
+      "user": "one chicken karahi please",
+      "model": [
+        {
+          "tool": "create_order",
+          "args": {
+            "items": [
+              {
+                "name": "Chicken Karahi",
+                "qty": 1
+              }
+            ]
+          }
+        }
+      ],
+      "expect": "a confirmation is asked"
+    },
+    {
+      "user": "yes",
+      "expect": "the first yes creates one order"
+    },
+    {
+      "user": "yes please, confirm it again",
+      "model": [
+        {
+          "text": "All set \u2014 there is nothing left to confirm. I will message you when it is on the way."
+        }
+      ],
+      "expect": "a second confirm of the same order must not duplicate anything"
+    }
+  ],
+  "assert": {
+    "maxChanges": {
+      "orders": 1
+    },
+    "confirmations": 1,
+    "minReplies": 3,
+    "sideEffects": "confirmed-only"
+  }
+}

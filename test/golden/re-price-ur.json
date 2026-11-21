@@ -1,0 +1,21 @@
+{
+  "id": "re-price-ur",
+  "title": "A valuation fee is quoted from the price list in Urdu",
+  "template": "real-estate",
+  "category": "price",
+  "language": "ur",
+  "profile": { "features": { "toolCalling": true } },
+  "turns": [
+    {
+      "user": "ویلیویشن رپورٹ کی فیس کتنی ہے؟",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "property valuation report" } },
+        { "text": "پراپرٹی ویلیویشن رپورٹ 15000 روپے کی ہے۔" }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "15000" }]
+  }
+}

@@ -11,8 +11,8 @@ export function isolate(name) {
   process.env.DATA_DIR = dir;
   process.env.TMP_DIR = path.join(dir, 'tmp');
   process.env.ENABLE_WEB = 'false';
-  process.env.MY_NUMBER = '923169896229';
-  process.env.MY_NAME = 'Hashir';
+  process.env.MY_NUMBER = '923001234567';
+  process.env.MY_NAME = 'Test Owner';
   process.env.GROQ_API_KEY = 'test-groq-key';
   process.env.GEMINI_API_KEY = '';
   process.env.OPENROUTER_API_KEY = '';
@@ -36,7 +36,7 @@ export function fakeSock() {
     sent,
     presence,
     reads,
-    user: { id: '923169896229:1@s.whatsapp.net', name: 'Hashir' },
+    user: { id: '923001234567:1@s.whatsapp.net', name: 'Test Owner' },
     async sendMessage(jid, payload) {
       sent.push({ jid, payload });
       return { key: { id: `SENT-${sent.length}` } };

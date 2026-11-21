@@ -1,3 +1,5 @@
+import {workerAccess} from './billingLease.js';
+import {admit} from './billingMeter.js';
 // src/services/calls.js
 // Missed-call rescue.
 //
@@ -17,14 +19,47 @@ import { sendHuman, sendTyping } from '../core/humanizer.js';
 import { chat, hasLLM } from '../core/llm.js';
 import { detectLanguage, detectTone, mirrorInstruction, toneInstruction } from './language.js';
 import { buildVoiceNote, ttsEnabled } from './tts.js';
+import { brevityInstruction } from '../core/brevity.js';
 
-// callId → { timer, number, video }
+// callId → { timer, number, video, startedAt }
 const pending = new Map();
+/** The random 60–90 s window, in ms. CALL_FALLBACK_SECONDS pins it. */
+export function callWindowMs() {
+  const min = Math.max(0, Number(config.calls.delayMinSeconds ?? config.calls.delaySeconds) || 0);
+  const max = Math.max(min, Number(config.calls.delayMaxSeconds ?? min) || min);
+  return Math.round((min + Math.random() * (max - min)) * 1000);
+}
 // callIds we have already reacted to (events repeat across reconnects)
 const seen = new Set();
+// Numbers where the owner picked up while an apology was being typed.
+const answeredMidApology = new Set();
 
 export function pendingCalls() {
   return [...pending.keys()];
+}
+
+/**
+ * The customer wrote to us while the rescue timer was still running — drop the
+ * timer. Nobody wants "sorry I missed your call" seconds after they already
+ * messaged us themselves, and it must never be a second reply.
+ * @returns {number} how many pending rescues were cancelled
+ */
+export function cancelCallRescue(number, reason = 'customer wrote first') {
+  let cancelled = 0;
+  for (const [id, entry] of pending) {
+    if (entry.number !== number) continue;
+    clearTimeout(entry.timer);
+    pending.delete(id);
+    answeredMidApology.add(number);
+    try {
+      db.updateCall(id, { status: 'cancelled', outcome: `rescue cancelled — ${reason}` });
+      db.logEvent('call_rescue_cancelled', number, { call: id, reason });
+    } catch {
+      /* ignore */
+    }
+    cancelled += 1;
+  }
+  return cancelled;
 }
 
 export function __resetCalls() {
@@ -34,35 +69,23 @@ export function __resetCalls() {
 }
 
 // ── message writing ────────────────────────────────────────
+// Short on purpose: two sentences, the second one an invitation. A missed call
+// gets an apology, not a brochure.
 const TEMPLATES = {
-  en: ({ brand, name }) =>
-    `Hey — I saw your call just now, sorry I couldn't pick up. This is ${brand}'s assistant. Tell me here what you need and ${name} can call you back.`,
-  'roman-ur': ({ brand, name }) =>
-    `Assalam o alaikum! Aap ka call dekha, sorry pick nahi kar saka. Main ${brand} ka assistant hoon — yahan bata dein kya chahiye, ${name} ko bata kar call back karwa deta hoon.`,
-  ur: ({ brand, name }) =>
-    `السلام علیکم! آپ کی کال دیکھی، معذرت کہ اٹھا نہیں سکا۔ میں ${brand} کا اسسٹنٹ ہوں — یہاں بتا دیں کیا چاہیے، ${name} کو بتا کر کال بیک کروا دوں گا۔`,
-  hi: ({ brand, name }) =>
-    `नमस्ते! आपका कॉल देखा, माफ़ कीजिए उठा नहीं सका। मैं ${brand} का असिस्टेंट हूँ — यहाँ बता दीजिए क्या चाहिए, ${name} को बोलकर कॉल बैक करा दूँगा।`,
-  ar: ({ brand, name }) =>
-    `مرحباً، رأيت اتصالك ولم أتمكن من الرد، آسف. أنا مساعد ${brand} — أخبرني هنا بما تحتاجه وسيتواصل معك ${name}.`,
-  es: ({ brand, name }) =>
-    `Hola, vi tu llamada pero no pude contestar, perdón. Soy el asistente de ${brand}. Cuéntame aquí qué necesitas y ${name} te devuelve la llamada.`,
-  fr: ({ brand, name }) =>
-    `Bonjour, j'ai vu votre appel mais je n'ai pas pu décrocher, désolé. Je suis l'assistant de ${brand}. Dites-moi ici ce qu'il vous faut et ${name} vous rappellera.`,
-  de: ({ brand, name }) =>
-    `Hallo, ich habe Ihren Anruf gesehen, konnte aber nicht rangehen — entschuldigen Sie. Ich bin ${brand}s Assistent. Schreiben Sie hier, worum es geht, dann ruft ${name} zurück.`,
-  pt: ({ brand, name }) =>
-    `Olá, vi sua ligação mas não consegui atender, desculpe. Sou o assistente da ${brand}. Me conte aqui o que precisa e o ${name} retorna a ligação.`,
-  tr: ({ brand, name }) =>
-    `Merhaba, aramanızı gördüm ama açamadım, kusura bakmayın. Ben ${brand} asistanıyım. Buradan neye ihtiyacınız olduğunu yazın, ${name} sizi arayacak.`,
-  id: ({ brand, name }) =>
-    `Halo, saya melihat panggilan Anda tapi belum bisa angkat, maaf. Saya asisten ${brand}. Ceritakan di sini kebutuhannya, nanti ${name} menelepon balik.`,
-  ru: ({ brand, name }) =>
-    `Здравствуйте! Видел ваш звонок, но не смог ответить — извините. Я ассистент ${brand}. Напишите здесь, что нужно, и ${name} перезвонит.`,
-  zh: ({ brand, name }) =>
-    `你好，刚看到你的来电，抱歉没接到。我是 ${brand} 的助理，在这里告诉我你的需求，${name} 会回电给你。`,
-  ja: ({ brand, name }) =>
-    `こんにちは。お電話に気づきましたが取れませんでした、すみません。${brand} のアシスタントです。ご用件をこちらに送っていただければ、${name} から折り返します。`,
+  en: () => "Sorry — I couldn't take your call just now. Write here and I'll reply right away.",
+  'roman-ur': () => 'Sorry, abhi call attend nahi kar sakay. Yahin likh dein, foran jawab dete hain.',
+  ur: () => 'معذرت، ابھی کال نہیں اٹھا سکے۔ یہیں لکھ دیں، فوراً جواب دیتے ہیں۔',
+  hi: () => 'माफ़ कीजिए, अभी कॉल नहीं उठा सका। यहीं लिखिए, तुरंत जवाब देता हूँ।',
+  ar: () => 'آسف، لم أتمكن من الرد على اتصالك الآن. اكتب هنا وسأجيب فوراً.',
+  es: () => 'Perdón, no pude contestar tu llamada. Escribe por aquí y te respondo enseguida.',
+  fr: () => "Désolé, je n'ai pas pu prendre votre appel. Écrivez ici, je réponds tout de suite.",
+  de: () => 'Entschuldigen Sie, ich konnte Ihren Anruf nicht annehmen. Schreiben Sie hier, ich antworte sofort.',
+  pt: () => 'Desculpe, não consegui atender sua ligação. Escreva aqui que eu respondo na hora.',
+  tr: () => 'Kusura bakmayın, aramanızı şu an açamadım. Buraya yazın, hemen cevap veririm.',
+  id: () => 'Maaf, panggilan Anda belum bisa saya angkat. Tulis di sini, saya balas segera.',
+  ru: () => 'Извините, не смог ответить на ваш звонок. Напишите здесь — отвечу сразу.',
+  zh: () => '抱歉，刚才没能接您的电话。请在这里留言，我会马上回复。',
+  ja: () => 'すみません、お電話に出られませんでした。こちらにメッセージをいただければすぐ返信します。',
 };
 
 function nameOf(number) {
@@ -74,6 +97,17 @@ function lastClientText(number) {
   const rows = db.getMessages(number, 6) || [];
   const row = [...rows].reverse().find((r) => r.role === 'user' && r.content);
   return row?.content || '';
+}
+
+/** When the customer last wrote to us (ms), or 0. */
+function lastClientMessageAt(number) {
+  const rows = db.getMessages(number, 8) || [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    if (rows[i].role !== 'user') continue;
+    const at = new Date(rows[i].created_at || 0).getTime();
+    if (Number.isFinite(at) && at > 0) return at;
+  }
+  return 0;
 }
 
 function templateFor(langInfo, ctx) {
@@ -93,11 +127,11 @@ async function composeMessage(number, { langInfo, tone }) {
     const result = await chat({
       system:
         `You are the WhatsApp assistant of ${brand} (${ownerName}). A client just called and nobody could pick up. ` +
-        `Write ONE short WhatsApp message (max 2 sentences, no lists, no signatures) that: ` +
-        `1) apologises briefly for missing the call, 2) says you are the assistant, ` +
-        `3) invites them to say what they need right here, 4) says ${ownerName} can call them back. ` +
+        'Write ONE short WhatsApp message: max 2 sentences, no lists, no signatures, no brochure. ' +
+        '1) apologise briefly for missing the call, 2) invite them to write here and promise a quick reply. ' +
         `${mirrorInstruction(langInfo)} ${toneInstruction({ tone })} ` +
-        'Do not invent a time, price or promise. Do not use the word "unfortunately" twice.',
+        'Do not invent a time, price or promise. ' +
+        brevityInstruction({ maxSentences: 2, lang: langInfo?.code }),
       messages: [
         {
           role: 'user',
@@ -107,7 +141,7 @@ async function composeMessage(number, { langInfo, tone }) {
         },
       ],
       temperature: 0.6,
-      maxTokens: 160,
+      maxTokens: 120,
     });
     const text = (result?.text || '').trim();
     return text || templateFor(langInfo, ctx);
@@ -117,10 +151,10 @@ async function composeMessage(number, { langInfo, tone }) {
 }
 
 // ── main logic ─────────────────────────────────────────────
-export function registerCalls(sock) {
+export function registerCalls(sock, sender = sock) {
   try {
     sock.ev.on('call', (calls) => {
-      handleCallEvents(sock, calls).catch((err) => console.error('Call handler:', err.message));
+      handleCallEvents(sender, calls).catch((err) => console.error('Call handler:', err.message));
     });
   } catch (err) {
     console.error('Could not subscribe to call events:', err.message);
@@ -133,6 +167,7 @@ export function registerCalls(sock) {
  * @param {Array<{id:string, chatId:string, from:string, status:string, isVideo:boolean}>} calls
  */
 export async function handleCallEvents(sock, calls = []) {
+  if (workerAccess()?.canRun === false) return;
   for (const call of calls) {
     try {
       await handleOne(sock, call);
@@ -179,43 +214,53 @@ async function handleOne(sock, call) {
         sock,
         config.owner.jid,
         `📞 Incoming call from ${who}${video ? ' (video)' : ''}.\n` +
-          `If you don't pick up in ${config.calls.delaySeconds}s, the assistant will reply in chat.`,
+          `If you don't pick up, the assistant will reply in chat a minute or so later.`,
         { delay: 150 }
       ).catch(() => {});
     }
 
-    if (!config.calls.enabled || config.calls.delaySeconds < 0) return;
+    if (!config.calls.enabled) return;
+    if (Number(config.calls.delayMaxSeconds ?? config.calls.delaySeconds) < 0) return;
 
+    // A human does not answer a missed call on a stopwatch: 60–90 s, random.
+    // The window is a *fallback* for a call whose end event never arrives; a
+    // reject/timeout schedules the apology from the moment it actually ended.
     const timer = setTimeout(() => {
       pending.delete(id);
       handleMissedCall(sock, number, { id, video, reason: 'no_answer' }).catch(() => {});
-    }, Math.max(0, config.calls.delaySeconds * 1000));
+    }, callWindowMs());
     timer.unref?.();
 
-    pending.set(id, { timer, number, video });
+    pending.set(id, { timer, number, video, startedAt: Date.now() });
     seen.add(id);
     return;
   }
 
   if (status === 'accept') {
+    // The owner picked up: nothing is sent, ever. Cancel the window *and* any
+    // apology that was already scheduled.
     const entry = pending.get(id);
     if (entry) {
       clearTimeout(entry.timer);
       pending.delete(id);
     }
-    db.updateCall(id, { status: 'accepted', outcome: 'owner answered' });
+    cancelCallRescue(number, 'owner answered the call');
+    db.updateCall(id, { status: 'accepted', outcome: 'owner answered', endedAt: new Date() });
     db.logEvent('call_answered', number, { video });
     return;
   }
 
   if (status === 'reject' || status === 'timeout') {
+    // The caller hung up (reject) or the phone stopped ringing (timeout). From
+    // this moment it is a missed call: the apology follows 5–15 s later, like
+    // someone noticing and typing.
     const entry = pending.get(id);
     if (entry) {
       clearTimeout(entry.timer);
       pending.delete(id);
     }
-    db.updateCall(id, { status: status === 'reject' ? 'rejected' : 'missed' });
-    await handleMissedCall(sock, number, { id, video, reason: status });
+    db.updateCall(id, { status: status === 'reject' ? 'rejected' : 'missed', endedAt: new Date() });
+    await handleMissedCall(sock, number, { id, video, reason: status, missAt: Date.now() });
   }
 }
 
@@ -223,13 +268,62 @@ async function handleOne(sock, call) {
  * The client's call went unanswered — start the conversation in chat.
  * @returns {Promise<{sent:boolean, mode?:string, text?:string}>}
  */
-export async function handleMissedCall(sock, number, { id = null, video = false, reason = 'no_answer' } = {}) {
+export async function handleMissedCall(sock, number, { id = null, video = false, reason = 'no_answer', missAt = null } = {}) {
   if (db.getSetting('bot_enabled', true) !== true) return { sent: false };
-  if (db.getContact(number)?.is_blocked) return { sent: false };
+  if (!admit('chat', 1, number)) return { sent: false, reason: 'assistant_limit' };
+  const contactNow = db.getContact(number);
+  if (contactNow?.is_blocked) return { sent: false };
+  // The owner is handling this chat, or the customer opted out: the apology is
+  // exactly the kind of message that must not arrive then.
+  if (contactNow?.bot_paused_until && new Date(contactNow.bot_paused_until) > new Date()) {
+    db.logEvent('call_rescue_skipped', number, { call: id, reason: 'owner handling' });
+    return { sent: false, reason: 'owner handling' };
+  }
+  if (contactNow?.opted_out || contactNow?.opt_out) {
+    db.logEvent('call_rescue_skipped', number, { call: id, reason: 'opted out' });
+    return { sent: false, reason: 'opted out' };
+  }
 
   // Make sure the attempt exists as a row, so the daily cap counts it even
   // when the fallback was triggered without a prior 'offer' event.
   if (id && !db.getCall(id)) db.recordCall({ id, number, video, status: 'missed' });
+
+  // One rescue per call, ever.
+  if (id) {
+    const row = db.getCall(id);
+    if (row?.status === 'handled') {
+      db.logEvent('call_rescue_skipped', number, { call: id, reason: 'already rescued' });
+      return { sent: false, reason: 'already rescued' };
+    }
+  }
+
+  // If the customer wrote to us after the call started, the chat is already
+  // open — a rescue message would be a duplicate reply.
+  const callAt = id ? new Date(db.getCall(id)?.created_at || 0).getTime() : Date.now();
+  const wroteAt = lastClientMessageAt(number);
+  if (wroteAt && wroteAt > callAt) {
+    if (id) db.updateCall(id, { status: 'cancelled', outcome: 'customer wrote first' });
+    db.logEvent('call_rescue_skipped', number, { call: id, reason: 'customer wrote first' });
+    return { sent: false, reason: 'customer wrote first' };
+  }
+
+  // One apology per contact per 30 minutes. Someone ringing three times in a row
+  // does not get three apologies — that is a bot, not a person.
+  const windowMs = Math.max(1, Number(config.calls.apologyWindowMinutes) || 30) * 60 * 1000;
+  const since = Date.now() - windowMs;
+  // Only a call we actually saw ring and end counts as a missed call for this
+  // rule; a programmatic rescue (an owner script, the eval harness) still obeys
+  // the daily cap below.
+  const sawRing = id ? !!db.getCall(id)?.ended_at : false;
+  const apologizedRecently =
+    sawRing &&
+    (db.recentCalls(30) || []).some(
+      (c) => c.number === number && c.apologized_at && new Date(c.apologized_at).getTime() > since
+    );
+  if (apologizedRecently) {
+    db.logEvent('call_rescue_skipped', number, { call: id, reason: 'apology within 30 min' });
+    return { sent: false, reason: 'apology cap' };
+  }
 
   // Don't spam: a client ringing three times in a row gets one reply
   const recent = db.recentCalls(20).filter((c) => c.number === number && c.outcome);
@@ -252,9 +346,12 @@ export async function handleMissedCall(sock, number, { id = null, video = false,
 
   const text = await composeMessage(number, { langInfo, tone });
 
+  // Voice is optional for the apology (`calls.apologyVoice`); text always goes
+  // too, so a client who cannot play audio still reads the apology.
   const wantsVoice =
+    config.calls.apologyVoice ||
     config.calls.mode === 'voice_note' ||
-    (config.calls.mode === 'auto' && ttsEnabled() && tone !== 'formal');
+    (config.calls.mode === 'auto' && ttsEnabled() && tone !== 'formal' && config.calls.apologyVoice !== false);
 
   let voice = null;
   if (wantsVoice) {
@@ -267,15 +364,40 @@ export async function handleMissedCall(sock, number, { id = null, video = false,
   }
 
   try {
-    await sendHuman(sock, `${number}@s.whatsapp.net`, text, { incomingText: '', voice });
+    // The 5–15 s "notice and type" window is planned by the send path itself,
+    // measured from the moment the call ended.
+    const sent = await sendHuman(sock, `${number}@s.whatsapp.net`, text, {
+      incomingText: '',
+      voice,
+      chat: number,
+      receivedAt: missAt || callAt,
+      lang: langInfo.code,
+      // Answered in the meantime? Then there is nothing to apologise for.
+      shouldSend: () => !answeredMidApology.has(number),
+    });
+    if (!sent || (Array.isArray(sent) && sent.length === 0)) {
+      db.logEvent('call_rescue_cancelled', number, { call: id, reason: 'owner answered mid-apology' });
+      return { sent: false, reason: 'owner answered' };
+    }
   } catch (err) {
     db.logEvent('call_fallback_failed', number, err.message);
     return { sent: false };
   }
 
   const mode = voice?.buffer ? 'voice_note' : 'text';
-  if (id) db.updateCall(id, { status: 'handled', outcome: `${reason} → ${mode}` });
-  db.logEvent('call_fallback', number, { mode, video, reason, tone });
+  answeredMidApology.delete(number);
+  if (id) db.updateCall(id, { status: 'handled', outcome: `${reason} → ${mode}`, apologizedAt: new Date() });
+  else {
+    const lastRow = db.lastCallFor?.(number);
+    if (lastRow?.id) db.updateCall(lastRow.id, { apologizedAt: new Date() });
+  }
+  db.logEvent('call_fallback', number, {
+    mode,
+    video,
+    reason,
+    tone,
+    delaySec: Math.max(0, Math.round((Date.now() - callAt) / 1000)),
+  });
 
   if (config.calls.notifyOwner) {
     const who = db.getContact(number)?.name || `+${number}`;
@@ -291,4 +413,4 @@ export async function handleMissedCall(sock, number, { id = null, video = false,
   return { sent: true, mode, text };
 }
 
-export default { registerCalls, handleCallEvents, handleMissedCall, pendingCalls };
+export default { registerCalls, handleCallEvents, handleMissedCall, pendingCalls, cancelCallRescue };

@@ -16,7 +16,23 @@
     ],
     "hours": "Tue–Sun 11:00–21:00, Monday closed",
     "closed": "Monday",
-    "about": "Walk-ins welcome; weekends get busy, so booking is better."
+    "about": "Walk-ins welcome; weekends get busy, so booking is better.",
+    "crm": {
+      "//": "vipSpend: a customer who has spent this much (in business.currency) becomes vip automatically.",
+      "vipSpend": null
+    },
+    "orderMessages": {
+      "//": "Edit freely. Placeholders: {first_name} {name} {id} {status} {total} {eta} {business}. Any status you leave out falls back to the built-in line in the customer's language.",
+      "ready": null,
+      "out_for_delivery": null,
+      "delivered": null,
+      "awaiting_payment": null
+    },
+    "orderReminders": {
+      "//": "Hours an unpaid order waits before each polite reminder. Env ORDER_REMINDER_HOURS / ORDER_REMINDER_SECOND_HOURS win over these.",
+      "firstHours": 12,
+      "secondHours": 36
+    }
   },
   "catalog": {
     "items": [
@@ -105,7 +121,72 @@
       "complaint"
     ]
   },
+  "agents": [
+    {
+      "id": "booking",
+      "name": "Booking",
+      "role": "booking",
+      "persona": "Friendly, style-aware, quick to confirm.",
+      "routing": [
+        "haircut",
+        "colour",
+        "color",
+        "bridal",
+        "facial",
+        "appointment",
+        "booking"
+      ],
+      "instructions": "Recommend one service from the price list, confirm the stylist and the duration, then book the slot. Ask about allergies before colour.",
+      "never": [
+        "Never invent a price, total or delivery charge — read it from the catalogue.",
+        "Never claim to be a human when asked directly.",
+        "Never invent scarcity (\"only 2 left\") or urgency (\"today only\")."
+      ],
+      "tools": [
+        "book_slot",
+        "check_stock"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": true
+    },
+    {
+      "id": "offers",
+      "name": "Offers",
+      "role": "sales",
+      "persona": "Bright but never pushy.",
+      "routing": [
+        "offer",
+        "discount",
+        "deal",
+        "package",
+        "sale"
+      ],
+      "instructions": "Explain only the offers the owner has configured, with their real dates. Anything outside them is a hand-off, not a negotiation.",
+      "never": [
+        "Never approve a discount. Say the owner decides and hand off.",
+        "Never invent scarcity (\"only 2 left\") or urgency (\"today only\").",
+        "Never claim to be a human when asked directly."
+      ],
+      "tools": [
+        "check_stock",
+        "handoff"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    }
+  ],
   "features": {
+    "multiAgent": false,
     "businessProfile": true,
     "catalog": true,
     "knowledge": true,
@@ -118,6 +199,34 @@
     "reviewAgent": false,
     "analystAgent": false,
     "reactivationAgent": false,
-    "contentAgent": false
+    "contentAgent": false,
+    "pdfInvoices": false,
+    "selfHealing": false,
+    "adminPanel": false,
+    "visualSearch": false,
+    "mcpTools": false,
+    "mcpWriteTools": false,
+    "healthAlerts": false,
+    "privacyTools": false,
+    "sourceLinks": false,
+    "liveInbox": false,
+    "orderTracking": false,
+    "crm": false,
+    "marketingAgents": false,
+    "businessBrain": false,
+    "reasoning": false,
+    "ownerDecisions": false,
+    "paymentReview": false
+  },
+  "marketing": {
+    "approvalMode": true,
+    "minDaysBetweenPromos": 14,
+    "events": [],
+    "channels": [],
+    "promoOffer": "",
+    "_help": "Marketing team settings. approvalMode true means every promo waits for you. events are your own dates: [{ \"name\": \"Shop anniversary\", \"date\": \"2026-03-01\" }]. channels are where your posters/QRs live: [\"Instagram\", \"shop window\"]."
+  },
+  "bot": {
+    "firstPerson": "we"
   }
 }

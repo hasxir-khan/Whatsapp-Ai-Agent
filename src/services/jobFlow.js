@@ -5,7 +5,7 @@
 // only the owner knows whether the table was served or the parcel arrived. That
 // one command is what starts the review clock — no guessing from timestamps.
 
-import { getBooking, getOrder, setBookingStatus, setOrderStatus, logEvent } from '../utils/db.js';
+import { getBooking, getOrder, setBookingStatus, setOrderStatus, logEvent, logOrderEvent } from '../utils/db.js';
 import { reviewAgentEnabled, scheduleAfterJob, askDelayHours } from './reviewAgent.js';
 import { formatMoney } from './geo.js';
 
@@ -66,6 +66,15 @@ export function markOrderPaid(id) {
   if (!order) return { ok: false, reply: `No order with id ${id}.` };
   if (order.status === 'paid') return { ok: true, reply: `Order #${id} is already marked paid.` };
   setOrderStatus(order.id, 'paid');
+  // The same command the lifecycle uses, written to the timeline as an owner act
+  // so "who said this was paid" has an answer that is not a guess.
+  logOrderEvent({
+    orderId: order.id,
+    from: order.status,
+    to: 'paid',
+    actor: 'owner',
+    detail: order.status === 'awaiting_payment' ? null : 'override: .paid',
+  });
   logEvent('order_paid', numberOf(order.chat), { id: order.id, total: order.total });
   return {
     ok: true,

@@ -1,0 +1,31 @@
+{
+  "id": "brain-shop-refund-ur",
+  "title": "A refund in Urdu is handed to the owner, never promised",
+  "template": "shop",
+  "category": "complaint",
+  "language": "ur",
+  "profile": {
+    "features": {
+      "toolCalling": true
+    }
+  },
+  "turns": [
+    {
+      "user": "یہ کرتا سائز میں چھوٹا ہے، پیسے واپس چاہیے، اور مجھے دوسرا سائز بھی چاہیے",
+      "model": [
+        {
+          "text": "معاف کیجیے۔ میں یہ معاملہ مالک کو دے رہا ہوں، وہی واپسی یا تبدیلی کی تصدیق کریں گے۔ دوسرا سائز دستیاب ہونے پر میں آپ کو بتا دوں گا۔"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "minReplies": 1,
+    "language": "ur",
+    "sideEffects": "none",
+    "forbid": [
+      "واپس مل جائیں گے|رقم واپس کر دی جائے گی"
+    ]
+  }
+}

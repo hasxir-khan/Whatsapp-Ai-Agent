@@ -1,0 +1,34 @@
+{
+  "id": "cc-optout-never-ignored-en",
+  "title": "An opt-out is always answered, even with off-topic set to ignore",
+  "template": "agency",
+  "category": "privacy",
+  "language": "en",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    },
+    "business": {
+      "conversation": {
+        "offTopic": "ignore",
+        "scope": "business_only"
+      }
+    }
+  },
+  "turns": [
+    {
+      "user": "stop messaging me please"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision"
+    ],
+    "minReplies": 1,
+    "maxReplies": 1,
+    "optout": true,
+    "forbid": [
+      "ignored|no reply"
+    ]
+  }
+}

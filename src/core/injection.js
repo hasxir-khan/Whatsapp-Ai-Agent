@@ -16,6 +16,7 @@
 
 const PATTERNS = [
   // English
+  /\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:the\s+)?(?:rules|instructions)\b/i,
   /\b(ignore|disregard|forget)\s+(all\s+|any\s+)?(the\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|rules?|messages?)\b/i,
   /\b(you\s+are\s+now|from\s+now\s+on\s+you\s+are|act\s+as|pretend\s+to\s+be)\b[^.\n]{0,60}\b(admin|developer|system|unrestricted|jailbroken|dan)\b/i,
   /\b(reveal|show|print|repeat|output)\s+(me\s+)?(your\s+)?(system\s+prompt|instructions|hidden\s+rules|api\s+key|env)\b/i,

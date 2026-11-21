@@ -1,0 +1,41 @@
+{
+  "id": "feel-voice-match-en",
+  "title": "A voice note gets a voice note back, with the same text underneath",
+  "template": "restaurant",
+  "category": "voice",
+  "language": "en",
+  "mode": "deterministic",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    }
+  },
+  "turns": [
+    {
+      "user": "",
+      "voice": true,
+      "voiceTranscript": "Hi, do you deliver to F-7 tonight?",
+      "model": [
+        {
+          "text": "Yes, we deliver to F-7 until 11 pm."
+        }
+      ],
+      "expect": "tts.mode defaults to match_voice: a spoken question is answered by voice"
+    }
+  ],
+  "assert": {
+    "language": "en",
+    "maxSentences": 2,
+    "events": [
+      "message_in"
+    ],
+    "noErrorEvents": true,
+    "sideEffects": "none"
+  },
+  "fixture": {
+    "numbers": [
+      "7",
+      "11"
+    ]
+  }
+}

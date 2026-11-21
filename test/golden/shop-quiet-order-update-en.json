@@ -1,0 +1,19 @@
+{
+  "id": "shop-quiet-order-update-en",
+  "title": "An order update at 23:00 is held until the morning",
+  "template": "shop",
+  "category": "quiet",
+  "language": "en",
+  "profile": { "features": { "orderTracking": true, "growthApproval": false } },
+  "seed": { "orders": [{ "status": "ready", "total": 2500, "hoursAgo": 1 }] },
+  "turns": [
+    { "action": "notify_customer", "state": "out_for_delivery", "now": "night", "expect": "quiet hours must hold it" },
+    { "action": "notify_customer", "state": "out_for_delivery", "now": "2026-11-18T08:00:00.000Z", "expect": "in the morning it goes out" }
+  ],
+  "assert": {
+    "growthHold": ["quiet_hours"],
+    "minReplies": 1,
+    "require": [{ "match": "on its way|out for delivery", "why": "the order update itself" }],
+    "sideEffects": "none"
+  }
+}

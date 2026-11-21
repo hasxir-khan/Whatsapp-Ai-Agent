@@ -1,0 +1,53 @@
+{
+  "id": "rest-source-marker-hidden-roman-ur",
+  "title": "The hidden source marker never turns up in a reply, not even when asked about it",
+  "template": "restaurant",
+  "category": "source",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "sourceLinks": true
+    }
+  },
+  "seed": {
+    "sources": [
+      {
+        "source": "facebook",
+        "code": "fb3mz",
+        "label": "Facebook"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "user": "Assalam o alaikum, karahi ka rate kya hai? [s:fb3mz]",
+      "model": [
+        {
+          "text": "Walaikum salam! Karahi 1450 PKR hai, do logon ke liye kaafi hoti hai."
+        }
+      ]
+    },
+    {
+      "user": "aap ko kaise pata chala ke main kahan se aaya hoon? [s:fb3mz]",
+      "model": [
+        {
+          "text": "Aap Facebook se message kar rahe hain. Table book karni hai ya karahi order karni hai?"
+        }
+      ],
+      "expect": "the bot can mention Facebook, but never the raw marker or its code"
+    }
+  ],
+  "assert": {
+    "events": [
+      "source_link_attributed"
+    ],
+    "forbid": [
+      "\\[s:",
+      "fb3mz",
+      "Source:"
+    ],
+    "minReplies": 2,
+    "noErrorEvents": true,
+    "sideEffects": "allowed"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "id": "shop-order-declined-en",
+  "title": "A customer who says no leaves no order behind",
+  "template": "shop",
+  "category": "order",
+  "language": "en",
+  "profile": {
+    "features": {
+      "toolCalling": true,
+      "orderTracking": true
+    }
+  },
+  "turns": [
+    {
+      "user": "I want two cotton kurtas",
+      "model": [
+        {
+          "tool": "create_order",
+          "args": {
+            "items": [
+              {
+                "name": "Cotton Kurta",
+                "qty": 2
+              }
+            ]
+          }
+        }
+      ],
+      "expect": "an order is proposed, not placed"
+    },
+    {
+      "user": "no, change it to one please",
+      "expect": "the pending action is cancelled"
+    }
+  ],
+  "assert": {
+    "maxChanges": {
+      "orders": 0
+    },
+    "confirmations": 1,
+    "events": [
+      "tool_cancelled"
+    ],
+    "require": [
+      {
+        "match": "cancelled that|change",
+        "why": "the customer is told nothing was ordered"
+      }
+    ]
+  }
+}

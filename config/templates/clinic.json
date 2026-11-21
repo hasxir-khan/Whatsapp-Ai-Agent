@@ -17,7 +17,23 @@
     "hours": "Mon–Sat 10:00–20:00, Sunday closed",
     "closed": "Sunday",
     "address": "",
-    "about": "Registered practice. Walk-ins accepted but appointments come first."
+    "about": "Registered practice. Walk-ins accepted but appointments come first.",
+    "crm": {
+      "//": "vipSpend: a customer who has spent this much (in business.currency) becomes vip automatically.",
+      "vipSpend": null
+    },
+    "orderMessages": {
+      "//": "Edit freely. Placeholders: {first_name} {name} {id} {status} {total} {eta} {business}. Any status you leave out falls back to the built-in line in the customer's language.",
+      "ready": null,
+      "out_for_delivery": null,
+      "delivered": null,
+      "awaiting_payment": null
+    },
+    "orderReminders": {
+      "//": "Hours an unpaid order waits before each polite reminder. Env ORDER_REMINDER_HOURS / ORDER_REMINDER_SECOND_HOURS win over these.",
+      "firstHours": 12,
+      "secondHours": 36
+    }
   },
   "catalog": {
     "items": [
@@ -100,7 +116,98 @@
       "prescription change"
     ]
   },
+  "agents": [
+    {
+      "id": "appointments",
+      "name": "Appointments",
+      "role": "booking",
+      "persona": "Reassuring, unhurried, plain language.",
+      "routing": [
+        "appointment",
+        "book",
+        "slot",
+        "doctor",
+        "timing",
+        "milna"
+      ],
+      "instructions": "Book from the real slot list, confirm the doctor and the time, and say what to bring. Clinical questions go to the reception desk.",
+      "never": [
+        "Never diagnose, never name a medicine, never give a dosage or a treatment plan.",
+        "If someone describes an emergency, stop and give the emergency number; do not advise.",
+        "Never claim to be a human when asked directly.",
+        "Never approve a discount. Say the owner decides and hand off."
+      ],
+      "tools": [
+        "book_slot"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": true
+    },
+    {
+      "id": "reception",
+      "name": "Reception FAQ",
+      "role": "support",
+      "persona": "Kind, factual, never clinical.",
+      "routing": [
+        "fee",
+        "timing",
+        "address",
+        "parking",
+        "insurance",
+        "report",
+        "test"
+      ],
+      "instructions": "Answer fees, timings, location and test preparation from the configured profile only. If the question is about a condition, a medicine or a result, do not answer — hand off.",
+      "never": [
+        "Never diagnose, never name a medicine, never give a dosage or a treatment plan.",
+        "If someone describes an emergency, stop and give the emergency number; do not advise.",
+        "Never claim to be a human when asked directly."
+      ],
+      "tools": [
+        "handoff"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    },
+    {
+      "id": "reminders",
+      "name": "Follow-up Reminders",
+      "role": "support",
+      "persona": "Brief and gentle.",
+      "routing": [
+        "remind",
+        "follow up",
+        "reminder",
+        "yaad"
+      ],
+      "instructions": "Confirm the follow-up date and time from the booking record, and what to bring. Never comment on symptoms or results.",
+      "never": [
+        "Never diagnose, never name a medicine, never give a dosage or a treatment plan.",
+        "If someone describes an emergency, stop and give the emergency number; do not advise.",
+        "Never claim to be a human when asked directly."
+      ],
+      "tools": [],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    }
+  ],
   "features": {
+    "multiAgent": false,
     "businessProfile": true,
     "catalog": true,
     "knowledge": true,
@@ -113,6 +220,34 @@
     "reviewAgent": false,
     "analystAgent": false,
     "reactivationAgent": false,
-    "contentAgent": false
+    "contentAgent": false,
+    "pdfInvoices": false,
+    "selfHealing": false,
+    "adminPanel": false,
+    "visualSearch": false,
+    "mcpTools": false,
+    "mcpWriteTools": false,
+    "healthAlerts": false,
+    "privacyTools": false,
+    "sourceLinks": false,
+    "liveInbox": false,
+    "orderTracking": false,
+    "crm": false,
+    "marketingAgents": false,
+    "businessBrain": false,
+    "reasoning": false,
+    "ownerDecisions": false,
+    "paymentReview": false
+  },
+  "marketing": {
+    "approvalMode": true,
+    "minDaysBetweenPromos": 14,
+    "events": [],
+    "channels": [],
+    "promoOffer": "",
+    "_help": "Marketing team settings. approvalMode true means every promo waits for you. events are your own dates: [{ \"name\": \"Shop anniversary\", \"date\": \"2026-03-01\" }]. channels are where your posters/QRs live: [\"Instagram\", \"shop window\"]."
+  },
+  "bot": {
+    "firstPerson": "we"
   }
 }

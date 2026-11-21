@@ -1,0 +1,74 @@
+{
+  "id": "pack-salon-offer-roman-ur",
+  "title": "A salon offer question reaches the Offers assistant and quotes the configured offer only",
+  "template": "salon",
+  "category": "discount",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "booking",
+        "name": "Booking",
+        "role": "booking",
+        "routing": [
+          "haircut",
+          "bridal",
+          "appointment"
+        ],
+        "instructions": "Book from the price list.",
+        "never": "Never promise a discount.",
+        "tools": [
+          "book_slot"
+        ],
+        "enabled": true,
+        "default": true
+      },
+      {
+        "id": "offers",
+        "name": "Offers",
+        "role": "sales",
+        "routing": [
+          "offer",
+          "discount",
+          "deal",
+          "package"
+        ],
+        "instructions": "Explain only the configured offers, with their real dates.",
+        "never": "Never invent urgency or scarcity.",
+        "tools": [
+          "handoff"
+        ],
+        "enabled": true,
+        "default": false
+      }
+    ],
+    "business": {
+      "offers": [
+        "10% off your first visit this month"
+      ]
+    }
+  },
+  "turns": [
+    {
+      "user": "koi offer ya discount chal raha hai?",
+      "model": [
+        {
+          "text": "Ji, pehli visit par 10% off hai — is mahine tak. Appointment book karein?"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agent": "offers",
+    "minReplies": 1,
+    "language": "roman-ur",
+    "forbid": [
+      "free|muft",
+      "20%|50%"
+    ],
+    "numbers": "hard"
+  }
+}

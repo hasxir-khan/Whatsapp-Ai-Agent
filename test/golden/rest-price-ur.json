@@ -1,0 +1,23 @@
+{
+  "id": "rest-price-ur",
+  "title": "An Urdu price question gets an Urdu answer with the catalogue price",
+  "template": "restaurant",
+  "category": "price",
+  "language": "ur",
+  "profile": { "features": { "toolCalling": true } },
+  "turns": [
+    {
+      "user": "چکن کاری کا ریٹ کیا ہے؟",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "chicken karahi" } },
+        { "text": "چکن کاری 1450 روپے ہے، 25 منٹ میں تیار ہو جائے گی۔" }
+      ],
+      "expect": "same fact, same language as the customer"
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "1450" }],
+    "sideEffects": "none"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "id": "shop-price-en",
+  "title": "A shop price question is answered from the price list",
+  "template": "shop",
+  "category": "price",
+  "language": "en",
+  "profile": { "features": { "toolCalling": true } },
+  "turns": [
+    {
+      "user": "how much is the pashmina shawl?",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "pashmina shawl" } },
+        { "text": "The Pashmina shawl is 3200 PKR, and we have it in stock." }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "3200" }],
+    "sideEffects": "none"
+  }
+}

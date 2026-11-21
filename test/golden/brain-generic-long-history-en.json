@@ -1,0 +1,40 @@
+{
+  "id": "brain-generic-long-history-en",
+  "title": "A long, half-specified request gets one question, not a made-up quote",
+  "template": "generic",
+  "category": "price",
+  "language": "en",
+  "profile": {
+    "features": {
+      "toolCalling": true
+    }
+  },
+  "turns": [
+    {
+      "user": "Hi, we need a few things done — first the design, then the content, and later maybe the ads.",
+      "model": [
+        {
+          "text": "Happy to help. To scope it properly: what has to be live first, and by when?"
+        }
+      ]
+    },
+    {
+      "user": "Design first. Budget is flexible but I don't want surprises. Also can you handle the printing and the delivery to two cities, and do you give a discount if we bundle all of it?",
+      "model": [
+        {
+          "text": "Understood — design first. Printing and delivery to two cities are possible; the owner confirms the final scope in writing. On the bundle discount I have to check with the owner rather than guess a number. One thing I still need: roughly how many items are we printing?"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "minReplies": 2,
+    "language": "en",
+    "sideEffects": "none",
+    "maxLength": 700,
+    "forbid": [
+      "guaranteed|best in|#1"
+    ]
+  }
+}

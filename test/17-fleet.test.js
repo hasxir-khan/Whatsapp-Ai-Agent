@@ -100,3 +100,22 @@ test('live mode reports unreachable providers instead of pretending', () => {
   assert.match(text, /groq:(unreachable|ok|missing)/);
   assert.match(text, /gemini:(unreachable|ok|missing|rejected)/);
 });
+
+test('a brand-new install is "not set up yet", not a failure', () => {
+  // Exactly the state a fresh clone is in: no owner.json, no keys, no session,
+  // no number. Nothing is wrong — so the command must not exit 1 and scare
+  // somebody who has just unpacked the project.
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-bare-'));
+  const out = spawnSync(process.execPath, [DOCTOR, 'all'], { cwd: bare, encoding: 'utf8' });
+
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /setup note/);
+  assert.match(out.stdout, /not configured yet/);
+  assert.doesNotMatch(out.stdout, /problem/);
+
+  const json = spawnSync(process.execPath, [DOCTOR, 'all', '--json'], { cwd: bare, encoding: 'utf8' });
+  const data = JSON.parse(json.stdout);
+  assert.equal(data.healthy, true, 'nothing is broken');
+  assert.deepEqual(data.blockers, []);
+  assert.ok(data.issues.length > 0, 'the setup notes are still listed');
+});

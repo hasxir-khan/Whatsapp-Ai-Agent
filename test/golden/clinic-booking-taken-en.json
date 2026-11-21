@@ -1,0 +1,18 @@
+{
+  "id": "clinic-booking-taken-en",
+  "title": "A slot that is already booked is not booked twice",
+  "template": "clinic",
+  "category": "booking",
+  "language": "en",
+  "profile": { "features": { "bookingAgent": true }, "business": { "bookingService": "General consultation" } },
+  "seed": { "bookings": [{ "service": "General consultation", "time": "10:00", "status": "booked" }] },
+  "fixture": { "dates": true },
+  "turns": [
+    { "user": "book me tomorrow at 10am please", "expect": "the taken slot is refused and alternatives are offered" }
+  ],
+  "assert": {
+    "maxChanges": { "bookings": 0 },
+    "require": [{ "match": "free|taken|slot", "why": "the customer is told why, and what is free" }],
+    "forbid": ["Done —"]
+  }
+}

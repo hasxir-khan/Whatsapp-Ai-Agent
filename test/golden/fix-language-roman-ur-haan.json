@@ -1,0 +1,31 @@
+{
+  "id": "fix-language-roman-ur-haan",
+  "title": "Roman Urdu stays Roman Urdu when the customer answers with \"haan\"",
+  "template": "restaurant",
+  "category": "language",
+  "language": "roman-ur",
+  "mode": "both",
+  "profile": { "features": { "businessProfile": true } },
+  "seed": {
+    "messages": [
+      { "role": "user", "text": "Bhai chicken karahi ka rate kya hai aaj?", "minutesAgo": 40 },
+      { "role": "assistant", "text": "Chicken karahi 1450 PKR hai, do teen logon ke liye kaafi hai.", "minutesAgo": 39 },
+      { "role": "user", "text": "Theek hai, delivery karo mere ghar par shaam ko", "minutesAgo": 25 },
+      { "role": "assistant", "text": "Bilkul, address bata dein aur shaam ka time confirm kar dein.", "minutesAgo": 24 }
+    ]
+  },
+  "turns": [
+    {
+      "user": "haan",
+      "expect": "a one-word reply must not flip the chat into English",
+      "model": [
+        { "text": "Theek hai, address bata dein to order confirm kar deta hoon." }
+      ]
+    }
+  ],
+  "assert": {
+    "language": "roman-ur",
+    "require": [{ "match": "address|order|confirm", "why": "the Roman Urdu conversation continues" }],
+    "oneReplyPerTurn": true
+  }
+}

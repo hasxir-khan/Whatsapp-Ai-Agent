@@ -1,0 +1,67 @@
+{
+  "id": "pay-proof-too-many-orders-en",
+  "title": "With two waiting orders the bot asks which one before opening anything",
+  "template": "shop",
+  "category": "payment",
+  "language": "en",
+  "profile": {
+    "features": {
+      "paymentReview": true,
+      "ownerDecisions": true
+    },
+    "business": {
+      "payment": {
+        "accountTail": "1234",
+        "accountName": "Test Studio"
+      }
+    }
+  },
+  "seed": {
+    "orders": [
+      {
+        "total": 3000,
+        "status": "awaiting_payment",
+        "hoursAgo": 30
+      },
+      {
+        "total": 5000,
+        "status": "awaiting_payment",
+        "hoursAgo": 2
+      }
+    ],
+    "contact": {
+      "message_count": 5
+    }
+  },
+  "turns": [
+    {
+      "image": true,
+      "user": "",
+      "caption": "Payment done Rs 5,000 TID 66554433",
+      "expect": "one short question instead of a guess"
+    }
+  ],
+  "assert": {
+    "numbers": false,
+    "events": [
+      "payment_proof_ambiguous"
+    ],
+    "require": [
+      {
+        "match": "Which order",
+        "stream": "customer",
+        "why": "the bot asks rather than assumes"
+      },
+      {
+        "match": "#1|#2",
+        "stream": "customer",
+        "why": "the customer can answer in one word"
+      }
+    ],
+    "forbid": [
+      "fake|fraud"
+    ],
+    "maxLength": 400,
+    "maxReplies": 1
+  }
+}

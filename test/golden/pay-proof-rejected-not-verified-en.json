@@ -1,0 +1,66 @@
+{
+  "id": "pay-proof-rejected-not-verified-en",
+  "title": "A rejection says it could not be verified and never calls the proof fake",
+  "template": "agency",
+  "category": "decision",
+  "language": "en",
+  "profile": {
+    "features": {
+      "paymentReview": true,
+      "ownerDecisions": true
+    },
+    "business": {
+      "payment": {
+        "accountTail": "1234",
+        "accountName": "Test Studio"
+      }
+    }
+  },
+  "seed": {
+    "orders": [
+      {
+        "total": 7500,
+        "status": "awaiting_payment",
+        "hoursAgo": 3
+      }
+    ],
+    "contact": {
+      "message_count": 5
+    }
+  },
+  "turns": [
+    {
+      "image": true,
+      "user": "",
+      "caption": "Payment done Rs 7,500 TID 11223344",
+      "expect": "the proof is carded to the owner"
+    },
+    {
+      "owner": ".reject DR-1 1",
+      "expect": "reason 1 is 'could not verify', the polite one"
+    }
+  ],
+  "assert": {
+    "numbers": false,
+    "events": [
+      "payment_proof_received",
+      "decision_rejected"
+    ],
+    "require": [
+      {
+        "match": "verify",
+        "stream": "customer",
+        "why": "the customer is asked to help, not accused"
+      },
+      {
+        "match": "transaction ID|screenshot|bank app",
+        "stream": "customer",
+        "why": "there is always a next step"
+      }
+    ],
+    "forbid": [
+      "fake|fraud|forged|scam|lie"
+    ],
+    "maxLength": 700
+  }
+}

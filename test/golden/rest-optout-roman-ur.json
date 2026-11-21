@@ -1,0 +1,21 @@
+{
+  "id": "rest-optout-roman-ur",
+  "title": "A customer asking to stop is opted out and told so in Roman Urdu",
+  "template": "restaurant",
+  "category": "privacy",
+  "language": "roman-ur",
+  "turns": [
+    {
+      "user": "mujhe message mat karo",
+      "expect": "stop must be honoured before any model is called"
+    }
+  ],
+  "assert": {
+    "optout": true,
+    "events": ["growth_optout"],
+    "minReplies": 1,
+    "require": [
+      { "match": "Theek hai", "why": "the confirmation is in the customer's language" }
+    ]
+  }
+}

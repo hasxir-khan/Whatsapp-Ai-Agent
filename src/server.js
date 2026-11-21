@@ -4,9 +4,12 @@
 // must expose a port anyway (Railway/Render health checks).
 
 import http from 'node:http';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { config, teamMembers } from './config/env.js';
 import { botState, uptimeMinutes } from './state.js';
+import { healthSnapshot } from './services/health.js';
 import {
   dbStats, recentEvents, getUsage, getSetting, getContact,
   teamWorkload, recentCalls, callsToday,
@@ -21,8 +24,25 @@ import { videoCapabilities } from './services/video.js';
 import { sttEnabled } from './services/transcription.js';
 import { hasFfmpeg } from './services/ffmpeg.js';
 import { handleWebhookRequest } from './transport/webhooks.js';
+import {
+  authenticate, authRequired, clearCookieHeader, dashboardToken, mutationAllowed,
+  rateLimit as webRateLimit, SECURITY_HEADERS, sessionCookieHeader, tokenExchange,
+  webSecurityState,
+} from './services/webAuth.js';
 import { getTransport } from './transport/index.js';
 import { growthSnapshot, SOURCE_LABELS } from './services/growthDashboard.js';
+import * as accuracyModule from './services/accuracy.js';
+import {
+  liveInboxEnabled, inboxChats, inboxThread, inboxReply,
+  inboxTakeover, inboxRelease, inboxSummary, latestMessageId,
+} from './services/liveInbox.js';
+import {
+  adminEnabled, adminMisconfigured, adminToken, verifyRequest, csrfOk, rateLimit, LIMITS,
+  clientIp, audit, recentAudit, issueSession, parseCookies, COOKIE, CSRF_COOKIE,
+  safeEqual, validSlug, listTenants, describeTenant, createTenantFromPanel, deleteTenantFromPanel,
+  readTenantProfile, writeTenantProfile, setTenantKeys, probeKey, saveUpload, ingestUpload,
+  startTenant, stopTenant, restartTenant, qrForTenant, tenantKeyFor, indexImagesFor, UPLOAD_MAX_BYTES, adminHooks,
+} from './services/adminPanel.js';
 
 const esc = (v) =>
   String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -54,6 +74,8 @@ function buildStatus() {
     },
     botEnabled: getSetting('bot_enabled', true) !== false,
     growth: growthSnapshot(),
+    // Same report `.accuracy` texts and /api/accuracy serves.
+    accuracy: accuracyModule.accuracyReport({ days: 7 }),
     stats,
     features: {
       llm: llm.providers,
@@ -73,6 +95,9 @@ function buildStatus() {
       ttsChars: usage.tts_chars,
       ttsLimit: config.limits.dailyTtsChars,
     },
+    // Reliability, as data: a monitor that only works when WhatsApp is up is
+    // not a monitor. This is readable with no token, like the rest of status.
+    health: healthSnapshot(),
     events: recentEvents(14)
       .filter((e) => !['ignored_chat', 'memory_summary_error'].includes(e.type))
       .map((e) => {
@@ -108,6 +133,8 @@ function buildStatus() {
       })),
       enabled: config.calls.enabled,
       delaySeconds: config.calls.delaySeconds,
+      delayMinSeconds: config.calls.delayMinSeconds,
+      delayMaxSeconds: config.calls.delayMaxSeconds,
     },
     leads: rankLeads({ limit: 6 }).map((l) => ({
       name: l.name || `+${l.number}`,
@@ -292,6 +319,7 @@ function page(data) {
   </div>
 
   ${growthSection(data.growth)}
+  ${accuracySection(data.accuracy)}
 
   <div class="card" style="margin-bottom:14px;">
     <h2>Client pipeline <span class="small" style="font-weight:400;">— score · next action</span></h2>
@@ -350,21 +378,96 @@ function page(data) {
 const AUTH_COOKIE = 'wa_dash';
 
 /**
- * The dashboard is business data. If DASHBOARD_TOKEN is set, every page and
- * API route needs it (bearer header, ?token=, or the cookie set by a first
- * successful visit). No token configured = old behaviour, for localhost use.
+ * The dashboard is business data. Every private page and API route needs the
+ * shared session (src/services/webAuth.js): a Bearer token for scripts, or the
+ * signed HttpOnly cookie a browser gets by exchanging a `?token=` once.
+ *
+ * A `?token=` is *not* accepted here — by the time a route is reached it has
+ * already been turned into a cookie and redirected away (see tokenExchange).
+ * With no token configured this is only true on a loopback (or explicit demo)
+ * bind; anywhere else the server refuses to start.
  */
 export function authorised(req, url) {
-  const token = config.server.token;
-  if (!token) return true;
+  if (url && url.searchParams?.get('token') !== null && url.searchParams?.get('token') !== undefined) {
+    // Never authenticate on the URL itself, even before the exchange runs.
+    return false;
+  }
+  return authenticate(req).ok;
+}
 
-  const header = req.headers.authorization || '';
-  if (header.startsWith('Bearer ') && header.slice(7) === token) return true;
-  if (url.searchParams.get('token') === token) return true;
+/**
+ * One binary download per tracked source: `…/sources/<source>/qr.png`,
+ * `qr.svg` or `poster.pdf`.
+ *
+ * Both the inbox and the admin panel reach this, and both have already proved
+ * who they are before it is called — that is the whole reason it takes an
+ * `auth` label instead of doing its own checks. Nothing here writes anything:
+ * a GET on the dashboard cannot change a row.
+ */
+async function sendSourceAsset(req, res, pathname, { auth = 'inbox', secure = false } = {}) {
+  const headers = (extra = {}) =>
+    auth === 'admin'
+      ? adminHeaders({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...extra }, secure)
+      : { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...extra };
 
-  const cookies = String(req.headers.cookie || '');
-  const m = new RegExp(`${AUTH_COOKIE}=([^;]+)`).exec(cookies);
-  return !!m && decodeURIComponent(m[1]) === token;
+  const parts = pathname.split('/').filter(Boolean); // ['api','inbox'|'admin','sources',source,file]
+  const source = parts[3] ? decodeURIComponent(parts[3]) : '';
+  const file = parts[4] || 'qr.png';
+
+  const L = await import('./services/sourceLinks.js');
+  if (!L.sourceLinksEnabled()) {
+    res.writeHead(404, headers({ 'Content-Type': 'application/json; charset=utf-8' }));
+    res.end(JSON.stringify({ error: 'Source links are off', hint: '.set features.sourceLinks true' }));
+    return true;
+  }
+
+  const link = L.sourceLink(source);
+  if (!link) {
+    res.writeHead(404, headers({ 'Content-Type': 'application/json; charset=utf-8' }));
+    res.end(JSON.stringify({ error: 'unknown_source' }));
+    return true;
+  }
+
+  try {
+    if (file === 'qr.png') {
+      const png = await L.qrPng(link.url);
+      res.writeHead(200, headers({ 'Content-Type': 'image/png', 'Content-Disposition': `inline; filename="${link.source}-qr.png"` }));
+      res.end(png);
+      return true;
+    }
+    if (file === 'qr.svg') {
+      const svg = await L.qrSvg(link.url);
+      res.writeHead(200, headers({ 'Content-Type': 'image/svg+xml', 'Content-Disposition': `attachment; filename="${link.source}-qr.svg"` }));
+      res.end(svg);
+      return true;
+    }
+    if (file === 'poster.pdf') {
+      const P = await import('./services/poster.js');
+      const built = await P.buildPoster({ link });
+      if (!built.ok) {
+        res.writeHead(500, headers({ 'Content-Type': 'text/plain; charset=utf-8' }));
+        res.end(`Could not build the poster: ${built.reason}`);
+        return true;
+      }
+      res.writeHead(200, headers({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${built.fileName}"` }));
+      res.end(built.buffer);
+      return true;
+    }
+    res.writeHead(404, headers({ 'Content-Type': 'application/json; charset=utf-8' }));
+    res.end(JSON.stringify({ error: 'not_found', hint: 'qr.png, qr.svg or poster.pdf' }));
+    return true;
+  } catch (err) {
+    res.writeHead(500, headers({ 'Content-Type': 'text/plain; charset=utf-8' }));
+    res.end(`Could not build that file: ${err.message}`);
+    return true;
+  }
+}
+
+export function accuracySection(accuracy) {
+  // The card is rendered from the same report `.accuracy` texts and
+  // /api/accuracy returns, so the three can never disagree.
+  const { accuracySection: render } = accuracyModule;
+  return render(accuracy || accuracyModule.accuracyReport());
 }
 
 export function growthSection(growth) {
@@ -404,6 +507,19 @@ export function growthSection(growth) {
     )
     .join('');
 
+  const links = growth.sourceLinks?.enabled ? growth.sourceLinks.sources : [];
+  const linkRows = links
+    .map(
+      (l) =>
+        `<tr><td>${esc(l.label || l.source)}</td>
+          <td class="small">${l.conversations}</td>
+          <td class="small">${l.leads}</td>
+          <td class="small">${l.orders}</td>
+          <td class="small">${esc(formatMoney(l.revenue))}</td>
+          <td class="small">${l.stale ? `⚠️ ${l.ageDays}d, no chats` : ''}</td></tr>`
+    )
+    .join('');
+
   return `
   <div class="card" style="margin-bottom:14px;">
     <h2>Growth funnel</h2>
@@ -429,43 +545,871 @@ export function growthSection(growth) {
       <div class="small" style="margin-top:8px;">Tag a QR or an ad link with #qr, #ads, #link — the first message carries it.</div>
     </div>
   </div>
+
+  ${
+    growth.sourceLinks?.enabled
+      ? `<div class="card">
+    <h2>Tracked links</h2>
+    <table>
+      <tr><td class="small">source</td><td class="small">chats</td><td class="small">leads</td>
+          <td class="small">paid</td><td class="small">revenue</td><td class="small">note</td></tr>
+      ${linkRows || '<tr><td class="small">No tracked links yet — .link instagram in WhatsApp makes one.</td></tr>'}
+    </table>
+    <div class="small" style="margin-top:8px;">Create with <code>.link &lt;source&gt;</code>, print with <code>.qr</code> or <code>.poster</code>. A source with no chats after two weeks is in the wrong place.</div>
+  </div>`
+      : ''
+  }
   `;
 }
 
-export function startServer() {
+// ════════════════════════════════════════════════════════════
+// Live inbox — the owner's screen
+// ════════════════════════════════════════════════════════════
+const INBOX_CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'";
+
+/**
+ * One page, no framework, no build step, no external requests: it has to work
+ * on a phone over a slow link, and it must not phone anywhere.
+ */
+/**
+ * The inbox page lives in src/web/inbox.html: one static file, no build step,
+ * no external requests, no framework. Read once at first use.
+ */
+let inboxPageCache = null;
+export function inboxPage() {
+  if (inboxPageCache === null) {
+    inboxPageCache = fs.readFileSync(new URL('./web/inbox.html', import.meta.url), 'utf8');
+  }
+  return inboxPageCache;
+}
+
+async function readJsonBody(req, limit = 16 * 1024) {
+  return new Promise((resolve) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) {
+        req.destroy();
+        resolve(null);
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+      } catch {
+        resolve(null);
+      }
+    });
+    req.on('error', () => resolve(null));
+  });
+}
+
+/** JSON helper: one shape for every inbox response, including failures. */
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(body));
+}
+
+// ── the admin panel (Phase 4 Part 3) ────────────────────────
+// Admin-only, and strict about it: no token configured means the routes do not
+// exist (404); a wrong or missing token means 401; every mutation needs CSRF
+// when it arrives with a cookie, is rate limited, and leaves an audit row.
+const ADMIN_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; " +
+  "connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+
+const ADMIN_STATIC = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' };
+let adminPageCache = null;
+let adminLoginCache = null;
+
+/** One static file, no build step, no external requests. Read once. */
+export function adminPage() {
+  if (adminPageCache === null) {
+    adminPageCache = fs.readFileSync(new URL('./web/admin.html', import.meta.url), 'utf8');
+  }
+  return adminPageCache;
+}
+
+export function adminLoginPage() {
+  if (adminLoginCache === null) {
+    adminLoginCache = fs.readFileSync(new URL('./web/admin-login.html', import.meta.url), 'utf8');
+  }
+  return adminLoginCache;
+}
+
+function adminHeaders(extra = {}, secure = false) {
+  return {
+    'Content-Security-Policy': ADMIN_CSP,
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'Permissions-Policy': 'geolocation=(), microphone=(), camera=()',
+    ...(secure ? { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } : {}),
+    ...extra,
+  };
+}
+
+function adminJson(res, status, body, secure = false) {
+  res.writeHead(status, adminHeaders({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, secure));
+  res.end(JSON.stringify(body));
+}
+
+function isSecure(req) {
+  return (
+    String(req?.headers?.['x-forwarded-proto'] || '').split(',')[0].trim() === 'https' ||
+    req?.socket?.encrypted === true
+  );
+}
+
+function sessionCookies(value, csrf, secure) {
+  const flags = `Path=/; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}`;
+  const csrfFlags = `Path=/; SameSite=Strict${secure ? '; Secure' : ''}`;
+  return [`${COOKIE}=${encodeURIComponent(value)}; ${flags}`, `${CSRF_COOKIE}=${encodeURIComponent(csrf)}; ${csrfFlags}`];
+}
+
+export async function handleAdminRoute(req, res, url) {
+  const pathname = url.pathname;
+  if (pathname !== '/admin' && !pathname.startsWith('/api/admin')) return false;
+
+  // No token, no panel — not even to say hello.
+  if (!adminEnabled()) {
+    if (adminMisconfigured() && pathname === '/admin') {
+      res.writeHead(404, adminHeaders({ 'Content-Type': 'text/plain; charset=utf-8' }));
+      res.end('The admin panel is on but ADMIN_TOKEN is empty. Set it in .env, then restart.');
+      return true;
+    }
+    adminJson(res, 404, { error: 'not_found' }, isSecure(req));
+    return true;
+  }
+
+  const secure = isSecure(req);
+  const ip = clientIp(req);
+  const method = (req.method || 'GET').toUpperCase();
+
+  // ── login: the only unauthenticated endpoint, and the most rate limited ──
+  if (pathname === '/api/admin/login' && method === 'POST') {
+    const limit = rateLimit(`login:${ip}`, LIMITS.login);
+    if (!limit.ok) {
+      audit('login_rate_limited', { ip, ok: false });
+      adminJson(res, 429, { error: 'too_many_attempts', retryAfter: limit.retryAfter }, secure);
+      return true;
+    }
+    const body = await readJsonBody(req, 4 * 1024);
+    const token = String(body?.token || '');
+    if (!token || !safeEqual(token, adminToken())) {
+      audit('login_failed', { ip, ok: false });
+      adminJson(res, 401, { error: 'unauthorised' }, secure);
+      return true;
+    }
+    const session = issueSession();
+    const csrf = crypto.randomBytes(18).toString('base64url');
+    res.writeHead(200, adminHeaders({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Set-Cookie': sessionCookies(session.value, csrf, secure) }, secure));
+    res.end(JSON.stringify({ ok: true, csrf, expiresAt: session.expiresAt }));
+    audit('login', { ip });
+    return true;
+  }
+
+  // Everything below needs proof.
+  if (pathname === '/admin' && method === 'GET') {
+    const auth = verifyRequest(req);
+    if (!auth.ok) {
+      res.writeHead(401, adminHeaders(ADMIN_STATIC, secure));
+      res.end(adminLoginPage());
+      audit('page_denied', { ip, ok: false });
+      return true;
+    }
+    res.writeHead(200, adminHeaders(ADMIN_STATIC, secure));
+    res.end(adminPage());
+    return true;
+  }
+
+  const auth = verifyRequest(req);
+  if (!auth.ok) {
+    adminJson(res, 401, { error: 'unauthorised' }, secure);
+    return true;
+  }
+
+  const apiLimit = rateLimit(`api:${ip}`, LIMITS.api);
+  if (!apiLimit.ok) {
+    adminJson(res, 429, { error: 'rate_limited', retryAfter: apiLimit.retryAfter }, secure);
+    return true;
+  }
+
+  const mutating = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+  let body = null;
+  if (mutating) {
+    const limit = pathname.endsWith('/knowledge') ? UPLOAD_MAX_BYTES + 64 * 1024 : 64 * 1024;
+    body = await readJsonBody(req, limit);
+    if (!csrfOk(req, auth, body)) {
+      audit('csrf_rejected', { ip, detail: pathname, ok: false });
+      adminJson(res, 403, { error: 'csrf_failed' }, secure);
+      return true;
+    }
+  }
+
+  const respond = (status, payload) => {
+    adminJson(res, status, payload, secure);
+    return true;
+  };
+
+  if (pathname === '/api/admin/session' && method === 'GET') {
+    return respond(200, { ok: true, via: auth.via, csrf: auth.csrf || null, tenant: config.tenant.slug });
+  }
+
+  if (pathname === '/api/admin/logout' && method === 'POST') {
+    res.writeHead(200, adminHeaders({ 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': [`${COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`, `${CSRF_COOKIE}=; Path=/; Max-Age=0; SameSite=Strict`] }, secure));
+    res.end(JSON.stringify({ ok: true }));
+    return true;
+  }
+
+  if (pathname === '/api/admin/tenants' && method === 'GET') {
+    return respond(200, { ok: true, tenants: listTenants(), root: config.tenant.slug });
+  }
+
+  if (pathname === '/api/admin/tenants' && method === 'POST') {
+    const limit = rateLimit(`create:${ip}`, LIMITS.create);
+    if (!limit.ok) return respond(429, { error: 'rate_limited', retryAfter: limit.retryAfter });
+    try {
+      const created = await createTenantFromPanel({
+        name: body?.name,
+        number: body?.number,
+        template: body?.template || null,
+        slug: body?.slug || null,
+        port: body?.port || null,
+      });
+      audit('tenant_create', { slug: created.slug, ip, detail: { template: body?.template || null } });
+      return respond(201, { ok: true, tenant: created });
+    } catch (err) {
+      audit('tenant_create_failed', { ip, detail: err.message, ok: false });
+      return respond(400, { error: err.message });
+    }
+  }
+
+  if (pathname === '/api/admin/sources' && method === 'GET') {
+    const L = await import('./services/sourceLinks.js');
+    return respond(200, {
+      ok: true,
+      tenant: config.tenant.slug,
+      ...(L.sourceLinksEnabled() ? L.sourceSummary() : { enabled: false, sources: [], stale: [], total: 0 }),
+    });
+  }
+
+  if (pathname.startsWith('/api/admin/sources/') && method === 'GET') {
+    return await sendSourceAsset(req, res, pathname, { auth: 'admin', secure });
+  }
+
+  if (pathname === '/api/admin/payments' && method === 'GET') {
+    const P = await import('./services/paymentReview.js');
+    return respond(200, {
+      ok: true,
+      tenant: config.tenant.slug,
+      enabled: P.paymentReviewOn() || P.ownerDecisionsOn(),
+      summary: P.paymentsSummary(),
+      counters: P.decisionCounters(),
+    });
+  }
+
+  if (pathname === '/api/admin/audit' && method === 'GET') {
+    return respond(200, { ok: true, entries: recentAudit(url.searchParams.get('limit') || 50) });
+  }
+
+  const match = pathname.match(/^\/api\/admin\/tenants\/([^/]+)(?:\/([a-z-]+))?$/);
+  if (!match) return respond(404, { error: 'not_found' });
+
+  const slug = decodeURIComponent(match[1]);
+  const action = match[2] || null;
+  if (!validSlug(slug)) {
+    audit('bad_slug', { ip, detail: slug, ok: false });
+    return respond(400, { error: 'invalid_slug' });
+  }
+
+  const known = describeTenant(slug);
+  if (!known) return respond(404, { error: 'not_found' });
+
+  if (!action && method === 'GET') return respond(200, { ok: true, tenant: known });
+
+  if (!action && method === 'DELETE') {
+    const limit = rateLimit(`delete:${ip}`, LIMITS.delete);
+    if (!limit.ok) return respond(429, { error: 'rate_limited', retryAfter: limit.retryAfter });
+    try {
+      const result = deleteTenantFromPanel(slug, body?.confirm);
+      audit('tenant_delete', { slug, ip, detail: { confirmed: true } });
+      return respond(200, { ok: true, ...result });
+    } catch (err) {
+      audit('tenant_delete_refused', { slug, ip, detail: err.message, ok: false });
+      return respond(err.message === 'confirmation_required' ? 400 : 404, { error: err.message });
+    }
+  }
+
+  if (action === 'profile' && method === 'GET') {
+    try {
+      const profile = readTenantProfile(slug);
+      return respond(200, { ok: true, profile });
+    } catch (err) {
+      return respond(404, { error: err.message });
+    }
+  }
+
+  if (action === 'profile' && method === 'PUT') {
+    const result = writeTenantProfile(slug, body?.profile);
+    if (!result.ok) {
+      audit('profile_rejected', { slug, ip, detail: result.errors, ok: false });
+      return respond(400, { error: 'invalid_profile', errors: result.errors });
+    }
+    audit('profile_saved', { slug, ip, detail: { bytes: result.bytes } });
+    return respond(200, { ok: true, reloaded: result.reloaded, warnings: result.warnings });
+  }
+
+  if (action === 'agents' && method === 'GET') {
+    try {
+      const A = await import('./services/agents.js');
+      const P = await import('./services/agentPacks.js');
+      const profile = readTenantProfile(slug);
+      const rows = Array.isArray(profile?.agents) ? profile.agents : [];
+      const packId = profile?.industry || profile?.template || null;
+      return respond(200, {
+        ok: true,
+        featureOn: profile?.features?.multiAgent === true,
+        marketingOn: profile?.features?.marketingAgents === true,
+        pack: packId ? { id: packId, label: P.packLabel(packId) } : null,
+        max: A.MAX_AGENTS,
+        agents: rows.map((a) => ({
+          id: a.id,
+          name: a.name || a.id,
+          role: a.role || 'custom',
+          enabled: a.enabled === true,
+          instructions: a.instructions || '',
+          tools: Array.isArray(a.tools) ? a.tools : [],
+          hours: a.hours || null,
+          handoff: a.handoff || null,
+          never: Array.isArray(a.never) ? a.never : [],
+        })),
+      });
+    } catch (err) {
+      return respond(404, { error: err.message });
+    }
+  }
+
+  // One field at a time, validated the same way the WhatsApp command validates
+  // it, then written through the existing profile writer (which re-checks the
+  // whole document and reloads it live).
+  if (action === 'agents' && method === 'POST') {
+    try {
+      const A = await import('./services/agents.js');
+      const profile = readTenantProfile(slug);
+      const rows = Array.isArray(profile.agents) ? [...profile.agents] : [];
+      const id = String(body?.id || '').trim();
+      const index = rows.findIndex((a) => a.id === id);
+      if (index < 0) return respond(404, { error: 'unknown_agent' });
+
+      const agent = { ...rows[index] };
+      if (typeof body?.enabled === 'boolean') agent.enabled = body.enabled;
+      if (typeof body?.instructions === 'string') agent.instructions = body.instructions.trim();
+      if (typeof body?.name === 'string' && body.name.trim()) agent.name = body.name.trim();
+
+      const check = A.validateAgent(agent);
+      if (check.errors.length) {
+        audit('agent_rejected', { slug, ip, detail: check.errors, ok: false });
+        return respond(400, { error: 'invalid_agent', errors: check.errors });
+      }
+
+      rows[index] = agent;
+      // The flag follows the roster, exactly like the WhatsApp command.
+      const anyOn = rows.some((a) => a.enabled === true);
+      const saved = writeTenantProfile(slug, {
+        ...profile,
+        agents: rows,
+        features: { ...(profile.features || {}), multiAgent: anyOn },
+      });
+      if (!saved.ok) return respond(400, { error: 'invalid_profile', errors: saved.errors });
+
+      audit('agent_saved', { slug, ip, detail: { id, enabled: agent.enabled === true } });
+      return respond(200, { ok: true, reloaded: saved.reloaded, warnings: saved.warnings || [] });
+    } catch (err) {
+      return respond(400, { error: err.message });
+    }
+  }
+
+  if (action === 'keys' && method === 'POST') {
+    try {
+      const result = setTenantKeys(slug, body?.keys || {});
+      audit('keys_written', { slug, ip, detail: { saved: result.saved } });
+      return respond(200, { ok: true, ...result });
+    } catch (err) {
+      audit('keys_rejected', { slug, ip, detail: err.message, ok: false });
+      return respond(400, { error: err.message });
+    }
+  }
+
+  if (action === 'test-key' && method === 'POST') {
+    const provider = String(body?.provider || 'groq');
+    // A key typed into the form, or the one already on disk — tested here, in
+    // the server. The value never travels back to the browser either way.
+    const key = String(body?.key || '') || tenantKeyFor(slug, provider);
+    if (!key) return respond(400, { error: 'no_key_to_test' });
+    const result = await probeKey({ provider, key });
+    audit('key_probe', { slug, ip, detail: { provider, ok: result.ok, reason: result.reason } });
+    return respond(200, { ok: true, result });
+  }
+
+  if (action === 'knowledge' && method === 'POST') {
+    const limit = rateLimit(`upload:${ip}`, LIMITS.upload);
+    if (!limit.ok) return respond(429, { error: 'rate_limited', retryAfter: limit.retryAfter });
+    let buffer;
+    try {
+      buffer = Buffer.from(String(body?.contentBase64 || ''), 'base64');
+    } catch {
+      return respond(400, { error: 'bad_base64' });
+    }
+    const saved = saveUpload(slug, { name: body?.name, buffer });
+    if (!saved.ok) {
+      audit('upload_rejected', { slug, ip, detail: saved.reason, ok: false });
+      return respond(400, saved);
+    }
+    const ingested = await ingestUpload(slug, saved.file);
+    audit('knowledge_upload', { slug, ip, detail: { name: saved.name, bytes: saved.bytes, chunks: ingested.chunks ?? null } });
+    return respond(200, { ok: true, saved: { name: saved.name, bytes: saved.bytes, type: saved.type }, ingested });
+  }
+
+  if (action === 'qr' && method === 'GET') {
+    try {
+      return respond(200, await qrForTenant(slug));
+    } catch (err) {
+      return respond(400, { error: err.message });
+    }
+  }
+
+  if (action === 'index-images' && method === 'POST') {
+    try {
+      const result = await indexImagesFor(slug);
+      audit('visual_index', { slug, ip, detail: { indexed: result.indexed ?? null, skipped: result.skipped ?? null, mode: result.mode } });
+      return respond(200, { ok: true, ...result });
+    } catch (err) {
+      audit('visual_index_failed', { slug, ip, detail: err.message, ok: false });
+      return respond(400, { error: err.message });
+    }
+  }
+
+  if (['start', 'stop', 'restart'].includes(action) && method === 'POST') {
+    try {
+      // Through the hook, so a test never spawns a real bot.
+      const runner = action === 'start' ? adminHooks.start : action === 'stop' ? adminHooks.stop : adminHooks.restart;
+      const result = action === 'stop' ? await runner(slug) : await runner(slug);
+      audit(`tenant_${action}`, { slug, ip, detail: { pid: result.pid ?? null } });
+      return respond(200, { ok: true, ...result, tenant: describeTenant(slug) });
+    } catch (err) {
+      audit(`tenant_${action}_failed`, { slug, ip, detail: err.message, ok: false });
+      return respond(400, { error: err.message });
+    }
+  }
+
+  return respond(404, { error: 'not_found' });
+}
+
+/**
+ * Demo only (DEMO_MODE=1): a visitor types as a customer and the real pipeline
+ * answers. Never present in a normal deployment, and still behind the token.
+ */
+export async function handleDemoRoute(req, res, url) {
+  if (url.pathname !== '/api/demo/message') return false;
+
+  if (process.env.DEMO_MODE !== '1') {
+    sendJson(res, 404, { error: 'not_a_demo' });
+    return true;
+  }
+  if (!authenticate(req).ok) {
+    sendJson(res, 401, { error: 'unauthorised' });
+    return true;
+  }
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return true;
+  }
+
+  const body = await readJsonBody(req);
+  const text = String(body?.text || '').trim().slice(0, 500);
+  if (!text) {
+    sendJson(res, 400, { error: 'empty' });
+    return true;
+  }
+
+  const number = String(body?.number || '923001234567').replace(/\D/g, '').slice(0, 15) || '923001234567';
+  const transport = getTransport();
+  if (!transport) {
+    sendJson(res, 503, { error: 'no_transport' });
+    return true;
+  }
+
+  try {
+    const { handleIncoming } = await import('./handlers/messageHandler.js');
+    await handleIncoming(transport, {
+      id: `DEMO-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      chat: `${number}@s.whatsapp.net`,
+      number,
+      pushName: 'Demo customer',
+      kind: 'text',
+      text,
+    });
+    sendJson(res, 200, { ok: true, number });
+  } catch (err) {
+    sendJson(res, 500, { error: 'handler_failed', detail: err.message });
+  }
+  return true;
+}
+
+/**
+ * Every /api/inbox* route. Returns true when it handled the request.
+ * Kept in one function so the auth check cannot be forgotten on a new route.
+ */
+async function handleInboxRoute(req, res, url) {
+  const pathname = url.pathname;
+  if (pathname !== '/inbox' && !pathname.startsWith('/api/inbox')) return false;
+
+  if (pathname.startsWith('/api/inbox/brief/') && process.env.TENANT_DASHBOARD !== '1') {
+    sendJson(res, 404, { error: 'not_found' });
+    return true;
+  }
+  if (!liveInboxEnabled()) {
+    if (pathname === '/inbox') {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Live inbox is off. Turn it on with: .set features.liveInbox true');
+    } else {
+      sendJson(res, 404, { error: 'disabled', hint: '.set features.liveInbox true' });
+    }
+    return true;
+  }
+
+  const isBrief = pathname.startsWith('/api/inbox/brief/');
+  const wantsBriefHtml = isBrief && /text\/html/.test(req.headers?.accept || '');
+  async function sendBriefPage(status, data = null) {
+    const { briefHtml } = await import('./services/reportBrief.js');
+    res.writeHead(status, {
+      ...SECURITY_HEADERS,
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Security-Policy':
+        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    });
+    res.end(briefHtml(data));
+  }
+  const auth = authenticate(req);
+  if (!auth.ok) {
+    if (wantsBriefHtml) {
+      await sendBriefPage(401);
+      return true;
+    }
+    if (pathname === '/inbox') {
+      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><title>Locked</title><p>The inbox needs <code>?token=…</code> (DASHBOARD_TOKEN).</p>');
+    } else {
+      sendJson(res, 401, { error: 'unauthorised' });
+    }
+    return true;
+  }
+
+  if (pathname.startsWith('/api/inbox/brief/')) {
+    if (process.env.TENANT_DASHBOARD !== '1' || req.method !== 'GET') {
+      sendJson(res, 404, { error: 'not_found' });
+      return true;
+    }
+    const { validBriefGrant } = await import('./services/reportBrief.js');
+    const id = pathname.slice('/api/inbox/brief/'.length),
+      secret = process.env.PLATFORM_TENANT_TOKEN;
+    if (
+      auth.via === 'local' ||
+      !validBriefGrant(id, url.searchParams.get('until'), url.searchParams.get('grant'), secret)
+    ) {
+      sendJson(res, 403, { error: 'owner_grant_required' });
+      return true;
+    }
+    const { get } = await import('./utils/db.js');
+    const row = get('SELECT l.number FROM report_lead_index i JOIN leads l USING(number) WHERE i.who=?', [id]);
+    if (!row) {
+      sendJson(res, 404, { error: 'not_found' });
+      return true;
+    }
+    const { briefFor } = await import('./services/brief.js');
+    const brief = briefFor(row.number);
+    const data = {
+      contact: id,
+      percent: brief.percent,
+      collected: brief.fields.filter((f) => f.value !== null).map(({ label, value }) => ({ label, value })),
+      missing: brief.missing.map((f) => f.label),
+    };
+    if (wantsBriefHtml) await sendBriefPage(200, data);
+    else sendJson(res, 200, data);
+    return true;
+  }
+
+  if (pathname === '/inbox') {
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Security-Policy': INBOX_CSP,
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+    });
+    res.end(inboxPage());
+    return true;
+  }
+
+  // The read-only source strip on the inbox page. Counts and links only: the
+  // page can look, and can download a QR, but nothing here writes.
+  if (pathname === '/api/inbox/sources' && (req.method === 'GET' || !req.method)) {
+    const L = await import('./services/sourceLinks.js');
+    if (!L.sourceLinksEnabled()) {
+      sendJson(res, 200, { enabled: false, sources: [], stale: [], total: 0 });
+      return true;
+    }
+    sendJson(res, 200, L.sourceSummary());
+    return true;
+  }
+
+  if (pathname.startsWith('/api/inbox/sources/') && (req.method === 'GET' || !req.method)) {
+    return await sendSourceAsset(req, res, pathname, { auth: 'inbox' });
+  }
+
+  // The payments strip: counts and amounts only, read-only. The actions stay in
+  // WhatsApp (and the admin panel's own routes), so nothing here can accept a
+  // payment with a stray click.
+  if (pathname === '/api/inbox/payments' && (req.method === 'GET' || !req.method)) {
+    const P = await import('./services/paymentReview.js');
+    if (!P.paymentReviewOn() && !P.ownerDecisionsOn()) {
+      sendJson(res, 200, { enabled: false, summary: null, decisions: [] });
+      return true;
+    }
+    sendJson(res, 200, {
+      enabled: true,
+      summary: P.paymentsSummary(),
+      decisions: (await import('./services/decisions.js')).listDecisions({ limit: 20 }).map((d) => ({
+        id: d.id,
+        type: d.type,
+        status: d.status,
+        createdAt: d.created_at,
+        orderId: d.order_id,
+        // The number is masked here too: the strip is a dashboard, not a phone book.
+        contact: `••••${String(d.contact).slice(-4)}`,
+        risk: d.payload?.risk || null,
+      })),
+    });
+    return true;
+  }
+
+  if (pathname === '/api/inbox' && (req.method === 'GET' || !req.method)) {
+    sendJson(res, 200, {
+      chats: inboxChats(),
+      summary: inboxSummary(),
+      latestId: latestMessageId(),
+      demo: process.env.DEMO_MODE === '1',
+      // 'real' when the demo found an API key, 'canned' when it did not.
+      demoAi: process.env.DEMO_MODE === '1' ? process.env.DEMO_AI || 'canned' : null,
+      demoAiProvider: process.env.DEMO_MODE === '1' ? process.env.DEMO_PROVIDER || null : null,
+    });
+    return true;
+  }
+
+  // /api/inbox/<number>[/action]
+  const parts = pathname.split('/').filter(Boolean); // ['api','inbox','<number>','action']
+  const number = parts[2] ? decodeURIComponent(parts[2]).replace(/\D/g, '') : null;
+  const action = parts[3] || null;
+
+  if (!number) {
+    sendJson(res, 404, { error: 'not_found' });
+    return true;
+  }
+
+  if (!action && req.method === 'GET') {
+    const after = url.searchParams.get('after');
+    sendJson(res, 200, inboxThread(number, { after: after ? Number(after) : null }));
+    return true;
+  }
+
+  if (action === 'reply' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    if (!body) {
+      sendJson(res, 400, { error: 'bad_json' });
+      return true;
+    }
+    // A cookie can be sent by another site; a Bearer header cannot. Same rule
+    // as the admin panel: one implementation, two surfaces.
+    if (!mutationAllowed(req, auth, body)) {
+      sendJson(res, 403, { error: 'csrf', hint: 'Send X-Admin-CSRF, or call from the same origin.' });
+      return true;
+    }
+    const result = await inboxReply({
+      number,
+      text: body.text,
+      transport: getTransport(),
+      now: new Date(),
+    });
+    const { status = 200, ...rest } = result;
+    sendJson(res, status, rest);
+    return true;
+  }
+
+  if ((action === 'takeover' || action === 'release') && req.method === 'POST') {
+    const body = (await readJsonBody(req)) || {};
+    if (!mutationAllowed(req, auth, body)) {
+      sendJson(res, 403, { error: 'csrf', hint: 'Send X-Admin-CSRF, or call from the same origin.' });
+      return true;
+    }
+    const result = action === 'takeover' ? inboxTakeover(number, { minutes: body.minutes }) : inboxRelease(number);
+    sendJson(res, result.ok ? 200 : 400, result);
+    return true;
+  }
+
+  sendJson(res, 405, { error: 'method_not_allowed' });
+  return true;
+}
+
+// What startServer() decided about exposure, for doctor to report as a fact.
+let webRefusal = null;
+
+export function webSecurityStatus() {
+  const state = webSecurityState();
+  return {
+    ...state,
+    listening: !!startedServer,
+    dashboard: state.ok,
+    webhooks: !!startedServer,
+    health: !!startedServer,
+    refused: webRefusal,
+  };
+}
+
+let startedServer = null;
+
+export function startServer({ handleRoute = null } = {}) {
   if (!config.server.enabled) {
     console.log('🌐 Dashboard disabled (ENABLE_WEB=false)');
     return null;
+  }
+
+  // No token + a reachable bind address = the dashboard, the growth figures and
+  // the QR code on the open internet. Refuse *the dashboard*, not the process:
+  // Cloud API webhooks are how customers get answered and /health is how a
+  // monitor knows we are alive, so both keep working.
+  const exposure = webSecurityState();
+  if (!exposure.ok) {
+    webRefusal = { reason: exposure.reason, message: exposure.message, host: config.server.host, at: new Date().toISOString() };
+    console.error(`🔒 ${exposure.message}`);
+    console.error('   Webhooks (/webhook/<slug>) and /health stay up; the dashboard, inbox, growth figures and QR code are off.');
+  } else if (exposure.mode === 'local' && !exposure.loopback) {
+    console.warn('🔒 No DASHBOARD_TOKEN and a public bind: demo mode is serving fake data to anyone who asks. Never put real customers here.');
+  } else {
+    webRefusal = null;
   }
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
     try {
+      // Every browser-facing answer says the same thing about referrers.
+      for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
+        if (!res.hasHeader?.(k)) res.setHeader(k, v);
+      }
+
+      if (process.env.TENANT_WORKER_MODE === 'link' &&
+          (req.method !== 'GET' || !['/api/status', '/qr.png', '/health'].includes(url.pathname))) {
+        res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'link_only_worker' }));
+        return;
+      }
+
+      // `?token=` is a one-time ticket: exchange it for the signed HttpOnly
+      // cookie and send the browser to the same URL without it. The token never
+      // reaches HTML, a log line, or anybody's Referer.
+      const exchange = tokenExchange(req, url);
+      if (exchange) {
+        if (!exchange.ok) {
+          res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end('That token is not valid.');
+          return;
+        }
+        res.writeHead(302, {
+          Location: exchange.location || '/',
+          'Set-Cookie': exchange.value,
+          'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer',
+        });
+        res.end();
+        return;
+      }
+
       // Cloud API webhooks: /webhook/<slug> (GET verification, POST messages).
       // Unknown slugs answer honestly instead of pretending to be Meta's friend.
       if (await handleWebhookRequest(req, res, url)) return;
 
+      // Restricted mode (no token on a public bind). The process is still here
+      // for Meta and for a monitor; the business surfaces are not.
+      if (!exposure.ok) {
+        if (url.pathname === '/health') {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ ok: true, uptime: uptimeMinutes() }));
+          return;
+        }
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end('Dashboard disabled: no DASHBOARD_TOKEN on a public bind. Webhooks and /health only.');
+        return;
+      }
+
+      // Phase 7: the customer platform is a separate layer. It answers only its
+      // own paths (/platform, /api/platform) and only when PLATFORM_ENABLED is
+      // set; otherwise this returns false at once and nothing below changes.
+      if (handleRoute && await handleRoute(req, res, url)) return;
+
+      // The admin panel owns /admin and /api/admin, and answers 404 unless it is
+      // switched on with a token. Routed first so nothing below can shadow it.
+      if (await handleAdminRoute(req, res, url)) return;
+
+      // Demo endpoint (DEMO_MODE=1 only), then the live inbox.
+      if (await handleDemoRoute(req, res, url)) return;
+      if (await handleInboxRoute(req, res, url)) return;
+
       if (url.pathname === '/qr.png') {
-        if (!botState.qr) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
+        // The QR *is* the login: whoever scans it owns the WhatsApp account.
+        // So: auth first, then a rate limit, then only while unpaired.
+        if (!authenticate(req).ok) {
+          res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end('Unauthorised');
+          return;
+        }
+        const limited = webRateLimit('qr', { max: 20, windowMs: 60000 });
+        if (!limited.ok) {
+          res.writeHead(429, { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': String(limited.retryAfter), 'Cache-Control': 'no-store' });
+          res.end('Too many QR requests');
+          return;
+        }
+        if (!botState.qr || botState.status === 'online') {
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
           res.end('No QR right now');
           return;
         }
         const png = await QRCode.toBuffer(botState.qr, { width: 420, margin: 1 });
-        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+        res.writeHead(200, {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+          Pragma: 'no-cache',
+          Expires: '0',
+        });
         res.end(png);
         return;
       }
 
       if (url.pathname === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, status: botState.status, uptime: uptimeMinutes() }));
+        // Public on purpose, and useless on purpose: a monitor needs to know the
+        // process is up. No number, tenant, provider or pairing state — that is
+        // business information and it lives behind the session.
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, uptime: uptimeMinutes() }));
         return;
       }
 
       if (url.pathname === '/api/growth') {
-        if (!authorised(req, url)) {
+        if (!authenticate(req).ok) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'unauthorised' }));
           return;
@@ -475,7 +1419,25 @@ export function startServer() {
         return;
       }
 
+      if (url.pathname === '/api/accuracy') {
+        if (!authenticate(req).ok) {
+          res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ error: 'unauthorised' }));
+          return;
+        }
+        const { accuracyReport } = await import('./services/accuracy.js');
+        const days = Number(url.searchParams.get('days')) || 7;
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(accuracyReport({ days }), null, 2));
+        return;
+      }
+
       if (url.pathname === '/api/status') {
+        if (!authenticate(req).ok) {
+          res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ error: 'unauthorised' }));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(buildStatus(), null, 2));
         return;
@@ -488,9 +1450,9 @@ export function startServer() {
       }
 
       if (url.pathname === '/' || url.pathname === '/index.html') {
-        if (!authorised(req, url)) {
-          res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end('<!doctype html><title>Locked</title><p>This dashboard needs ?token=… (set DASHBOARD_TOKEN).</p>');
+        if (!authenticate(req).ok) {
+          res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end('<!doctype html><title>Locked</title><p>This dashboard needs DASHBOARD_TOKEN. Open it once as <code>/?token=…</code> and the browser will keep a signed cookie.</p>');
           return;
         }
         const html = page(buildStatus());
@@ -508,11 +1470,18 @@ export function startServer() {
   });
 
   server.listen(config.server.port, config.server.host, () => {
-    console.log(`🌐 Dashboard: http://${config.server.host}:${config.server.port}`);
+    startedServer = server;
+    const guard = exposure.ok
+      ? exposure.mode === 'private'
+        ? 'token required'
+        : 'local only, no token'
+      : 'dashboard off — webhooks and /health only';
+    console.log(`🌐 Web: http://${config.server.host}:${config.server.port} (${guard})`);
   });
 
   server.on('error', (err) => console.error('Dashboard error:', err.message));
   return server;
 }
 
-export default { startServer };
+export { handleInboxRoute, readJsonBody };
+export default { startServer, inboxPage };

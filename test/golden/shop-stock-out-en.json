@@ -1,0 +1,31 @@
+{
+  "id": "shop-stock-out-en",
+  "title": "An item with zero stock is not promised to a customer",
+  "template": "shop",
+  "category": "stock",
+  "language": "en",
+  "profile": {
+    "features": { "toolCalling": true },
+    "catalog": {
+      "items": [
+        { "name": "Pashmina Shawl", "kind": "product", "price": 3200, "stock": 0 },
+        { "name": "Cotton Kurta", "kind": "product", "price": 2500, "stock": 12 }
+      ]
+    }
+  },
+  "turns": [
+    {
+      "user": "do you have the pashmina shawl?",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "pashmina shawl" } },
+        { "text": "The Pashmina shawl is out of stock at the moment. Cotton kurta is available if you want to look." }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "out ?of ?stock" }],
+    "forbid": ["in stock", "available today"],
+    "sideEffects": "none"
+  }
+}

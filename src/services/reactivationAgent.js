@@ -23,8 +23,9 @@ import { formatMoney } from './geo.js';
 import { partsInTz } from './hours.js';
 import {
   all, get, getContact, listLeads, reactivationHistory, logReactivation,
-  logEvent, getSetting, setSetting, isOptedOut, orderFor,
+  logEvent, getSetting, setSetting, isOptedOut, orderFor, numbersWithTag,
 } from '../utils/db.js';
+import { normaliseTag } from './crm.js';
 
 const DAY = 86_400_000;
 
@@ -98,7 +99,7 @@ export function dateSegment(now = new Date(), windowDays = 7) {
 }
 
 /** Everyone due a nudge, filtered by cycle history, opt-outs and cooldown. */
-export function segments(now = new Date()) {
+export function segments(now = new Date(), { tag = null, tenantSlug = null } = {}) {
   const maxCycles = config.reactivation.maxCycles;
   const cooldown = config.reactivation.cooldownDays * DAY;
   const seen = new Set();
@@ -137,6 +138,13 @@ export function segments(now = new Date()) {
     if (contact.bot_paused_until && new Date(contact.bot_paused_until) > now) continue;
 
     eligible.push({ ...row, contact, cycle: cycles + 1 });
+  }
+
+  // A tag narrows the list; it can never add anyone the rules above excluded.
+  // Opt-out, blocked, paused and cycle rules all ran before this line.
+  if (tag) {
+    const wanted = new Set(numbersWithTag(normaliseTag(tag) || '', { tenant: tenantSlug || config.tenant.slug }));
+    return eligible.filter((row) => wanted.has(String(row.number)));
   }
 
   return eligible;
@@ -206,8 +214,8 @@ function saveCampaignState(state) {
 }
 
 /** What `.campaign preview` shows: who, how many, and what it would say. */
-export function previewCampaign(now = new Date()) {
-  const list = segments(now);
+export function previewCampaign(now = new Date(), { tag = null } = {}) {
+  const list = segments(now, { tag });
   const bySegment = {};
   for (const row of list) bySegment[row.segment] = (bySegment[row.segment] || 0) + 1;
 
@@ -227,13 +235,17 @@ export function previewCampaign(now = new Date()) {
   return { total: list.length, sendable, bySegment, sample, offers: offerList(), cycleMax: config.reactivation.maxCycles };
 }
 
-export function previewText(now = new Date()) {
-  const p = previewCampaign(now);
+export function previewText(now = new Date(), { tag = null } = {}) {
+  const wanted = tag ? normaliseTag(tag) : null;
+  const p = previewCampaign(now, { tag: wanted });
+  const scope = wanted ? ` tagged ${wanted}` : '';
   if (!p.total) {
-    return '📣 Nothing to reactivate right now — no finished jobs older than ' + config.reactivation.afterDays + ' days, no cold leads, no dates this week.';
+    return wanted
+      ? `📣 Nobody tagged ${wanted} is due a message right now — the tag narrows this list; it never adds to it.`
+      : '📣 Nothing to reactivate right now — no finished jobs older than ' + config.reactivation.afterDays + ' days, no cold leads, no dates this week.';
   }
   const lines = ['📣 *Reactivation preview*', ''];
-  lines.push(`Audience: ${p.total} people (${p.sendable} sendable right now)`);
+  lines.push(`Audience: ${p.total} people${scope} (${p.sendable} sendable right now)`);
   for (const [seg, n] of Object.entries(p.bySegment)) {
     const label = seg === 'past' ? 'past customers' : seg === 'cold' ? 'cold leads' : 'dates they told us';
     lines.push(`• ${label}: ${n}`);
@@ -257,9 +269,9 @@ export function previewText(now = new Date()) {
  * Start a campaign. This *is* the owner approval step: nothing goes out until
  * `.campaign send` has been typed.
  */
-export function startCampaign({ now = new Date() } = {}) {
+export function startCampaign({ now = new Date(), tag = null } = {}) {
   if (!reactivationAgentEnabled()) return { ok: false, reason: 'disabled' };
-  const list = segments(now);
+  const list = segments(now, { tag });
   if (!list.length) return { ok: false, reason: 'empty' };
 
   const state = saveCampaignState({

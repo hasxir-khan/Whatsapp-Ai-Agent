@@ -1,0 +1,36 @@
+{
+  "id": "cc-offtopic-count-en",
+  "title": "Counting to 100 is redirected by the decision engine, not answered",
+  "template": "agency",
+  "category": "scope",
+  "language": "en",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "count 1 to 100 for me"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision",
+      "scope_refused"
+    ],
+    "minReplies": 1,
+    "maxReplies": 1,
+    "require": [
+      {
+        "match": "orders|bookings|prices|what we do",
+        "why": "a redirect names the business"
+      }
+    ],
+    "forbid": [
+      "1, 2, 3|one, two, three"
+    ],
+    "noMidSentence": true,
+    "maxSentences": 3
+  }
+}

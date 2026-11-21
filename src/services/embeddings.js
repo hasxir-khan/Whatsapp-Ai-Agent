@@ -1,3 +1,4 @@
+import { mediaUsage } from './mediaUsage.js';
 // src/services/embeddings.js
 // Gemini free-tier embeddings, batched and rate-limit aware.
 //
@@ -119,15 +120,22 @@ export async function embedBatch(texts = [], { taskType = 'RETRIEVAL_DOCUMENT' }
           const data = await res.json();
           const vectors = (data.embeddings || []).map(vectorOf);
           if (vectors.length !== clean.length || vectors.some((v) => !v || !v.length)) {
+            mediaUsage('embedding', 'gemini', model, { error: 'provider_error' });
             lastFailure = new Error('malformed embedding response');
             break;
           }
+          if (process.env.TENANT_DASHBOARD === '1')
+            mediaUsage('embedding', 'gemini', model, {
+              input: Math.ceil(clean.reduce((n, s) => n + s.length, 0) / 4),
+              estimated: true,
+            });
           workingModel = model;
           lastError = null;
           return { vectors, model };
         }
 
         const body = await res.text();
+        mediaUsage('embedding', 'gemini', model, { error: 'provider_error' });
         lastFailure = new Error(explainGeminiError(res.status, body));
 
         if (isKeyError(res.status, body)) {
@@ -152,6 +160,7 @@ export async function embedBatch(texts = [], { taskType = 'RETRIEVAL_DOCUMENT' }
         }
         break;
       } catch (err) {
+        mediaUsage('embedding', 'gemini', model, { error: 'provider_error' });
         lastFailure = err;
         // A dead network or an aborted request will not fix itself in 400 ms.
         // Back off for a minute and let keyword search carry the replies.

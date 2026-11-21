@@ -22,14 +22,19 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { buildProfileFromTemplate, isTemplate, listTemplates, TEMPLATE_IDS } from '../src/services/templates.js';
 import { runSetup } from './wizard.js';
+import { templateAgents, MAX_AGENTS, validateAgent } from '../src/services/agents.js';
+import { childBase, emptyProviderSlots, helperBase, platformManaged } from '../src/services/workerEnv.js';
+import { validSlug as sharedValidSlug, validPort, resolveInside, ensurePrivateDir, writePrivateFile, tightenFile } from '../src/services/validation.js';
 
 // Where the users live: whatever folder you ran the command from.
 const ROOT = process.cwd();
-const TENANTS = path.join(ROOT, 'tenants');
+// Overridable so the admin panel (and its tests) can point at a folder of their
+// own without a second implementation of "where tenants live".
+const TENANTS = path.resolve(process.env.TENANTS_DIR || path.join(ROOT, 'tenants'));
 // Where the code lives: this script's folder, so child processes still work
 // when the manager is run from somewhere else.
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -54,7 +59,11 @@ const slugify = (s) =>
     .replace(/^-+|-+$/g, '')
     .slice(0, 32);
 
-const validSlug = (s) => /^[a-z0-9][a-z0-9-]{1,31}$/.test(s);
+// SECURITY PASS: the admin panel's rules, not a second copy of them. The old
+// regex here allowed one extra character class and one fewer rule than the
+// panel, so a slug could pass the CLI and fail (or behave differently) in the
+// panel.
+const validSlug = (s) => sharedValidSlug(s);
 
 const normalizePhone = (input) => {
   let d = String(input || '').replace(/[^\d]/g, '');
@@ -111,7 +120,9 @@ function writeEnvValue(slug, key, value) {
     return line;
   });
   if (!found) next.push(`${key}=${value}`);
-  fs.writeFileSync(file, next.join('\n'));
+  // SECURITY PASS: .env holds API keys. Rewriting it must not widen its mode,
+  // and a file created here starts at 0600.
+  writePrivateFile(file, next.join('\n'));
 }
 
 const mask = (v) => {
@@ -128,39 +139,43 @@ function nextPort() {
 }
 
 // ── commands ────────────────────────────────────────────────
-function cmdNew(args, flags) {
-  const name = flags.name || args.join(' ').trim();
-  if (!name) die('Usage: node scripts/tenant.js new "Business Name" --number 923001112233');
+/**
+ * Create one tenant. Throws on bad input and returns the result — the CLI below
+ * and the admin panel both call this, so there is exactly one implementation of
+ * "what a tenant looks like".
+ */
+export function createTenant(opts = {}) {
+  const name = String(opts.name || '').trim();
+  if (!name) throw new Error('Usage: node scripts/tenant.js new "Business Name" --number 923001112233');
 
-  const slug = flags.slug ? slugify(flags.slug) : slugify(name);
-  if (!validSlug(slug)) die('Could not make a slug from that name. Pass --slug something-simple');
+  const slug = opts.slug ? slugify(opts.slug) : slugify(name);
+  if (!validSlug(slug)) throw new Error('Could not make a slug from that name. Pass --slug something-simple');
 
-  const number = normalizePhone(flags.number || '');
+  const number = normalizePhone(opts.number || '');
   if (!/^\d{10,15}$/.test(number)) {
-    die('Pass the WhatsApp number this user will run the bot on: --number 923001112233 (international, no +)');
+    throw new Error('Pass the WhatsApp number this user will run the bot on: --number 923001112233 (international, no +)');
   }
-  if (readTenant(slug)) die(`Tenant "${slug}" already exists.`);
+  if (readTenant(slug)) throw new Error(`Tenant "${slug}" already exists.`);
 
-  if (flags.template && !isTemplate(flags.template)) {
-    die(`Unknown template "${flags.template}". Available: ${TEMPLATE_IDS.join(', ')}`);
+  if (opts.template && !isTemplate(opts.template)) {
+    throw new Error(`Unknown template "${opts.template}". Available: ${TEMPLATE_IDS.join(', ')}`);
   }
 
   const dir = tenantDir(slug);
+  // SECURITY PASS: one private tree per tenant — 0700 dirs, and every path
+  // proved to be inside it (the admin panel's rules, not a second copy).
+  ensurePrivateDir(dir);
   for (const sub of ['config', 'data', 'sessions', 'tmp']) {
-    fs.mkdirSync(path.join(dir, sub), { recursive: true });
+    ensurePrivateDir(resolveInside(dir, sub));
   }
 
-  const port = Number(flags.port) || nextPort();
-  const brand = flags.brand || name;
-  const timezone = flags.timezone || 'Asia/Karachi';
-
-  let template = null;
-  if (flags.template) {
-    if (!isTemplate(flags.template)) {
-      die(`Unknown template "${flags.template}". Available: ${TEMPLATE_IDS.join(', ')}`);
-    }
-    template = flags.template;
+  const port = Number(opts.port) || nextPort();
+  if (!validPort(port)) {
+    throw new Error(`Port ${port} is not usable: pick a number between 1024 and 65535.`);
   }
+  const brand = opts.brand || name;
+  const timezone = opts.timezone || 'Asia/Karachi';
+  const template = opts.template || null;
 
   const tenant = {
     slug,
@@ -170,11 +185,12 @@ function cmdNew(args, flags) {
     port,
     timezone,
     enabled: true,
+    ...(opts.platformManaged ? { platformManaged: true } : {}),
     createdAt: new Date().toISOString(),
   };
-  fs.writeFileSync(path.join(dir, 'tenant.json'), `${JSON.stringify(tenant, null, 2)}\n`);
+  writePrivateFile(path.join(dir, 'tenant.json'), `${JSON.stringify(tenant, null, 2)}\n`);
 
-  fs.writeFileSync(
+  writePrivateFile(
     path.join(dir, '.env'),
     `# ${name} — secrets for this WhatsApp assistant.
 # This file is private: it is gitignored, and only this tenant reads it.
@@ -230,6 +246,17 @@ TRANSPORT=baileys
 # CONTENT_TIME=10:00
 # TENANT_DAILY_LLM_CALLS=250      # this tenant's own daily AI budget
 
+# ── PDF documents + self-healing (Phase 4) ──────────────────
+# In config/owner.json: features.pdfInvoices, features.selfHealing.
+# INVOICE_KEEP_DAYS=90
+# SELF_HEALING_WINDOW_MINUTES=30
+# SELF_HEALING_MAX_PER_DAY=3
+
+# ── Live inbox (Phase 4) ────────────────────────────────────
+# config/owner.json: features.liveInbox.
+# DASHBOARD_TOKEN=long-random-string   # required on anything public
+# PUBLIC_URL=https://bot.yourdomain.com  # for the .inbox link
+
 # ── Google Calendar (optional) ──────────────────────────────
 # Bookings live in SQLite either way; this only mirrors them.
 # GOOGLE_CALENDAR_ID=
@@ -250,17 +277,40 @@ PORT=${port}
         brand,
         number,
         timezone,
-        city: flags.city || '',
-        currency: flags.currency || 'PKR',
-        languages: flags.languages
-          ? String(flags.languages).split(',').map((s) => s.trim()).filter(Boolean)
+        city: opts.city || '',
+        currency: opts.currency || 'PKR',
+        languages: opts.languages
+          ? String(opts.languages).split(',').map((s) => s.trim()).filter(Boolean)
           : undefined,
-        hours: flags.hours || '',
+        hours: opts.hours || '',
       })
     : starterProfile({ name, brand, number, timezone });
 
-  fs.writeFileSync(path.join(dir, 'config', 'owner.json'), `${JSON.stringify(profile, null, 2)}\n`);
+  writePrivateFile(resolveInside(dir, 'config', 'owner.json'), `${JSON.stringify(profile, null, 2)}\n`);
 
+  return { slug, name, number, port, dir, template };
+}
+
+function cmdNew(args, flags) {
+  let created;
+  try {
+    created = createTenant({
+      name: flags.name || args.join(' ').trim(),
+      slug: flags.slug,
+      number: flags.number,
+      template: flags.template,
+      port: flags.port,
+      brand: flags.brand,
+      timezone: flags.timezone,
+      city: flags.city,
+      currency: flags.currency,
+      languages: flags.languages,
+      hours: flags.hours,
+    });
+  } catch (err) {
+    die(err.message);
+  }
+  const { slug, name, number, port, template } = created;
   console.log(
     `\n${c.green('✔')} Tenant ${c.bold(slug)} created for ${c.bold(name)} (+${number})` +
       (template ? ` ${c.dim(`from the ${template} template`)}` : '')
@@ -390,12 +440,13 @@ function cmdShow(slug, flags) {
   console.log(`  Gemini key      : ${env.GEMINI_API_KEY ? c.green(mask(env.GEMINI_API_KEY)) : c.yellow('missing')}`);
 
   if (flags.start) {
+    if (platformManaged(dir, t)) die('Start this managed assistant from the platform dashboard.');
     console.log(`\nStarting ${t.name}… scan the QR in the terminal (or open /qr.png on port ${t.port})\n`);
     const child = spawn(process.execPath, [path.join(REPO, 'src', 'index.js')], {
       cwd: REPO,
       stdio: 'inherit',
       env: {
-        ...process.env,
+        ...childBase(),
         TENANT: slug,
         ENV_FILE: path.join(dir, '.env'),
         CONFIG_DIR: path.join(dir, 'config'),
@@ -428,10 +479,12 @@ function cmdKeys(slug, pairs = []) {
   }
   for (const pair of pairs) {
     const idx = pair.indexOf('=');
-    if (idx < 1) die(`Expected KEY=VALUE, got "${pair}"`);
+    if (idx < 1) die('Expected KEY=VALUE.');
     const key = pair.slice(0, idx).trim();
     const value = pair.slice(idx + 1).trim();
-    if (!/^[A-Z0-9_]+$/.test(key)) die(`Invalid key name "${key}"`);
+    if (['PLATFORM_KEY_SECRET','PLATFORM_TENANT_TOKEN','PLATFORM_OPERATOR_TOKEN','PLATFORM_OPERATOR_TOTP_SECRET'].includes(key)) die('Do not pass platform secrets on the command line. See Backups and secrets.');
+    if (platformManaged(tenantDir(slug), t) && key in emptyProviderSlots()) die('Manage AI keys from the platform dashboard.');
+    if (!/^[A-Z0-9_]+$/.test(key)) die('Invalid environment key name.');
     writeEnvValue(slug, key, value);
     console.log(`${c.green('✔')} ${slug}: ${key} set (${mask(value)})`);
   }
@@ -448,6 +501,9 @@ function cmdRm(slug, flags) {
 }
 
 // ── arg parsing ─────────────────────────────────────────────
+// Everything below runs only when this file is executed. The admin panel
+// imports createTenant() from here, and importing must never read argv.
+function main() {
 const [, , command = 'help', ...rest] = process.argv;
 const flags = {};
 const positional = [];
@@ -482,7 +538,7 @@ function cmdLearn(slug, target, flags) {
     cwd: REPO,
     stdio: 'inherit',
     env: {
-      ...process.env,
+      ...helperBase(dir, t),
       TENANT: slug,
       ENV_FILE: path.join(dir, '.env'),
       CONFIG_DIR: path.join(dir, 'config'),
@@ -495,6 +551,111 @@ function cmdLearn(slug, target, flags) {
   process.exit(child.status || 0);
 }
 
+function cmdIndexImages(slug, flags) {
+  const t = readTenant(slug);
+  if (!t) die(`No tenant "${slug}". Try: node scripts/tenant.js list`);
+
+  const dir = tenantDir(slug);
+  const args = [path.join(REPO, 'scripts', 'index-images.js')];
+  if (flags.force) args.push('--force');
+
+  const child = spawnSync(process.execPath, args, {
+    cwd: REPO,
+    stdio: 'inherit',
+    env: {
+      ...helperBase(dir, t),
+      TENANT: slug,
+      TENANTS_DIR: TENANTS,
+      ENV_FILE: path.join(dir, '.env'),
+      CONFIG_DIR: path.join(dir, 'config'),
+      DATA_DIR: path.join(dir, 'data'),
+      SESSION_FOLDER: path.join(dir, 'sessions'),
+      TMP_DIR: path.join(dir, 'tmp'),
+      ENABLE_WEB: 'false',
+    },
+  });
+  process.exit(child.status || 0);
+}
+
+/**
+ * `agents <slug>` — put the template's starter assistants into this tenant.
+ *
+ * Everything it writes is disabled unless --enable names it: the owner reads
+ * the roster, edits what they want, and switches one on with `.agent on <id>`
+ * on WhatsApp. The bot behaves exactly as before until they do.
+ */
+async function cmdAgents(slug, flags) {
+  const tenant = readTenant(slug);
+  if (!tenant) die(`No tenant "${slug}". Try: node scripts/tenant.js list`);
+
+  const dir = tenantDir(slug);
+  const file = path.join(dir, 'config', 'owner.json');
+  if (!fs.existsSync(file)) {
+    die(`No profile yet at ${file}. Run: node scripts/tenant.js setup ${slug}`);
+  }
+
+  let profile;
+  try {
+    profile = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    die(`${file} is not valid JSON — fix it first.`);
+  }
+
+  const type = String(flags.type || tenant.template || profile.business?.type || '').toLowerCase();
+  const candidates = templateAgents(type);
+  const existing = Array.isArray(profile.agents) ? profile.agents : [];
+  const enable = String(flags.enable || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const unknown = enable.filter((id) => !candidates.some((a) => a.id === id));
+  if (unknown.length) {
+    die(`Unknown assistant(s): ${unknown.join(', ')}. Choose from: ${candidates.map((a) => a.id).join(', ')}`);
+  }
+
+  console.log(`\n${c.bold(`Assistants for ${tenant.name}`)}\n`);
+  for (const a of candidates) {
+    const have = existing.some((x) => x.id === a.id);
+    console.log(`  ${a.id.padEnd(10)} ${c.bold(a.name.padEnd(12))} ${c.dim(a.role)}${have ? c.green('  (already here)') : ''}`);
+    console.log(`     ${c.dim(String(a.instructions || '').slice(0, 88))}`);
+    if (a.never?.length) console.log(`     ${c.yellow('never:')} ${c.dim(a.never[0])}`);
+  }
+
+  // Merge: never overwrite an assistant the owner has already customised.
+  const merged = existing.map((x) => ({ ...x }));
+  for (const a of candidates) {
+    if (merged.some((x) => x.id === a.id)) continue;
+    merged.push({ ...a, enabled: enable.includes(a.id) });
+  }
+  for (const a of merged) {
+    if (enable.includes(a.id)) a.enabled = true;
+  }
+
+  if (merged.length > MAX_AGENTS) die(`That would be ${merged.length} assistants; the maximum is ${MAX_AGENTS}.`);
+  for (const a of merged) {
+    const check = validateAgent(a);
+    if (check.errors.length) die(`${a.id}: ${check.errors.join('; ')}`);
+  }
+
+  const turnedOn = merged.filter((a) => a.enabled).map((a) => a.id);
+  profile.agents = merged;
+  profile.features = { ...(profile.features || {}) };
+  // The feature follows the roster: one enabled assistant is enough.
+  profile.features.multiAgent = turnedOn.length > 0;
+
+  if (flags.dry) {
+    console.log(`\n${c.yellow('Dry run')} — would write ${merged.length} assistants, ${turnedOn.length} enabled.\n`);
+    return;
+  }
+
+  fs.writeFileSync(file, `${JSON.stringify(profile, null, 2)}\n`);
+  console.log(`\n${c.green('✔')} ${merged.length} assistants written to ${c.dim(path.relative(process.cwd(), file))}`);
+  console.log(`  Enabled : ${turnedOn.length ? turnedOn.join(', ') : c.yellow('none — behaviour is unchanged')}`);
+  if (turnedOn.length) console.log(`  multiAgent is now ${c.bold('on')} for this tenant.`);
+  console.log(`  Switch one on later from WhatsApp: ${c.dim(`.agent on ${candidates[0].id}`)}\n`);
+}
+
 function cmdTemplates() {
   const templates = listTemplates();
   console.log(`\n${c.bold('Industry templates')}\n`);
@@ -503,6 +664,7 @@ function cmdTemplates() {
     console.log(`     ${c.dim(t.description)}`);
     console.log(`     ${c.dim(`${t.items} example items · ${t.faqs} FAQs · good for ${t.goodFor}`)}`);
   }
+  console.log(`\n  Each template ships 2–3 assistants, disabled: ${c.dim('node scripts/tenant.js agents <slug>')}`);
   console.log(`\n  Use one: ${c.dim('node scripts/tenant.js new "My Business" --number 923001112233 --template restaurant')}`);
   console.log(`  Or run the wizard: ${c.dim('node scripts/tenant.js setup <slug>')}\n`);
 }
@@ -559,6 +721,14 @@ switch (command) {
     break;
   }
 
+  case 'index-images':
+  case 'images': {
+    const slug = positional[0];
+    if (!slug) die('Usage: node scripts/tenant.js index-images <slug> [--force]');
+    cmdIndexImages(slug, flags);
+    break;
+  }
+
   case 'learn':
   case 'ingest': {
     const slug = positional[0];
@@ -567,6 +737,14 @@ switch (command) {
       die('Usage: node scripts/tenant.js learn <slug> <file|url> [--name "Title"]\n       node scripts/tenant.js learn <slug> --reindex [--force]');
     }
     cmdLearn(slug, target, flags);
+    break;
+  }
+
+  case 'agents':
+  case 'assistants': {
+    const slug = positional[0];
+    if (!slug) die('Usage: node scripts/tenant.js agents <slug> [--enable sales,bookings] [--dry]');
+    cmdAgents(slug, flags).catch((e) => die(e.message));
     break;
   }
 
@@ -582,6 +760,8 @@ ${c.bold('Multi-user manager')}
   ${c.dim('node scripts/tenant.js new "Business Name" --number 923001112233 [--template restaurant] [--port 3001]')}
   ${c.dim('node scripts/tenant.js setup <slug>')}          ${c.dim('# business wizard')}
   ${c.dim('node scripts/tenant.js learn <slug> <file|url>')} ${c.dim('# knowledge base')}
+  ${c.dim('node scripts/tenant.js index-images <slug>')} ${c.dim('# embed catalogue photos (visual search)')}
+  ${c.dim('node scripts/tenant.js agents <slug>')}          ${c.dim('# add the starters, switched off')}
   ${c.dim('node scripts/tenant.js templates')}
   ${c.dim('node scripts/tenant.js list')}
   ${c.dim('node scripts/tenant.js show <slug> [--start]')}
@@ -592,3 +772,9 @@ ${c.bold('Multi-user manager')}
   Run them all together with: ${c.bold('node scripts/run-all.js')}
 `);
 }
+}
+
+const invokedDirectly =
+  process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (invokedDirectly) main();

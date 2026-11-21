@@ -1,3 +1,4 @@
+import { billedWorker, workerAccess } from '../services/billingLease.js';
 // src/transport/baileys.js
 // Baileys, wrapped — not rewritten.
 //
@@ -6,13 +7,48 @@
 // backoff, same pairing code, same QR rendering. That is deliberate. Existing
 // installations must not be able to tell that a transport layer appeared.
 
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  Browsers,
-} from '@whiskeysockets/baileys';
+// Baileys is an *optional* dependency: a Cloud-API-only box should be able to
+// `npm ci --omit=optional` and never download libsignal-node, sharp or axios.
+// So it is loaded on first use, with an error that says what to do about it.
+let baileysModule = null;
+
+/**
+ * Is the package installed at all? Synchronous, so the CLI can refuse to start
+ * with one clear sentence instead of failing halfway through a connection.
+ */
+export function baileysAvailable() {
+  try {
+    createRequire(import.meta.url).resolve('@whiskeysockets/baileys');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const BAILEYS_MISSING_HINT =
+  'Baileys is not installed, so TRANSPORT=baileys cannot start.\n' +
+  '  Install it:    npm install                  (optional dependencies included)\n' +
+  '  Or go Cloud:   TRANSPORT=cloud  with features.cloudApi and the Meta keys';
+
+export async function loadBaileys() {
+  if (baileysModule) return baileysModule;
+  try {
+    baileysModule = await import('@whiskeysockets/baileys');
+    return baileysModule;
+  } catch (err) {
+    const e = new Error(
+      [
+        'Baileys is not installed, so TRANSPORT=baileys cannot start.',
+        '  Install it:    npm install                 (optional deps included)',
+        '  Or go Cloud:   TRANSPORT=cloud  with features.cloudApi and the Meta keys',
+        `  Underlying error: ${err.message}`,
+      ].join('\n')
+    );
+    e.code = 'baileys_missing';
+    e.permanent = true;
+    throw e;
+  }
+}
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
 import pino from 'pino';
@@ -20,12 +56,65 @@ import { config } from '../config/env.js';
 import { logEvent } from '../utils/db.js';
 import { botState, setQr, clearQr, setStatus } from '../state.js';
 import { registerCalls } from '../services/calls.js';
+import { storedMessage, storeOutbound } from '../services/outboundStore.js';
+import { maybeRecoverContact } from '../services/sessionRecovery.js';
+import { markSessionConnected } from '../utils/sessionBackup.js';
+import {
+  createAuditLogger,
+  noteInbound,
+  noteOutbound,
+  noteStatusUpdate,
+  noteTyping,
+  noteDecrypt,
+} from '../services/transportAudit.js';
 import { handleDeletedMessage } from '../services/deletedMessages.js';
 import * as media from '../services/media.js';
 import { describeMessage, downloadMedia, chatKind, resolveNumber, resolveJid } from '../services/media.js';
+import { createRequire } from 'node:module';
 import { Transport, normalizeIncoming, jidToNumber } from './base.js';
 
-const logger = pino({ level: process.env.BAILEYS_LOG === 'debug' ? 'debug' : 'silent' });
+// Wrapped, not replaced: Baileys reports Bad MAC and prekey-bundle session
+// resets through this logger, so it is where decryption failures are counted.
+// The wrapper passes every line through untouched and stores no text.
+const logger = createAuditLogger(pino({ level: process.env.BAILEYS_LOG === 'debug' ? 'debug' : 'silent' }));
+
+/**
+ * The socket options, as a pure function so the parts that matter can be tested
+ * without a socket library installed:
+ *   • `getMessage` answers the retry WhatsApp sends when a recipient cannot
+ *     decrypt what we sent. It returns the stored payload for the id, or
+ *     undefined — never a throw, because a throw there drops the message.
+ *   • the key store stays wrapped in makeCacheableSignalKeyStore: an uncached
+ *     key store re-reads and re-parses every session file on every message.
+ */
+export function buildSocketOptions({ baileys, version, state, getMessage = storedMessage } = {}) {
+  return {
+    version,
+    logger,
+    printQRInTerminal: false,
+    browser: baileys.Browsers.ubuntu('Chrome'),
+    auth: { creds: state.creds, keys: baileys.makeCacheableSignalKeyStore(state.keys, logger) },
+    markOnlineOnConnect: false,
+    syncFullHistory: false,
+    generateHighQualityLinkPreview: false,
+    emitOwnEvents: false,
+    defaultQueryTimeoutMs: 60000,
+    getMessage: (key) => (workerAccess()?.canRun === false ? undefined : getMessage(key)),
+  };
+}
+
+/** Recent `append` messages are a backlog; older ones are history. */
+export function appendWindowMs() {
+  const ms = Number(process.env.APPEND_WINDOW_MS);
+  return Number.isFinite(ms) && ms >= 0 ? Math.min(86_400_000, ms) : 120_000;
+}
+
+/** `APPEND_UPSERTS=0` restores the old "only notify" behaviour. */
+export function appendUpsertsEnabled() {
+  const raw = process.env.APPEND_UPSERTS;
+  if (raw === undefined || raw === '') return true;
+  return !['0', 'false', 'off', 'no'].includes(String(raw).toLowerCase());
+}
 
 export const BAILEYS_CAPABILITIES = {
   text: true,
@@ -106,38 +195,29 @@ export class BaileysTransport extends Transport {
   }
 
   /** Build the socket exactly as index.js always did. */
-  async connect() {
+  async connect({ load = loadBaileys } = {}) {
     setStatus(botState.connectedAt ? 'reconnecting' : 'connecting');
 
-    const { state, saveCreds } = await useMultiFileAuthState(config.paths.sessions);
+    const baileys = await load();
+    const { state, saveCreds } = await baileys.useMultiFileAuthState(config.paths.sessions);
 
     let version;
     try {
-      ({ version } = await fetchLatestBaileysVersion());
+      ({ version } = await baileys.fetchLatestBaileysVersion());
     } catch {
       version = [2, 3000, 1017531287];
     }
 
-    const sock = makeWASocket({
-      version,
-      logger,
-      printQRInTerminal: false,
-      browser: Browsers.ubuntu('Chrome'),
-      auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-      markOnlineOnConnect: false,
-      syncFullHistory: false,
-      generateHighQualityLinkPreview: false,
-      emitOwnEvents: false,
-      defaultQueryTimeoutMs: 60000,
-      getMessage: async () => undefined,
-    });
+    const sock = baileys.default(buildSocketOptions({ baileys, version, state }));
     this.sock = sock;
+    // Legacy socket callbacks must use the same outbound gate as normal replies.
+    const sender = billedWorker() ? this : sock;
 
     sock.ev.on('creds.update', saveCreds);
 
     // Missed-call rescue: when nobody picks up within CALL_FALLBACK_SECONDS,
     // the assistant starts the conversation in chat instead.
-    if (config.calls.enabled) registerCalls(sock);
+    if (config.calls.enabled && process.env.TENANT_WORKER_MODE !== 'link') registerCalls(sock, sender);
 
     // ── pairing code (nicer than a QR on a headless host) ────
     if (!state.creds.registered && config.session.pairingNumber) {
@@ -173,6 +253,9 @@ export class BaileysTransport extends Transport {
       if (connection === 'open') {
         this.reconnectAttempts = 0;
         clearQr();
+        // Proof that these keys work: a session backup taken from here is worth
+        // something, one taken after keys changed with no connection is not.
+        markSessionConnected(config.paths.sessions, { at: new Date(), user: sock.user?.id || null });
         botState.connectedAt = new Date();
         botState.me = sock.user ? { id: sock.user.id, name: sock.user.name || sock.user.verifiedName } : null;
         this.status = 'online';
@@ -190,13 +273,13 @@ export class BaileysTransport extends Transport {
         botState.lastError = lastDisconnect?.error?.message || String(reason);
         console.log(`🔴 Connection closed (${reason || 'unknown'})`);
 
-        if (reason === DisconnectReason.loggedOut) {
+        if (reason === baileys.DisconnectReason.loggedOut) {
           setStatus('stopped');
           this.status = 'stopped';
           console.log('❌ Logged out. Delete ./sessions and restart to scan again.');
           process.exit(0);
         }
-        if (reason === DisconnectReason.connectionReplaced) {
+        if (reason === baileys.DisconnectReason.connectionReplaced) {
           setStatus('stopped');
           this.status = 'stopped';
           console.log('❌ Session replaced by another WhatsApp Web session. Exiting to avoid a loop.');
@@ -217,10 +300,31 @@ export class BaileysTransport extends Transport {
       }
     });
 
+    if (process.env.TENANT_WORKER_MODE === 'link') return sock;
+
     // ── incoming messages ────────────────────────────────────
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify') return;
-      for (const msg of messages) {
+      // Recorded before the filter on purpose: the JID shapes a contact writes
+      // from are what a presence update must be addressed to, and they arrive on
+      // every upsert, not only the ones we answer.
+      for (const msg of messages || []) {
+        noteInbound(msg);
+        const stub = Number(msg?.messageStubType || 0);
+        const params = msg?.messageStubParameters || [];
+        if (stub === 2 || params.some((param) => /absent from node/i.test(String(param)))) {
+          const chat = msg?.key?.remoteJid || null;
+          noteDecrypt('absentMessage', { id: msg?.key?.id || null, chat });
+          // One bad chat should not cost a re-link of the whole number. This is
+          // rate-limited inside; it never throws and never blocks the pipeline.
+          maybeRecoverContact({ sock: sender, chat }).catch(() => {});
+        }
+      }
+
+      const relevant = appendUpsertsEnabled()
+        ? [...(messages || [])].filter((msg) => this.worthProcessing(msg, type))
+        : type === 'notify' ? messages || [] : [];
+
+      for (const msg of relevant) {
         if (!msg?.message) {
           this.emitStatus({ type: 'ignored' });
           continue;
@@ -230,10 +334,27 @@ export class BaileysTransport extends Transport {
     });
 
     sock.ev.on('messages.update', async (updates) => {
+      noteStatusUpdate(updates);
       try {
-        await handleDeletedMessage(sock, updates);
+        if (workerAccess()?.canRun !== false) await handleDeletedMessage(sender, updates);
       } catch (err) {
         console.error('Delete handler failed:', err.message);
+      }
+    });
+
+    // Delivery/read receipts for our own messages. Observational: the handler
+    // only records the timestamp, it does not answer anything.
+    sock.ev.on('message-receipt.update', (receipts) => {
+      noteStatusUpdate(receipts);
+    });
+
+    // Decryption complaints from the socket's own logger, with an address when
+    // the event carries one.
+    sock.ev.on('messages.update', (updates) => {
+      for (const item of [].concat(updates || [])) {
+        if (Number(item?.update?.messageStubType) === 2 && item?.key?.remoteJid) {
+          maybeRecoverContact({ sock: sender, chat: item.key.remoteJid }).catch(() => {});
+        }
       }
     });
 
@@ -242,6 +363,26 @@ export class BaileysTransport extends Transport {
     sock.ev.on('messages.reaction', () => {});
 
     return sock;
+  }
+
+  /**
+   * Which upserted messages deserve a turn.
+   *
+   * `notify` is a live message: always. `append` used to be dropped on the
+   * floor, which is why a customer who wrote while the bot was reconnecting got
+   * no answer at all. It is history *and* it is a backlog, so the filter is
+   * time: a message older than APPEND_WINDOW_MS (default 2 min) is history and
+   * stays history; anything newer is a message we missed. Ids are deduped by the
+   * handler, so a replay of something we already answered costs nothing.
+   */
+  worthProcessing(msg, type = 'notify') {
+    if (!msg?.message) return false;
+    if (type === 'notify') return true;
+    if (type !== 'append') return false;
+    if (msg.key?.fromMe) return false; // our own sends coming back
+    const stamp = Number(msg.messageTimestamp) * 1000;
+    if (!Number.isFinite(stamp) || stamp <= 0) return false;
+    return Date.now() - stamp <= appendWindowMs();
   }
 
   async disconnect() {
@@ -257,8 +398,16 @@ export class BaileysTransport extends Transport {
 
   // ── sending ───────────────────────────────────────────────
   async send(jid, payload = {}) {
+    if (process.env.TENANT_WORKER_MODE === 'link') throw new Error('link_only_worker');
     if (!this.sock) throw new Error('baileys: not connected');
-    return this.sock.sendMessage(jid, payload);
+    const sent = await this.sock.sendMessage(jid, payload);
+    // Remember the id so `messages.update` can be matched to a recipient and a
+    // send time later. The payload itself is not kept here.
+    noteOutbound({ id: sent?.key?.id, jid, at: Date.now() });
+    // …and keep the payload itself briefly, so a recipient's retry can be
+    // answered while the bubble says "Waiting for this message".
+    storeOutbound({ id: sent?.key?.id, jid, payload });
+    return sent;
   }
 
   async sendVoice(jid, { buffer, mimetype = 'audio/ogg; codecs=opus', seconds = 0 } = {}) {
@@ -277,10 +426,22 @@ export class BaileysTransport extends Transport {
     await this.sock.readMessages(keys);
   }
 
+  /**
+   * Some accounts only honour presence for a chat the device is subscribed to.
+   * `.typing-test` variant b exists because of that; this is the method it (and
+   * `typing.strategy = b`) calls.
+   */
+  async presenceSubscribe(jid) {
+    if (typeof this.sock?.presenceSubscribe !== 'function') return null;
+    return this.sock.presenceSubscribe(jid);
+  }
+
   async setPresence(jid, state = 'paused') {
     try {
       await this.sock?.sendPresenceUpdate(state, jid);
-    } catch {
+      noteTyping({ jid, state, via: 'setPresence', sock: this, ok: true });
+    } catch (err) {
+      noteTyping({ jid, state, via: 'setPresence', sock: this, ok: false, error: err?.message });
       /* presence is cosmetic */
     }
   }
@@ -290,11 +451,11 @@ export class BaileysTransport extends Transport {
   }
 
   /** Download whatever a customer sent. */
-  async getMedia(incoming) {
+  async getMedia(incoming, options) {
     const raw = incoming?.raw;
     if (!raw) throw new Error('baileys: nothing to download');
     const info = describeMessage(raw);
-    return downloadMedia(raw, info);
+    return downloadMedia(raw, info, options);
   }
 
   /** Chat kind from a JID — used only to refuse groups early. */

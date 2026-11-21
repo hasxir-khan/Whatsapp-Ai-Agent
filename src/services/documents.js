@@ -31,9 +31,29 @@ export async function extractText(buffer, { mimetype = '', fileName = '' } = {})
   }
 }
 
-/** Supports pdf-parse v2 (PDFParse class) and the older v1 function API. */
+/**
+ * Supports pdf-parse v2 (PDFParse class) and the older v1 function API.
+ *
+ * pdf-parse's PDF engine wants the native `@napi-rs/canvas` binding, which is an
+ * *optional* dependency. On a Cloud-only install (`npm ci --omit=optional`) it is
+ * not there, and the import throws `DOMMatrix is not defined`. That is not a
+ * reason to take the whole process down: reading a PDF is one feature, so the
+ * failure is reported as a sentence the owner can act on.
+ */
 async function pdfToText(buffer) {
-  const mod = await import('pdf-parse');
+  let mod;
+  try {
+    mod = await import('pdf-parse');
+  } catch (err) {
+    const e = new Error(
+      'PDF text extraction is unavailable in this install: pdf-parse needs the native ' +
+        '@napi-rs/canvas binding, which is an optional dependency.\n' +
+        '  Fix:  npm install @napi-rs/canvas\n' +
+        `  Underlying error: ${err.message}`
+    );
+    e.code = 'pdf_canvas_missing';
+    throw e;
+  }
 
   if (mod?.PDFParse) {
     const parser = new mod.PDFParse({ data: new Uint8Array(buffer) });
@@ -61,6 +81,69 @@ async function pdfToText(buffer) {
   return parsed?.text || '';
 }
 
+/** Split a long document into overlapping, sentence-aligned chunks. */
+export function chunkText(text = '', { size = 6000, overlap = 300, maxChunks = 12 } = {}) {
+  const body = String(text || '').trim();
+  if (!body) return [];
+  if (body.length <= size) return [body];
+
+  const chunks = [];
+  let start = 0;
+  while (start < body.length && chunks.length < maxChunks) {
+    let end = Math.min(body.length, start + size);
+    if (end < body.length) {
+      // Prefer a paragraph or sentence break near the edge.
+      const slice = body.slice(start, end);
+      const breakAt = Math.max(slice.lastIndexOf('\n\n'), slice.lastIndexOf('. '), slice.lastIndexOf('\n'));
+      if (breakAt > size * 0.5) end = start + breakAt + 1;
+    }
+    chunks.push(body.slice(start, end).trim());
+    if (end >= body.length) break;
+    start = Math.max(start + 1, end - overlap);
+  }
+  return chunks.filter(Boolean);
+}
+
+/**
+ * Keep only what the document actually says.
+ *
+ * A summary that invents a budget, a date or a feature is worse than no
+ * summary, so every bullet and number is checked against the source text and
+ * dropped when it is not there. This is deliberately blunt: it can lose a
+ * paraphrase, it cannot pass off an invention.
+ */
+export function stripUngrounded(summary = '', source = '') {
+  const src = String(source || '');
+  const srcLower = src.toLowerCase();
+  const srcNumbers = new Set((src.match(/\d[\d,.]*/g) || []).map((n) => n.replace(/[,.]$/, '')));
+
+  const lines = String(summary || '').split('\n');
+  const kept = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      kept.push(line);
+      continue;
+    }
+    const numbers = (trimmed.match(/\d[\d,.]*/g) || []).map((n) => n.replace(/[,.]$/, ''));
+    const inventedNumber = numbers.some((n) => !srcNumbers.has(n) && !srcLower.includes(n.toLowerCase()));
+    if (inventedNumber) continue;
+
+    // A long, specific phrase that is not in the document is probably invented.
+    const words = trimmed
+      .replace(/^[•\-*\d.\s]+/, '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 4);
+    if (words.length >= 6) {
+      const present = words.filter((w) => srcLower.includes(w)).length;
+      if (present / words.length < 0.3) continue;
+    }
+    kept.push(line);
+  }
+  return kept.join('\n').trim();
+}
+
 function cleanText(text = '') {
   const clean = String(text)
     .replace(/\r/g, '\n')
@@ -69,40 +152,126 @@ function cleanText(text = '') {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   if (!clean) return null;
-  return clean.slice(0, config.limits.maxDocChars);
+  // A 70 KB brief is normal, and cutting it before it is read was how the
+  // answers came out based on page one only. The cap is generous now; the
+  // chunks are what keep the model's input small.
+  const cap = Math.max(Number(config.limits.maxDocChars) || 12000, 60000);
+  return clean.slice(0, cap);
 }
 
-/** Short, client-appropriate summary of an arbitrary document. */
-export async function summarizeDocument(text, { context = '' } = {}) {
+const DOC_SYSTEM =
+  'You read documents sent on WhatsApp to a business and report ONLY what the document says. Never add a price, a date, a name or a feature that is not written in the text. If something is unclear, say it is unclear. No preamble.';
+
+/**
+ * Short, client-appropriate summary of an arbitrary document.
+ *
+ * Big files (70 KB+ briefs are normal) are read in chunks and the notes are
+ * merged, so the answer is based on the whole document instead of its first
+ * page — and every line is checked back against the text before it is shown.
+ */
+export async function summarizeDocument(text, { context = '', chunkSize = 6000, maxChunks = 12 } = {}) {
   if (!text || !hasLLM()) return null;
+  const chunks = chunkText(text, { size: chunkSize, overlap: 300, maxChunks });
+  const parts = [];
+
   try {
-    const result = await chat({
-      small: true,
-      temperature: 0.3,
-      maxTokens: 500,
-      system:
-        'You summarise documents sent on WhatsApp to a freelance developer. Be brief, factual and useful. No preamble.',
-      messages: [
-        {
-          role: 'user',
-          content: `Document:
+    if (chunks.length <= 1) {
+      const result = await chat({
+        small: true,
+        temperature: 0.2,
+        maxTokens: 400,
+        system: DOC_SYSTEM,
+        messages: [
+          {
+            role: 'user',
+            content: `Document:
 """
-${text.slice(0, 6000)}
+${chunks[0] || String(text).slice(0, 6000)}
 """
 
 ${context ? `Client/project context: ${context}\n` : ''}
 Write:
 1. One line: what this document is.
-2. 2–4 bullets: the points that matter for a software project (requirements, scope, budget, dates, deliverables).
-3. One line: the obvious next step.
+2. 2–4 bullets: only the points written in it (requirements, scope, budget, dates, deliverables).
+3. One line: what the customer probably wants next, as a question.
 Keep it under 90 words.`,
-        },
-      ],
-    });
-    return result.text || null;
+          },
+        ],
+      });
+      parts.push(result.text || '');
+    } else {
+      // Read every chunk, then merge. The merge sees only the per-chunk notes,
+      // which have already been filtered against their own chunk.
+      for (let i = 0; i < chunks.length; i += 1) {
+        const result = await chat({
+          small: true,
+          temperature: 0.2,
+          maxTokens: 300,
+          system: DOC_SYSTEM,
+          messages: [
+            {
+              role: 'user',
+              content: `Part ${i + 1} of ${chunks.length} of a longer document:
+"""
+${chunks[i]}
+"""
+
+List at most 4 short bullets: only facts written in this part that matter for the work (requirements, scope, budget, dates, deliverables, names). If this part has nothing useful, reply "nothing".`,
+            },
+          ],
+        });
+        const notes = String(result.text || '').trim();
+        if (notes && !/^nothing\.?$/i.test(notes)) parts.push(notes);
+      }
+    }
+
+    const merged = parts.filter(Boolean).join('\n');
+    if (!merged) return null;
+
+    let final = merged;
+    if (chunks.length > 1) {
+      const result = await chat({
+        small: true,
+        temperature: 0.2,
+        maxTokens: 400,
+        system: DOC_SYSTEM,
+        messages: [
+          {
+            role: 'user',
+            content: `These are notes taken from a long document, part by part:
+"""
+${merged.slice(0, 6000)}
+"""
+
+Write: one line on what the document is, then 3–5 short bullets of what it asks for, then one question asking what the customer wants next. Only what the notes say. Under 110 words.`,
+          },
+        ],
+      });
+      if (result.text) final = result.text;
+    }
+
+    // Nothing invented: drop any line the document does not support.
+    const grounded = stripUngrounded(final, chunks.join('\n'));
+    return grounded || null;
   } catch {
     return null;
   }
+}
+
+/** The confirmation line a customer sees after sending a file. */
+export function understoodReply(summary = '', lang = 'en') {
+  const body = String(summary || '').trim();
+  const ask = {
+    en: 'Is that right?',
+    'roman-ur': 'Sahi samjha?',
+    ur: 'کیا میں نے ٹھیک سمجھا؟',
+  }[lang] || 'Is that right?';
+  const intro = {
+    en: 'Here is what I understood from the file:',
+    'roman-ur': 'File se ye samajh aaya:',
+    ur: 'فائل سے یہ سمجھا:',
+  }[lang] || 'Here is what I understood from the file:';
+  return body ? `${intro}\n${body}\n\n${ask}` : '';
 }
 
 /**
@@ -155,3 +324,30 @@ export function looksLikeBrief(text = '') {
 }
 
 export default { extractText, summarizeDocument, extractProjectBrief, looksLikeBrief };
+
+// A clip is not an invoice or an instruction. Confirm a tentative reading;
+// do not send the detector's prose (which can contain names or screen text).
+export function clipConfirmation(summary, { intakeActive = false } = {}) {
+  if (summary.want === 'directions' || summary.subject === 'shop') return 'directions';
+  if (summary.want === 'availability') return 'availability';
+  if (intakeActive) return 'reference';
+  if (summary.subject === 'product') return 'product';
+  return 'next';
+}
+
+// Carry a concrete visible detail into the confirmation when we can express
+// it safely. Never echo arbitrary frame text (names, numbers, imperatives) or
+// infer facts about a person. Other objects still get the subject question.
+const OBJECTS = [
+  ['lamp', 'لیمپ', 'lamp', 'مصباح'], ['box', 'ڈبہ', 'dabba', 'صندوق'], ['shirt', 'قمیض', 'qameez', 'قميص'],
+  ['bottle', 'بوتل', 'botal', 'زجاجة'], ['screen', 'اسکرین', 'screen', 'شاشة'], ['entrance', 'دروازہ', 'darwaza', 'مدخل'],
+  ['bag', 'بیگ', 'bag', 'حقيبة'], ['shoe', 'جوتا', 'joota', 'حذاء'], ['chair', 'کرسی', 'kursi', 'كرسي'],
+];
+export function visibleDetail(summary, code) {
+  if (!summary?.shown || summary.sensitive || summary.injection || summary.unclear) return '';
+  const lang = ['en','ur','roman-ur','ar'].indexOf(code);
+  if (lang < 0) return '';
+  const noun = OBJECTS.find(([name]) => new RegExp(`\\b${name}\\b`,'i').test(summary.shown));
+  if (!noun) return '';
+  return [`I can see the ${noun[0]}.`, `ویڈیو میں ${noun[1]} نظر آ رہا ہے۔`, `Video mein ${noun[2]} nazar aa raha hai.`, `يظهر في المقطع ${noun[3]}.`][lang];
+}

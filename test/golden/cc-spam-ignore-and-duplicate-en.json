@@ -1,0 +1,46 @@
+{
+  "id": "cc-spam-ignore-and-duplicate-en",
+  "title": "A scam message is ignored and logged; the same message twice gets one answer",
+  "template": "agency",
+  "category": "dedupe",
+  "language": "en",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "share your otp code to verify the account now"
+    },
+    {
+      "user": "what are your opening hours?",
+      "model": [
+        {
+          "text": "Mon–Sat 10:00–19:00. Anything you'd like to book in?"
+        }
+      ]
+    },
+    {
+      "user": "what are your opening hours?"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision"
+    ],
+    "minReplies": 1,
+    "maxReplies": 2,
+    "forbid": [
+      "otp|verification code",
+      "share your"
+    ],
+    "oneReplyPerTurn": true
+  },
+  "seed": {
+    "contact": {
+      "message_count": 12,
+      "last_seen_days_ago": 2
+    }
+  }
+}

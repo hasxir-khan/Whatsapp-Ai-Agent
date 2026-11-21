@@ -1,0 +1,42 @@
+{
+  "servers": [
+    {
+      "id": "erp",
+      "description": "Local stock database, read-only. Copy next to it, never inside it.",
+      "command": "node",
+      "args": ["/opt/wa-tools/erp/server.js", "--db", "/opt/wa-tools/erp/stock.sqlite", "--readonly"],
+      "cwd": "/opt/wa-tools/erp",
+      "env": { "ERP_LOG_LEVEL": "error" },
+      "allowedTools": ["list_products", "get_stock", "find_by_sku"],
+      "readOnly": true,
+      "timeoutMs": 5000,
+      "maxResultBytes": 12000,
+      "allowedTenants": ["default"]
+    },
+    {
+      "id": "sheets",
+      "description": "Google Sheets, read scope only — a service account in a wrapper script.",
+      "command": "node",
+      "args": ["/opt/wa-tools/sheets/server.js"],
+      "cwd": "/opt/wa-tools/sheets",
+      "env": { "SHEETS_SPREADSHEET_ID": "1AbC-your-id-here" },
+      "allowedTools": ["read_range", "list_sheets"],
+      "readOnly": true,
+      "timeoutMs": 8000,
+      "maxResultBytes": 16000,
+      "allowedTenants": ["default"]
+    },
+    {
+      "id": "files",
+      "description": "One folder, read-only: PDFs, price lists, spec sheets.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/opt/wa-tools/docs"],
+      "cwd": "/opt/wa-tools/docs",
+      "allowedTools": ["read_text_file", "list_directory"],
+      "readOnly": true,
+      "timeoutMs": 4000,
+      "maxResultBytes": 20000,
+      "allowedTenants": ["default"]
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "id": "feel-trim-quote-en",
+  "title": "A price answer keeps its numbers when the reply is trimmed",
+  "template": "agency",
+  "category": "price-integrity",
+  "language": "en",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    }
+  },
+  "turns": [
+    {
+      "user": "how much for a small online store?",
+      "model": [
+        {
+          "text": "Of course! Happy to help. For a small online store we start at 120,000 and go up to 350,000 depending on the payment gateway. Delivery is usually three to four weeks. We also offer a maintenance plan. Shall I send a written quote?"
+        }
+      ],
+      "expect": "the numbers survive the cut, the opener does not"
+    }
+  ],
+  "assert": {
+    "language": "en",
+    "maxSentences": 3,
+    "require": [
+      {
+        "match": "120,000",
+        "why": "the floor of the published band"
+      },
+      {
+        "match": "350,000",
+        "why": "the ceiling of the published band"
+      }
+    ],
+    "forbid": [
+      "Of course! Happy to help"
+    ],
+    "sideEffects": "none",
+    "noErrorEvents": true
+  }
+}

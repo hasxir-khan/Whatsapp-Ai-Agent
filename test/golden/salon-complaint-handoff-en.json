@@ -1,0 +1,20 @@
+{
+  "id": "salon-complaint-handoff-en",
+  "title": "A complaint is escalated to the owner instead of argued with",
+  "template": "salon",
+  "category": "complaint",
+  "language": "en",
+  "turns": [
+    {
+      "user": "my colour came out patchy and I want a refund",
+      "model": [{ "text": "I am sorry about that — the owner will look at it with you today." }],
+      "expect": "the refund keyword escalates before any model can promise anything"
+    }
+  ],
+  "assert": {
+    "events": ["escalation"],
+    "ownerNotified": true,
+    "require": [{ "match": "owner|sorry", "why": "the customer is acknowledged" }],
+    "forbid": ["refund approved", "money back today"]
+  }
+}

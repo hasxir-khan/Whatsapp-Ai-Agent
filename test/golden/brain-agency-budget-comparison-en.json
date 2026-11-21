@@ -1,0 +1,31 @@
+{
+  "id": "brain-agency-budget-comparison-en",
+  "title": "Two different budgets in one message get a question, not an invented price",
+  "template": "agency",
+  "category": "price",
+  "language": "en",
+  "profile": {
+    "features": {
+      "toolCalling": true
+    }
+  },
+  "turns": [
+    {
+      "user": "We have a budget of 50000 for the site, or maybe 80000 if it includes the store — can you do both and which one is better?",
+      "model": [
+        {
+          "text": "Two different scopes there, so I don't want to guess a number. Is the store part of this launch or a second phase? Once that is clear the owner will send one written quote for the scope you pick."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "minReplies": 1,
+    "language": "en",
+    "sideEffects": "none",
+    "forbid": [
+      "best option|guaranteed"
+    ]
+  }
+}

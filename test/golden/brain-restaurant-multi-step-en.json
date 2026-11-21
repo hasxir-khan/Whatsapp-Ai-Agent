@@ -1,0 +1,37 @@
+{
+  "id": "brain-restaurant-multi-step-en",
+  "title": "Three questions in one message are answered one by one, from the menu only",
+  "template": "restaurant",
+  "category": "price",
+  "language": "en",
+  "profile": {
+    "features": {
+      "toolCalling": true
+    }
+  },
+  "turns": [
+    {
+      "user": "I want a table for four on Friday, do you have a high chair for a toddler, and is there a deposit?",
+      "model": [
+        {
+          "tool": "check_stock",
+          "args": {
+            "item": "Chicken Biryani"
+          }
+        },
+        {
+          "text": "Table for four: yes, just tell me the time and I'll hold it. High chair: we have one, I'll keep it at your table. Deposit: none for a normal table — nothing to pay to hold it."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "minReplies": 1,
+    "language": "en",
+    "sideEffects": "none",
+    "forbid": [
+      "deposit of|advance payment"
+    ]
+  }
+}

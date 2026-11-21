@@ -1,0 +1,35 @@
+{
+  "id": "feel-short-answer-en",
+  "title": "A simple yes/no question gets a short reply, not an essay",
+  "template": "agency",
+  "category": "persona",
+  "language": "en",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    }
+  },
+  "turns": [
+    {
+      "user": "do you guys do SEO as well?",
+      "model": [
+        {
+          "text": "Sure! Great question. Yes, we do SEO as part of every package. We also handle Google Ads and social media. We have been doing this for eight years. What is your budget?"
+        }
+      ],
+      "expect": "the filler opener and the extra sentences are trimmed before sending"
+    }
+  ],
+  "assert": {
+    "language": "en",
+    "maxSentences": 2,
+    "maxLength": 220,
+    "forbid": [
+      "^Sure!",
+      "Great question"
+    ],
+    "sideEffects": "none",
+    "noErrorEvents": true
+  }
+}

@@ -16,7 +16,23 @@
     ],
     "hours": "Daily 12:00–23:00",
     "delivery": "Delivery within 5 km, 45–60 min. Pickup ready in 20 min.",
-    "about": "Fresh, cooked-to-order food. Halal."
+    "about": "Fresh, cooked-to-order food. Halal.",
+    "crm": {
+      "//": "vipSpend: a customer who has spent this much (in business.currency) becomes vip automatically.",
+      "vipSpend": null
+    },
+    "orderMessages": {
+      "//": "Edit freely. Placeholders: {first_name} {name} {id} {status} {total} {eta} {business}. Any status you leave out falls back to the built-in line in the customer's language.",
+      "ready": null,
+      "out_for_delivery": null,
+      "delivered": null,
+      "awaiting_payment": null
+    },
+    "orderReminders": {
+      "//": "Hours an unpaid order waits before each polite reminder. Env ORDER_REMINDER_HOURS / ORDER_REMINDER_SECOND_HOURS win over these.",
+      "firstHours": 12,
+      "secondHours": 36
+    }
   },
   "catalog": {
     "items": [
@@ -111,7 +127,105 @@
       "staff complaint"
     ]
   },
+  "agents": [
+    {
+      "id": "orders",
+      "name": "Orders",
+      "role": "orders",
+      "persona": "Warm, fast, and specific. Reads the total back once.",
+      "routing": [
+        "order",
+        "deliver",
+        "menu",
+        "burger",
+        "biryani",
+        "karahi",
+        "chahiye"
+      ],
+      "instructions": "Take the order item by item, check stock, read the total back from the catalogue, then ask for one clear yes. Delivery charge only if the policy states it.",
+      "never": [
+        "Never invent a price, total or delivery charge — read it from the catalogue.",
+        "Never approve a discount. Say the owner decides and hand off.",
+        "Never claim to be a human when asked directly.",
+        "Never invent scarcity (\"only 2 left\") or urgency (\"today only\")."
+      ],
+      "tools": [
+        "check_stock",
+        "create_order"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": true
+    },
+    {
+      "id": "reservations",
+      "name": "Reservations",
+      "role": "booking",
+      "persona": "Calm and exact about time. One question at a time.",
+      "routing": [
+        "table",
+        "reserve",
+        "reservation",
+        "seat",
+        "birthday",
+        "party"
+      ],
+      "instructions": "Offer only real slots, confirm the party size and the time, and hand off immediately for parties larger than the seating policy allows.",
+      "never": [
+        "Never claim to be a human when asked directly.",
+        "Never invent scarcity (\"only 2 left\") or urgency (\"today only\").",
+        "Never invent a price, total or delivery charge — read it from the catalogue."
+      ],
+      "tools": [
+        "book_slot"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    },
+    {
+      "id": "support",
+      "name": "Support",
+      "role": "support",
+      "persona": "Apologetic once, then practical.",
+      "routing": [
+        "late",
+        "cold",
+        "wrong",
+        "missing",
+        "complain",
+        "galat",
+        "aaya nahi"
+      ],
+      "instructions": "Find the order, say what went wrong only if the record shows it, and offer the one fix the policy allows. Refunds are the owner's call.",
+      "never": [
+        "Never approve a discount. Say the owner decides and hand off.",
+        "Never share another customer's order, number or details.",
+        "Never claim to be a human when asked directly."
+      ],
+      "tools": [
+        "check_stock",
+        "handoff"
+      ],
+      "handoff": "owner",
+      "languages": [],
+      "knowledge": [],
+      "hours": null,
+      "escalate": [],
+      "enabled": false,
+      "default": false
+    }
+  ],
   "features": {
+    "multiAgent": false,
     "businessProfile": true,
     "catalog": true,
     "knowledge": true,
@@ -124,6 +238,34 @@
     "reviewAgent": false,
     "analystAgent": false,
     "reactivationAgent": false,
-    "contentAgent": false
+    "contentAgent": false,
+    "pdfInvoices": false,
+    "selfHealing": false,
+    "adminPanel": false,
+    "visualSearch": false,
+    "mcpTools": false,
+    "mcpWriteTools": false,
+    "healthAlerts": false,
+    "privacyTools": false,
+    "sourceLinks": false,
+    "liveInbox": false,
+    "orderTracking": false,
+    "crm": false,
+    "marketingAgents": false,
+    "businessBrain": false,
+    "reasoning": false,
+    "ownerDecisions": false,
+    "paymentReview": false
+  },
+  "marketing": {
+    "approvalMode": true,
+    "minDaysBetweenPromos": 14,
+    "events": [],
+    "channels": [],
+    "promoOffer": "",
+    "_help": "Marketing team settings. approvalMode true means every promo waits for you. events are your own dates: [{ \"name\": \"Shop anniversary\", \"date\": \"2026-03-01\" }]. channels are where your posters/QRs live: [\"Instagram\", \"shop window\"]."
+  },
+  "bot": {
+    "firstPerson": "we"
   }
 }

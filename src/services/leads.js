@@ -156,24 +156,43 @@ export function scoreLead({ lead = {}, contact = {}, intakeFields = {}, now = Da
   return { score, priority, reasons, risks, nextAction, staleDays };
 }
 
+const LEAD_ACTIONS = {
+  request_review: ['Ask for a testimonial, then a referral', 'won'],
+  nurture: ['Move to nurture — retry in a month', 'lost'],
+  nudge: ['Nudge with one useful idea (no pitch)', 'inactive'],
+  owner_call: ['You should call or close the deal yourself', 'negotiating'],
+  ask_budget: ['Ask for a budget range', 'budget_missing'],
+  ask_timeline: ['Ask when they want it live', 'timeline_missing'],
+  send_quote: ['Scope is ready — send the quote (.quote 92…)', 'scope_ready'],
+  follow_quote: ['Follow up on the quote today', 'quote_awaiting_reply'],
+  take_advance: ['Lock the start date and take the advance', 'hot_lead'],
+  answer: ['Answer their questions and keep it warm', 'questions_open'],
+};
+export function leadActionCode(text) {
+  for (const [nextAction, [label, reason]] of Object.entries(LEAD_ACTIONS))
+    if (text === label) return { nextAction, reason };
+  if (/^owner to answer (price|trust|comparison|timing) objection$/.test(text))
+    return { nextAction: 'owner_objection', reason: 'objection_limit' };
+  return { nextAction: 'not_recorded', reason: 'not_recorded' };
+}
 function nextActionFor({ lead, fields, budget, status, staleDays, priority }) {
-  if (status === 'won') return 'Ask for a testimonial, then a referral';
-  if (status === 'lost') return 'Move to nurture — retry in a month';
+  if (status === 'won') return LEAD_ACTIONS.request_review[0];
+  if (status === 'lost') return LEAD_ACTIONS.nurture[0];
 
   if (staleDays !== null && staleDays >= 7 && status !== 'quoted') {
-    return 'Nudge with one useful idea (no pitch)';
+    return LEAD_ACTIONS.nudge[0];
   }
-  if (status === 'negotiating') return 'You should call or close the deal yourself';
+  if (status === 'negotiating') return LEAD_ACTIONS.owner_call[0];
 
   if (!has(lead.quote_min)) {
-    if (!budget?.amount) return 'Ask for a budget range';
-    if (!has(fields.timeline)) return 'Ask when they want it live';
-    return 'Scope is ready — send the quote (.quote 92…)';
+    if (!budget?.amount) return LEAD_ACTIONS.ask_budget[0];
+    if (!has(fields.timeline)) return LEAD_ACTIONS.ask_timeline[0];
+    return LEAD_ACTIONS.send_quote[0];
   }
 
-  if (staleDays !== null && staleDays >= 1) return 'Follow up on the quote today';
-  if (priority === 'hot') return 'Lock the start date and take the advance';
-  return 'Answer their questions and keep it warm';
+  if (staleDays !== null && staleDays >= 1) return LEAD_ACTIONS.follow_quote[0];
+  if (priority === 'hot') return LEAD_ACTIONS.take_advance[0];
+  return LEAD_ACTIONS.answer[0];
 }
 
 /** Score every lead and return them best-first. */

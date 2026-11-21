@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FEATURE_KEYS } from './profile.js';
+import { templateAgents } from './agents.js';
 
 // Anchored to this file, not to the working directory: the templates always
 // live in the repo, even when a tenant runs from its own folder.
@@ -111,6 +112,10 @@ export function buildProfileFromTemplate(id, {
     escalation: esc,
     policies,
     faqs: [...(t.faqs || [])],
+    // Phase 6: two or three starter assistants, all switched off, so the owner
+    // can see the shape without changing anything.
+    agents: templateAgents(id),
+    marketing: { ...(t.marketing || {}) },
     // Every flag is written explicitly so the owner can see what exists and
     // what is off; a template only turns on what it needs.
     features: Object.fromEntries(FEATURE_KEYS.map((k) => [k, t.features?.[k] === true])),

@@ -1,0 +1,31 @@
+{
+  "id": "cc-offtopic-joke-ur",
+  "title": "A joke request in Urdu gets one polite redirect",
+  "template": "agency",
+  "category": "scope",
+  "language": "ur",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "ایک لطیفہ سناؤ"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision"
+    ],
+    "minReplies": 1,
+    "maxReplies": 1,
+    "require": [
+      {
+        "match": "آرڈر|بکنگ|قیمت|کام",
+        "why": "the redirect is in Urdu and about the business"
+      }
+    ],
+    "language": "ur"
+  }
+}

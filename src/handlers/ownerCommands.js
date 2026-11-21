@@ -9,7 +9,7 @@ import {
 import {
   listLeads, getLead, listContacts, blockContact, setContactPaused, setSetting,
   getSetting, dbStats, getUsage, listIntakes, exportAll, writeExport, countLeads,
-  assignContact, contactsFor, teamWorkload, recentCalls,
+  assignContact, contactsFor, teamWorkload, recentCalls, logEvent,
 } from '../utils/db.js';
 import { buildReport } from '../services/report.js';
 import { buildOwnerBrief } from '../services/memory.js';
@@ -25,8 +25,14 @@ import { sttEnabled } from '../services/transcription.js';
 import { hasFfmpeg } from '../services/ffmpeg.js';
 import { pendingFollowUps, intentStatsForDay } from '../utils/db.js';
 import { intentSummary, managerEnabled, AGENTS } from '../core/manager.js';
+import { handleAgentCommand } from './agentCommands.js';
+import { handleMarketingCommand } from './marketingCommands.js';
+import { handleBrainCommand } from './brainCommands.js';
+import { agentsEnabled, agentBadge, listAgents } from '../services/agents.js';
 import { getTransport } from '../transport/index.js';
 import { growthSummary, optOutList, recordOptOut, recordOptIn, quietWindow } from '../services/growth.js';
+import { orderTrackingEnabled, reminderStats, recentOrderSkips } from '../services/orders.js';
+import { crmEnabled, addTag, removeTag, tagOverview, findByTag, addNote, tagsFor, notesFor } from '../services/crm.js';
 import { bookingsForOwner, cancelByChat } from '../services/bookingAgent.js';
 import { pendingDrafts, approveDraft, skipDraft } from '../services/followUpAgent.js';
 import { getBooking, cancelBooking, isOptedOut, recentReferrals, getContact, all } from '../utils/db.js';
@@ -42,6 +48,7 @@ import {
 
 const HELP = `*Bot commands*
 
+.media – voice and video scorecard
 .chats – latest conversations
 .leads [status] – pipeline
 .lead 92300… – full dossier on one client
@@ -51,17 +58,34 @@ const HELP = `*Bot commands*
 .reset 92300… – clear project intake for a chat
 .quote 92300… – rebuild + send a quote
 .team – who's on the team + workload
+.team add Name 92300… payments,chat 09:00-21:00 – add a decision-maker
+.chain payment – who gets a payment question, and after how long
+.payments – pending, overdue, today's decisions, average decision time
+.requests – the open decision requests (.decision DR-3 for one)
+.accept DR-3 / .reject DR-3 1 / .partial DR-3 4000 / .recheck DR-3 30
+.timeline 12 – order + decision history, in order
 .mine – chats assigned to me
 .takeover 92300… – I'm handling this one (bot steps back)
 .release 92300… – give it back to the bot
 .assign 92300… Name – hand a chat to a teammate
-.calls – recent incoming calls
+.calls – recent incoming calls, with the rescue timeline
+.debug last – which model answered, and where the seconds went (reply timeline)
+.debug timing – the reply-timing settings in force
+.typing-test 92300… – send “typing…” four ways; tell me which your phone showed
+.typing-test use <n> – make that the default (a|b|c|d)
 .report – today's brief
 .usage – free-tier usage
 .status – system health
 .voice off|request|match|always
 .ai on|off – global switch
 .export – JSON backup of leads + chats
+.export 92300… – everything held about one contact (a file)
+.forget 92300… 92300… – delete that contact everywhere (type the number twice)
+.orders – open orders (.order <id> for one)
+.status <id> <state> – move an order (ready, out_for_delivery, delivered…)
+.tag <number> <tag> / .untag / .tags / .find <tag> / .note <number> <text>
+.health – connection, AI, disk, backups, waiting chats
+.incidents – the last ten things that went wrong (and cleared)
 .sync – push leads to Google Sheets
 .id – current chat id
 .profile – business profile summary
@@ -72,6 +96,7 @@ const HELP = `*Bot commands*
 .features – which capabilities are on
 .knowledge – learned documents + vector status
 .tools – last 10 actions the bot took
+.mcp – external tool servers: what's allowed, what ran today
 .intents – who answered what today (sales / support / booking / complaint)
 .growth – proactive messages sent today, per agent, with caps
 .optouts – everyone who asked to stop
@@ -83,8 +108,34 @@ const HELP = `*Bot commands*
 .report week – last seven days vs the week before
 .referrals – who has a code, and who arrived with one
 .content now – this week's posts, statuses and a reel idea
+.marketing – the marketing team (plan, content, offers, promos, reviews, ads)
+.plan – this month: theme, dates, offers, channels
+.offer 10% off – check a discount against your own rules
+.promo preview all "message" / .promo send / .promo stop
+.reply-review 4 "what they wrote" – a draft reply in the right tone
+.channels – chats, orders and revenue per source
+.adcopy [topic] – click-to-WhatsApp variants
 .campaign preview – who would get a win-back message, and a sample
 .campaign send / .campaign stop – start or halt it
+.invoice <id> – the PDF for an order/quote (.invoice <id> send → to the client)
+.link <source> [text] – a tracked wa.me link (instagram, poster, flyer…)
+.links – every source with chats → leads → paid, and what looks dead
+.agents – your custom assistants: who is on, what each one did today
+.agent add|set|on|off|test|rm – manage one assistant
+.brain – the business brain: today, the week, what to do next
+.impact – automation, response time, leads, revenue and hours saved
+.decisions – the last 20 decisions, with the action and reason code
+.control – Conversation Control settings in force
+.brief 92300… – the requirements collected, what is missing, what to ask next
+.strategy – the weekly review and five ranked actions
+.do <n> / .why <n> – prepare one action as a draft / the reason it is there
+.goal add 20 orders by 2026-12-31 – goals, progress and a projection
+.experiment – two wordings, a stable split, honest verdicts
+.qr <source> – the tracked link as a QR image
+.poster <source> – an A4 poster with the QR, ready to print
+.rules – FAQ rules learned from your own replies, waiting for a yes/no
+.approve-rule <id> / .reject-rule <id>
+.inbox – the live inbox link (read + reply from the browser)
 .ping`;
 
 /** What this process is talking to, and what that transport cannot do. */
@@ -117,6 +168,24 @@ async function dbNotify(sock, text) {
   }
 }
 
+/**
+ * The CRM part of a dossier: the tags and the last few notes a human added.
+ * Empty when the feature is off or nobody has written anything down.
+ */
+function crmDossierLines(number) {
+  if (!crmEnabled()) return [];
+  const num = String(number || '').replace(/\D/g, '');
+  if (!num) return [];
+  const lines = [];
+  const tags = tagsFor(num).map((row) => row.tag);
+  if (tags.length) lines.push(`🏷️ ${tags.join(', ')}`);
+  for (const note of notesFor(num, { limit: 3 })) {
+    const when = new Date(note.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: config.timezone });
+    lines.push(`📝 ${when}: ${note.note}`);
+  }
+  return lines;
+}
+
 export function isCommand(text = '') {
   return /^[.!/]\w+/i.test(String(text).trim());
 }
@@ -135,6 +204,7 @@ const COMMAND_PERMISSION = {
   takeover: 'pause',
   release: 'pause',
   calls: 'calls',
+  debug: 'debug',
   leads: 'leads',
   lead: 'leads',
   intakes: 'intakes',
@@ -143,18 +213,61 @@ const COMMAND_PERMISSION = {
   ai: 'owner',
   voice: 'owner',
   team: 'chats',
+  agents: 'owner',
+  agent: 'owner',
+  marketing: 'owner',
+  plan: 'owner',
+  offer: 'owner',
+  promo: 'owner',
+  channels: 'owner',
+  adcopy: 'owner',
+  'reply-review': 'owner',
+  brain: 'owner',
+  impact: 'owner',
+  strategy: 'owner',
+  do: 'owner',
+  why: 'owner',
+  goal: 'owner',
+  experiment: 'owner',
+  proposals: 'owner',
 };
 
 const OWNER_ONLY = new Set([
-  'export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq',
+  'export', 'sync', 'ai', 'voice', 'media', 'block', 'unblock', 'set', 'addservice', 'addfaq',
   'features', 'knowledge', 'tools', 'intents', 'growth', 'optouts', 'bookings', 'cancel', 'approve', 'skip',
-  'done', 'paid', 'referrals', 'content', 'campaign',
+  'done', 'paid', 'referrals', 'content', 'campaign', 'invoice', 'rules', 'approve-rule', 'reject-rule',
+  'inbox', 'link', 'links', 'qr', 'poster',
+  'agents', 'agent',
+  'marketing', 'plan', 'offer', 'promo', 'channels', 'adcopy', 'reply-review',
+  'brain', 'impact', 'strategy', 'do', 'why', 'goal', 'experiment', 'proposals',
+  'typing-test',
 ]);
 
 /**
  * @returns {Promise<{handled:boolean, reply?:string, voice?:object}>}
  */
-export async function handleOwnerCommand(sock, chatJid, text, from = config.owner.number) {
+/** Drop a flag word so it does not end up in the note. */
+function noteOrNull(args = []) {
+  const rest = args.slice(2).filter((word) => word !== '--force' && word !== 'override');
+  return rest.length ? rest.join(' ') : null;
+}
+
+function strategistOn() {
+  return featureOn('businessBrain');
+}
+
+/**
+ * @param {object|null} sock
+ * @param {string} chatJid
+ * @param {string} text
+ * @param {string} [from]
+ * @param {{now?: Date}} [options] the clock to use for anything time-dependent
+ *   (quiet hours, order timestamps). Real time by default; tests and the eval
+ *   harness pass a fixed one so the answer does not depend on the hour the
+ *   suite happens to run at.
+ */
+export async function handleOwnerCommand(sock, chatJid, text, from = config.owner.number, { now = null } = {}) {
+  const nowDate = now instanceof Date ? now : new Date();
   const input = String(text).trim();
   const [rawCmd, ...args] = input.slice(1).split(/\s+/);
   const cmd = (rawCmd || '').toLowerCase();
@@ -170,6 +283,25 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
 
   if (!known) {
     return { handled: true, reply: 'This bot is private. Commands only work for the owner and the team.' };
+  }
+
+  // ── owner decisions + payment review ─────────────────────
+  // These commands have their own role rules (payments, discounts, admin), so
+  // they are routed before the generic permission table. `.team add|set|remove`
+  // joins the existing `.team` roster command; a bare `.team` still prints the
+  // roster in the switch below.
+  if (/^\.(accept|reject|partial|recheck|more|decision|requests|reverse|timeline|payments|chain)\b/i.test(input) ||
+      /^\.team\s+(add|set|remove)\b/i.test(input)) {
+    try {
+      const { isDecisionCommand, handleDecisionCommand } = await import('../services/paymentReview.js');
+      if (isDecisionCommand(input)) {
+        const out = await handleDecisionCommand({ text: input, from: sender, now: nowDate, transport: sock });
+        if (out.handled) return out;
+      }
+    } catch (err) {
+      // A half-written owner.json must not take the command router down.
+      return { handled: true, reply: `Decision command failed: ${String(err.message).slice(0, 160)}` };
+    }
   }
 
   const needed = COMMAND_PERMISSION[cmd];
@@ -354,7 +486,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     }
 
     case 'growth': {
-      const summary = growthSummary();
+      const summary = growthSummary(nowDate);
       const lines = [`*Growth today* — ${summary.sent}/${summary.cap} proactive sent`];
       lines.push(`Transport: ${summary.transport} · quiet ${summary.quiet}${summary.inQuiet ? ' (now)' : ''}`);
       lines.push('');
@@ -378,8 +510,34 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         for (const d of drafts) lines.push(`#${d.id} → +${d.number}: "${String(d.text).slice(0, 70)}…"`);
         lines.push('.approve <id> · .skip <id>');
       }
+      // Order notifications: what the lifecycle tried to send and what growth.js
+      // refused (opt-out, quiet hours, no approved template outside the window).
+      if (orderTrackingEnabled()) {
+        const stats = reminderStats();
+        lines.push('');
+        lines.push(`*Orders* — ${stats.awaitingPayment} awaiting payment, ${stats.remindedOnce} reminded once`);
+        if (stats.stopped) lines.push(`💤 ${stats.stopped} unpaid order(s) already had both reminders — your call now (.orders)`);
+        const skips = recentOrderSkips(3);
+        if (skips.length) {
+          lines.push('');
+          lines.push('*Notifications held back*');
+          for (const row of skips) lines.push(`• +${row.number}: ${row.reason}${row.detail?.id ? ` (order #${row.detail.id})` : ''}`);
+          lines.push('A held order update needs an approved template outside the 24-hour window.');
+        }
+      }
       lines.push('');
       lines.push(`${summary.optOuts} opt-out${summary.optOuts === 1 ? '' : 's'} on file (.optouts)`);
+      // Phase 6 Part 3 — the same dashboard gains the impact numbers, but only
+      // when the brain is on, so the text is byte-identical when it is off.
+      if (strategistOn()) {
+        const { impactNumbers, weekWindow } = await import('../services/impact.js');
+        const w = weekWindow(new Date());
+        const nums = impactNumbers({ from: w.from, to: w.to });
+        lines.push('');
+        lines.push(`*Impact this week* — ${nums.automationRate}% of ${nums.conversations} chats had no reply from you`);
+        lines.push(`Time saved: ~${nums.hoursSaved} h · revenue attributable: ${nums.botRevenue} ${business()?.currency || 'PKR'}`);
+        lines.push('Full detail: .impact · definitions in the README.');
+      }
       return { handled: true, reply: lines.join('\n') };
     }
 
@@ -514,6 +672,34 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
 
     case 'status':
     case 'stats': {
+      // `.status 12 ready` moves an order; `.status` alone is still system
+      // health, because that is what it has always been and muscle memory is a
+      // feature.
+      if (args.length >= 2 && /^\d+$/.test(String(args[0] || ''))) {
+        const { orderTrackingEnabled, transitionOrder, statusLabel, ORDER_STATES } = await import('../services/orders.js');
+        if (!orderTrackingEnabled()) {
+          return { handled: true, reply: 'Order tracking is off. Turn it on: .set features.orderTracking true' };
+        }
+        const id = Number(args[0]);
+        const state = String(args[1] || '').toLowerCase();
+        const override = args.includes('--force') || args.includes('override');
+        const res = await transitionOrder(id, state, { actor: 'owner', override, note: noteOrNull(args), now: nowDate });
+        if (!res.ok) {
+          return { handled: true, reply: `${res.reply}\nStates: ${[...ORDER_STATES, 'cancelled', 'refunded'].join(' · ')}` };
+        }
+        const lines = [`✅ Order #${id}: ${statusLabel(res.from)} → *${statusLabel(res.to)}*`];
+        if (res.skipped) lines.push('(forward jump — allowed for the owner)');
+        if (res.review) lines.push('Review ask scheduled for this customer.');
+        const { notifyCustomer } = await import('../services/orders.js');
+        const transport = getTransport() || sock;
+        const told = await notifyCustomer(transport, res.order, res.to, { now: nowDate });
+        if (told.sent) lines.push('Customer notified.');
+        else if (told.reason && !['not_notifiable', 'no_transport'].includes(told.reason)) {
+          lines.push(`Customer not messaged: ${told.reason}${told.detail ? ` (${told.detail})` : ''} — .growth explains.`);
+        }
+        return { handled: true, reply: lines.join('\n') };
+      }
+
       const stats = dbStats();
       const llm = llmStatus();
       const vision = visionStatus();
@@ -532,11 +718,128 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         `Outbox: ${outboxStatus().pending} queued · ${outboxStatus().failed} failed`,
         `Bot globally: ${getSetting('bot_enabled', true) ? 'ON' : 'OFF'}`,
         `Routing: ${managerEnabled() ? 'manager agent on' : 'single brain (managerAgent off)'}`,
+        ...(agentsEnabled() ? [`Agents: ${listAgents().filter((x) => x.enabled).length}/${listAgents().length} on · this chat: ${agentBadge(chatJid)?.name || 'default assistant'}`] : []),
         ...transportLines(),
       ];
+      // The three lines that answer "is the indicator actually going out, and
+      // did anything arrive?" — see `.typing-test` when it says it did not.
+      try {
+        const { summaryLines } = await import('../services/transportAudit.js');
+        lines.push('', ...summaryLines());
+      } catch {
+        /* the audit is diagnostic; it must never break .status */
+      }
       return { handled: true, reply: lines.join('\n') };
     }
 
+    case 'decisions': {
+      const { decisionsText } = await import('../services/decision.js');
+      const body = decisionsText(/^\d+$/.test(String(args[0] || '')) ? Number(args[0]) : 20);
+      // When owner decisions are on, the payment side of the same command shows
+      // its own list underneath — one place to look for "what needs a person".
+      const { ownerDecisionsOn, openDecisionLines } = await import('../services/paymentReview.js');
+      if (!ownerDecisionsOn()) return { handled: true, reply: body };
+      return { handled: true, reply: `${body}\n\n${openDecisionLines()}` };
+    }
+
+    case 'payments': {
+      const { paymentsStrip, paymentsSummary } = await import('../services/paymentReview.js');
+      return { handled: true, reply: paymentsStrip(paymentsSummary({now: nowDate})) };
+    }
+
+    case 'requests': {
+      const { openDecisionLines } = await import('../services/paymentReview.js');
+      return { handled: true, reply: openDecisionLines() };
+    }
+
+    case 'timeline': {
+      const { timelineText } = await import('../services/paymentReview.js');
+      if (!args.length) return { handled: true, reply: 'Usage: .timeline 12  (order id) or .timeline 92300…' };
+      return { handled: true, reply: timelineText(args[0]) };
+    }
+
+    case 'control': {
+      const { controlText } = await import('../services/conversation.js');
+      return { handled: true, reply: controlText() };
+    }
+
+    case 'brief': {
+      const { briefMarkdown, briefFor, openBriefs } = await import('../services/brief.js');
+      const target = normalizePhone(String(args[0] || ''));
+      if (!target) {
+        const open = openBriefs({ limit: 10 });
+        return {
+          handled: true,
+          reply: open.length
+            ? ['Usage: .brief 92300…', '', 'Open intakes:', ...open.map((r) => `• ${r.number} — ${r.stage}`)].join('\n')
+            : 'Usage: .brief 92300…\nNo intake rows yet — one appears when a client starts answering questions.',
+        };
+      }
+      const brief = briefFor(target);
+      if (!brief.fields.some((f) => f.value !== null)) {
+        return { handled: true, reply: `Nothing collected for ${target} yet.` };
+      }
+      return { handled: true, reply: briefMarkdown(target, { businessType: business()?.type || null }) };
+    }
+
+    case 'accuracy': {
+      // Metrics from the event log only; anything we do not measure says so.
+      const { accuracyReport, accuracyText } = await import('../services/accuracy.js');
+      const days = /^\d+$/.test(String(args[0] || '')) ? Number(args[0]) : 7;
+      const body = accuracyText(accuracyReport({ days, now: nowDate }));
+      // The payment side of the same question: how fast did a person answer?
+      const { ownerDecisionsOn, paymentsStrip, paymentsSummary } = await import('../services/paymentReview.js');
+      if (!ownerDecisionsOn()) return { handled: true, reply: body };
+      return { handled: true, reply: `${body}\n\n${paymentsStrip(paymentsSummary({ now: nowDate }))}` };
+    }
+
+    case 'review': {
+      const R = await import('../services/reviewQueue.js');
+      const sub = String(args[0] || '').toLowerCase();
+      const list = R.recentReplies({ limit: /^\d+$/.test(sub) ? Number(sub) : 5 });
+
+      if (sub === 'up' || sub === 'down') {
+        const n = Number(args[1]);
+        if (!Number.isInteger(n) || n < 1 || n > list.length) {
+          return { handled: true, reply: `Pick a number between 1 and ${list.length} after .review.` };
+        }
+        const target = list[n - 1];
+        const note = args.slice(2).join(' ').trim() || null;
+        const res = R.recordVote({ messageId: target.id, vote: sub, note });
+        if (!res.ok) return { handled: true, reply: `Could not record that: ${res.error}` };
+        if (sub === 'up') return { handled: true, reply: `👍 Reply #${n} marked good.` };
+        return {
+          handled: true,
+          reply: [
+            `👎 Reply #${n} marked wrong.`,
+            `Draft scenario: ${res.draft.id} (${res.draft.file})`,
+            'It is a draft, not a golden: `.review approve` moves it to test/golden-drafts/, and it still needs recorded model turns.',
+          ].join('\n'),
+        };
+      }
+
+      if (sub === 'drafts') {
+        const drafts = R.listDrafts();
+        if (!drafts.length) return { handled: true, reply: 'No drafts yet. A thumbs-down (`.review down <n>`) makes one.' };
+        return { handled: true, reply: ['*Draft scenarios*', ...drafts.map((d) => `• ${d.id}`), '', '`.review approve <id>` to keep one.'].join('\n') };
+      }
+
+      if (sub === 'approve') {
+        const id = args[1];
+        if (!id) return { handled: true, reply: 'Usage: `.review approve review-<number>`' };
+        const res = R.approveDraft(id);
+        if (!res.ok) return { handled: true, reply: `No draft called ${id}. Known: ${(res.known || []).join(', ') || 'none'}` };
+        return { handled: true, reply: [`✅ Approved → ${res.file}`, res.next].join('\n') };
+      }
+
+      return { handled: true, reply: R.reviewText({ limit: 5 }) };
+    }
+
+    case 'media': {
+      if (!featureOn('voiceLanguagePolicy') && !featureOn('videoUnderstanding')) return { handled: true, reply: 'Media intelligence is off.' };
+      const { mediaScorecard } = await import('../services/mediaLimits.js');
+      return { handled: true, reply: mediaScorecard(undefined, nowDate) };
+    }
     case 'usage': {
       const u = getUsage();
       return {
@@ -581,7 +884,9 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       if (!target) return { handled: true, reply: 'Usage: .lead 923001234567' };
       const lead = getLead(target);
       const brief = buildOwnerBrief(target);
-      if (!lead) return { handled: true, reply: brief };
+      // Tags and notes are the part of the dossier a human wrote down, so they
+      // are shown even when there is no lead row yet.
+      if (!lead) return { handled: true, reply: [brief, ...crmDossierLines(target)].join('\n') };
       const scored = refreshLead(target) || {};
       const meta = priorityMeta(scored.priority || 'cold');
       const lines = [brief, ''];
@@ -593,10 +898,29 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         lines.push('');
       }
       lines.push(`📁 ${lead.project_type || '—'} · ${lead.status}`);
+      lines.push(...crmDossierLines(target));
       if (lead.quote_min) lines.push(`💰 ${formatMoney(lead.quote_min, lead.quote_currency || 'PKR')}–${formatMoney(lead.quote_max, lead.quote_currency || 'PKR')}`);
       if (lead.budget) lines.push(`🗒️ Their budget: ${lead.budget}`);
       const followups = pendingFollowUps(target);
       if (followups.length) lines.push(`⏰ Follow-up: ${new Date(followups[0].due_at).toLocaleString('en-GB', { timeZone: config.timezone })}`);
+      // Phase 6 Part 3 — one line of advice, deterministic, capped by the same
+      // growth rules. Off by default; nothing changes when the flag is off.
+      if (strategistOn()) {
+        try {
+          const { nextBestAction } = await import('../services/nextBestAction.js');
+          const nba = nextBestAction(target, { now: new Date() });
+          if (nba && nba.action && nba.action !== 'wait') {
+            lines.push(`🧠 Suggested: ${nba.label} — ${String(nba.reason).slice(0, 160)}`);
+          } else if (nba?.alternatives?.length) {
+            // Held by quiet hours, caps or an opt-out: say what it would be and
+            // why it is waiting, rather than nothing.
+            const held = nba.alternatives[0];
+            lines.push(`🧠 Suggested (held: ${String(held.blockedBy || 'caps').replace(/_/g, ' ')}): ${String(held.reason).slice(0, 150)}`);
+          }
+        } catch {
+          /* a suggestion must never break the dossier */
+        }
+      }
       return { handled: true, reply: lines.join('\n') };
     }
 
@@ -652,7 +976,14 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     case 'report': {
       if (['week', 'weekly', '7d'].includes(String(args[0] || '').toLowerCase())) {
         const { weeklyReportText } = await import('../services/analystAgent.js');
-        return { handled: true, reply: await weeklyReportText(new Date()) };
+        const base = await weeklyReportText(new Date());
+        if (!strategistOn()) return { handled: true, reply: base };
+        // Part 3: the strategist review is appended, never merged into the
+        // analyst's text, so the analyst report is unchanged for every install
+        // that leaves the flag off.
+        const { weeklyStrategyAddendum } = await import('../services/strategist.js');
+        const addendum = await weeklyStrategyAddendum(new Date());
+        return { handled: true, reply: `${base}\n\n${addendum}` };
       }
       return { handled: true, reply: buildReport() };
     }
@@ -676,15 +1007,244 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
 
     case 'content': {
       const { contentPackText } = await import('../services/contentAgent.js');
+      // Phase 6: ad copy, reel scripts, a Status series and bilingual versions
+      // belong to the marketing writer; the weekly pack stays where it was.
+      const kinds = ['ad', 'reel', 'status', 'bilingual'];
+      const first = String(args[0] || '').toLowerCase();
+      if (kinds.includes(first)) {
+        return handleMarketingCommand({ sub: 'content', args, raw: input });
+      }
       if (args[0] && !['now', 'week', 'pack'].includes(String(args[0]).toLowerCase())) {
         return { handled: true, reply: 'Usage: .content now  (a fresh pack; the weekly one arrives on its own)' };
       }
       return { handled: true, reply: await contentPackText({ now: new Date() }) };
     }
 
+    case 'inbox': {
+      const L = await import('../services/liveInbox.js');
+      if (!L.liveInboxEnabled()) {
+        return {
+          handled: true,
+          reply:
+            'The live inbox is off.\nTurn it on with: .set features.liveInbox true\n' +
+            'Then open /inbox on the dashboard' + (config.server.token ? ' with your DASHBOARD_TOKEN.' : '.'),
+        };
+      }
+      if (!config.server.enabled) {
+        return { handled: true, reply: 'The web server is off (ENABLE_WEB=false), so there is no inbox page to open.' };
+      }
+      const sum = L.inboxSummary();
+      const base = config.server.publicUrl || null;
+      return {
+        handled: true,
+        reply:
+          `📥 Live inbox\n\n` +
+          `${sum.unreadMessages} unread in ${sum.unreadChats} chat(s) · ${sum.awaitingUs} waiting for a reply\n` +
+          `${sum.paused} chat(s) where the bot is quiet\n\n` +
+          `${L.inboxUrl(base)}\n\n` +
+          (config.server.token
+            ? 'The link contains your token — do not forward it.'
+            : 'Set DASHBOARD_TOKEN before exposing this beyond your own machine.'),
+      };
+    }
+
+    case 'rules': {
+      const { rulesText } = await import('../services/selfHealing.js');
+      return { handled: true, reply: rulesText() };
+    }
+
+    case 'approve-rule':
+    case 'approve_rule':
+    case 'reject-rule':
+    case 'reject_rule': {
+      const S = await import('../services/selfHealing.js');
+      const id = Number(args[0]);
+      if (!id) return { handled: true, reply: `Usage: .${cmd} 3   (.rules shows the pending ids)` };
+      const res = cmd.startsWith('approve') ? S.approveRule(id) : S.rejectRule(id);
+      return { handled: true, reply: res.reply };
+    }
+
+    case 'invoice': {
+      const I = await import('../services/invoice.js');
+      if (!I.pdfInvoicesEnabled()) {
+        return {
+          handled: true,
+          reply: 'PDF documents are off.\nTurn them on with: .set features.pdfInvoices true',
+        };
+      }
+      const id = Number(args[0]);
+      if (!id) return { handled: true, reply: 'Usage: .invoice 12   (add "send" to deliver it to the client: .invoice 12 send)' };
+
+      const { getOrder } = await import('../utils/db.js');
+      const order = getOrder(id);
+      if (!order) return { handled: true, reply: `No order with id ${id}. Check .orders for the ids.` };
+
+      const toClient = String(args[1] || '').toLowerCase() === 'send';
+      const jidTo = toClient ? order.chat : chatJid;
+      const res = await I.sendInvoice({
+        transport: sock,
+        jid: jidTo,
+        order,
+        number: String(order.chat || '').split('@')[0],
+      });
+
+      if (!res.ok) {
+        // Never pretend it worked. Fall back to the numbers as text.
+        const model = res.model || I.invoiceModel({ order });
+        return {
+          handled: true,
+          reply:
+            `⚠️ Could not build the PDF (${res.reason || 'unknown'}).\n\n` +
+            `${model.label} ${model.invoiceNo}\nTotal: ${model.total || '—'}\n` +
+            (model.payment.length ? model.payment.map((r) => `${r.label}: ${r.value}`).join('\n') : ''),
+        };
+      }
+
+      const model = res.model;
+      const where = toClient ? `Sent to +${String(order.chat || '').split('@')[0]}.` : 'Saved and sent here.';
+      return {
+        handled: true,
+        reply:
+          `${model.label} ${model.invoiceNo} · ${model.total}\n${where}` +
+          (toClient ? '' : `\n.invoice ${id} send → deliver it to the client`),
+      };
+    }
+
+    case 'link': {
+      const L = await import('../services/sourceLinks.js');
+      if (!L.sourceLinksEnabled()) {
+        return { handled: true, reply: 'Source links are off.\nTurn them on with: .set features.sourceLinks true' };
+      }
+      const [name, ...rest] = args;
+      if (!name) {
+        return {
+          handled: true,
+          reply:
+            'Usage: .link <source> [text]\n' +
+            'Example: .link instagram Hi, I saw you on Instagram\n\n' +
+            'Sources are lowercase: poster, flyer, shop-window, google-profile, facebook.',
+        };
+      }
+      const res = L.createSource({ name, text: rest.join(' ') });
+      if (!res.ok) return { handled: true, reply: `⚠️ ${res.message || `Could not create "${name}".`}` };
+
+      const s = res.source;
+      const header = res.already ? `Already tracked: *${s.source}*` : `✅ *${s.source}* is ready to print.`;
+      return {
+        handled: true,
+        reply:
+          `${header}\n\n` +
+          `${res.url}\n\n` +
+          `The message it opens with:\n_"${res.message}"_\n\n` +
+          `.qr ${s.source} → the QR image\n.poster ${s.source} → an A4 PDF for the wall`,
+      };
+    }
+
+    case 'links': {
+      const L = await import('../services/sourceLinks.js');
+      if (!L.sourceLinksEnabled()) {
+        return { handled: true, reply: 'Source links are off.\nTurn them on with: .set features.sourceLinks true' };
+      }
+      const summary = L.sourceSummary();
+      if (!summary.total) {
+        return {
+          handled: true,
+          reply:
+            'No tracked sources yet.\n\n' +
+            '.link instagram\n.link poster Hi, I saw the poster at the shop\n\n' +
+            'Each one gets a QR and a poster, and every chat that arrives through it is counted here.',
+        };
+      }
+      const lines = [`*Where customers came from* (${summary.total}/${summary.limit})`, ''];
+      for (const row of summary.sources) {
+        const money = row.revenue ? ` · ${row.revenue} revenue` : '';
+        const flag = row.stale ? ` · ⚠️ nothing in ${row.ageDays} days` : '';
+        lines.push(`${row.label}: ${row.conversations} chat${row.conversations === 1 ? '' : 's'} · ${row.leads} lead${row.leads === 1 ? '' : 's'} · ${row.orders} paid${money}${flag}`);
+      }
+      const stale = summary.stale;
+      if (stale.length) {
+        lines.push('');
+        lines.push(`⚠️ No conversations after two weeks: ${stale.join(', ')} — that poster is in the wrong place, or nobody scans it.`);
+      }
+      lines.push('');
+      lines.push('.qr <source> for the image · .poster <source> for the A4 print');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'qr': {
+      const L = await import('../services/sourceLinks.js');
+      if (!L.sourceLinksEnabled()) {
+        return { handled: true, reply: 'Source links are off.\nTurn them on with: .set features.sourceLinks true' };
+      }
+      const name = args[0];
+      if (!name) return { handled: true, reply: 'Usage: .qr instagram   (create one first with .link instagram)' };
+      const link = L.sourceLink(name);
+      if (!link) return { handled: true, reply: `No source called "${name}". .links shows what exists, .link ${name} creates it.` };
+
+      try {
+        const png = await L.qrPng(link.url);
+        const svg = await L.qrSvg(link.url);
+        try {
+          await sock.sendMessage(chatJid, {
+            image: png,
+            mimetype: 'image/png',
+            caption: `QR for *${link.label}*\n${link.url}`,
+          });
+          // The vector is for whoever prints the sign, not for a phone screen.
+          await sock.sendMessage(chatJid, {
+            document: Buffer.from(svg, 'utf8'),
+            mimetype: 'image/svg+xml',
+            fileName: `${link.source}-qr.svg`,
+            caption: 'Same QR, as vector — send this file to the printer.',
+          });
+        } catch (err) {
+          db.logEvent('source_qr_send_failed', null, err.message);
+          return { handled: true, reply: `Could not send the QR (${err.message}).\nThe link still works:\n${link.url}` };
+        }
+        return { handled: true, reply: `QR for *${link.label}* sent.\nPrint it at least 3 cm wide; bigger is better.` };
+      } catch (err) {
+        db.logEvent('source_qr_failed', null, err.message);
+        return { handled: true, reply: `Could not build the QR (${err.message}).\nThe link still works:\n${link.url}` };
+      }
+    }
+
+    case 'poster': {
+      const L = await import('../services/sourceLinks.js');
+      if (!L.sourceLinksEnabled()) {
+        return { handled: true, reply: 'Source links are off.\nTurn them on with: .set features.sourceLinks true' };
+      }
+      const name = args[0];
+      if (!name) return { handled: true, reply: 'Usage: .poster instagram   (create one first with .link instagram)' };
+      const link = L.sourceLink(name);
+      if (!link) return { handled: true, reply: `No source called "${name}". .links shows what exists, .link ${name} creates it.` };
+
+      const P = await import('../services/poster.js');
+      const built = await P.buildPoster({ link });
+      if (!built.ok) {
+        return { handled: true, reply: `Could not build the poster (${built.reason}).\nThe link still works:\n${link.url}` };
+      }
+      try {
+        await sock.sendMessage(chatJid, {
+          document: built.buffer,
+          mimetype: 'application/pdf',
+          fileName: built.fileName,
+          caption: `A4 poster for *${link.label}* — print at 100% (no "fit to page").`,
+        });
+      } catch (err) {
+        db.logEvent('source_poster_send_failed', null, err.message);
+        return { handled: true, reply: `The poster is built but could not be sent (${err.message}).` };
+      }
+      return { handled: true, reply: `Poster for *${link.label}* sent (A4 PDF).\nPaste it where people already stand still: counter, waiting area, lift.` };
+    }
+
     case 'campaign': {
       const R = await import('../services/reactivationAgent.js');
       const action = String(args[0] || '').toLowerCase();
+      // `.campaign preview tag:vip` narrows the audience. It can only ever
+      // narrow: opt-out, quiet hours and caps are applied afterwards, by
+      // growth.js, to every message regardless of how the list was built.
+      const tagArg = args.find((word) => /^tag:/i.test(word));
+      const tag = tagArg ? tagArg.slice(4) : null;
 
       if (!action || action === 'preview' || action === 'status') {
         const state = R.campaignStatus();
@@ -694,11 +1254,11 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
             reply: `📣 Campaign running: ${state.sent} sent, ${state.skipped} skipped of ${state.total}.\n.campaign stop to halt.`,
           };
         }
-        return { handled: true, reply: R.previewText(new Date()) };
+        return { handled: true, reply: R.previewText(new Date(), { tag }) };
       }
 
       if (action === 'send' || action === 'start') {
-        const res = R.startCampaign({ now: new Date() });
+        const res = R.startCampaign({ now: new Date(), tag });
         if (!res.ok) {
           return {
             handled: true,
@@ -719,7 +1279,7 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
         return { handled: true, reply: res.ok ? '📣 Campaign stopped.' : 'No campaign is running.' };
       }
 
-      return { handled: true, reply: 'Usage: .campaign preview | send | stop' };
+      return { handled: true, reply: 'Usage: .campaign preview [tag:vip] | send [tag:vip] | stop' };
     }
 
     case 'referrals': {
@@ -765,12 +1325,35 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
     }
 
     case 'export': {
+      // `.export <number>` is a privacy export for one person, not a backup.
+      if (target) {
+        const { privacyEnabled, exportContact, exportFileName } = await import('../services/privacy.js');
+        if (!privacyEnabled()) {
+          return { handled: true, reply: 'Privacy tools are off. Turn them on first: .set features.privacyTools true' };
+        }
+        const exported = exportContact(target);
+        if (!exported.ok) return { handled: true, reply: `Could not export: ${exported.reason}` };
+        const counts = Object.entries(exported.counts).filter(([, n]) => n).map(([key, n]) => `${key} ${n}`).join(' · ');
+        try {
+          await sock.sendMessage(chatJid, {
+            document: Buffer.from(exported.text, 'utf8'),
+            fileName: exportFileName(target),
+            mimetype: 'application/json',
+            caption: `📄 +${target}: ${counts || 'nothing stored'}`,
+          });
+          logEvent('privacy_export', target, exported.counts);
+          return { handled: true };
+        } catch (err) {
+          return { handled: true, reply: `Export built but not sent: ${err.message}` };
+        }
+      }
+
       const data = exportAll();
       const file = writeExport(data);
       try {
         await sock.sendMessage(chatJid, {
           document: fs.readFileSync(file),
-          fileName: `hasdevs-export-${new Date().toISOString().slice(0, 10)}.json`,
+          fileName: `owner-export-${new Date().toISOString().slice(0, 10)}.json`,
           mimetype: 'application/json',
           caption: `📦 Export: ${data.contacts.length} contacts · ${data.leads.length} leads`,
         });
@@ -866,17 +1449,413 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       return { handled: true, reply: `Assigned +${target} to ${person.name}.` };
     }
 
+    case 'mcp': {
+      const { mcpStatus, mcpEnabled, mcpWriteEnabled, recentCallsFor } = await import('../services/mcpClient.js');
+      const status = mcpStatus(config.tenant.slug);
+      const lines = [
+        `*External tools (MCP)* ${mcpEnabled() ? '✅ on' : '⏸ off (.set features.mcpTools true)'}`,
+        `Writes: ${mcpWriteEnabled() ? 'on — each one still needs the customer to confirm' : 'off (.set features.mcpWriteTools true)'}`,
+        `Server file: ${status.fileExists ? status.file : 'missing — the operator has not configured any'}`,
+      ];
+
+      if (status.errors.length) {
+        lines.push('');
+        lines.push('Config problems:');
+        for (const error of status.errors.slice(0, 5)) lines.push(`• ${error}`);
+      }
+
+      if (!status.servers.length) {
+        lines.push('');
+        lines.push('No server is allowed for this tenant. Unlisted means refused — that is the design.');
+      } else {
+        lines.push('');
+        for (const server of status.servers) {
+          const stateBits = [
+            server.readOnly ? 'read-only' : '⚠️ writes',
+            server.connected ? 'connected' : 'idle',
+            server.breakerOpen ? 'circuit open' : null,
+          ].filter(Boolean);
+          lines.push(`• ${server.id} — ${stateBits.join(' · ')}`);
+          lines.push(`  tools: ${server.tools.join(', ')}`);
+        }
+      }
+
+      lines.push('');
+      lines.push(`Calls today: ${status.usedToday}/${status.dailyCap}`);
+
+      const recent = recentCallsFor(10);
+      if (recent.length) {
+        lines.push('');
+        for (const call of recent) {
+          const when = new Date(call.created_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
+          const ok = call.ok ? '✅' : '❌';
+          lines.push(`${ok} ${when} ${call.server}.${call.tool} · ${call.ms ?? '?'} ms · #${call.arg_hash || '—'}${call.error ? ` · ${String(call.error).slice(0, 60)}` : ''}`);
+        }
+      } else {
+        lines.push('');
+        lines.push('No external calls yet.');
+      }
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'health': {
+      const { healthSnapshot, alertsEnabled } = await import('../services/health.js');
+      const snap = healthSnapshot();
+      const icon = { ok: '✅', degraded: '🟠', down: '🔴' }[snap.status] || '•';
+      const lines = [`${icon} *Health* — ${snap.status}${alertsEnabled() ? '' : ' (alerts off: .set features.healthAlerts true)'}`];
+      for (const check of snap.checks) {
+        if (check.kind === 'sla') continue; // one line per waiting chat is spam here
+        lines.push(`${check.ok ? '✅' : check.severity === 'bad' ? '🔴' : '🟠'} ${check.kind}: ${check.detail}`);
+      }
+      const waiting = snap.checks.filter((c) => c.kind === 'sla');
+      lines.push(waiting.length ? `🟠 ${waiting.length} chat(s) waiting for a reply` : '✅ no chat waiting');
+      // Presence and delivery are counted, not guessed: these lines are the
+      // difference between "the code called a function" and "WhatsApp took it".
+      try {
+        const { summaryLines } = await import('../services/transportAudit.js');
+        lines.push('', ...summaryLines());
+        const { outboundStoreLine } = await import('../services/outboundStore.js');
+        lines.push(outboundStoreLine());
+        // Which session is in use, and whether it has ever connected: the first
+        // question in any "messages are not arriving" conversation.
+        const { sessionSummary } = await import('../utils/sessionBackup.js');
+        lines.push(sessionSummary().line);
+      } catch {
+        /* ignore */
+      }
+      if (snap.open.length) {
+        lines.push('');
+        lines.push(`Open incidents: ${snap.open.length} (see .incidents)`);
+      }
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'incidents': {
+      const { recentIncidents } = await import('../services/health.js');
+      const rows = recentIncidents(10);
+      if (!rows.length) return { handled: true, reply: 'No incidents recorded yet. That is the good outcome.' };
+      const lines = ['*Incidents*'];
+      for (const row of rows) {
+        const when = new Date(row.opened_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
+        const end = row.resolved_at ? 'resolved' : 'OPEN';
+        lines.push(`${row.severity === 'bad' ? '🔴' : '🟠'} ${when} ${row.kind}: ${row.detail || ''} — ${end}`);
+      }
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'forget': {
+      const { privacyEnabled, forgetContact, privacyQueue } = await import('../services/privacy.js');
+
+      // `.forget` with no arguments: who is waiting to be forgotten?
+      if (!args.length) {
+        const queue = privacyQueue(10);
+        const lines = [`*Privacy* ${privacyEnabled() ? '✅ on' : '⏸ off (.set features.privacyTools true)'}`];
+        if (!queue.length) {
+          lines.push('Nobody has asked to be deleted.');
+        } else {
+          lines.push('Waiting for you:');
+          for (const row of queue) {
+            const when = new Date(row.created_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
+            lines.push(`• +${row.number} — asked ${when}`);
+          }
+          lines.push('');
+          lines.push('Delete one with: .forget <number> <number>');
+        }
+        return { handled: true, reply: lines.join('\n') };
+      }
+
+      if (!privacyEnabled()) {
+        return { handled: true, reply: 'Privacy tools are off. Turn them on first: .set features.privacyTools true' };
+      }
+
+      const first = normalizePhone(args[0] || '');
+      const second = normalizePhone(args[1] || '');
+      if (!first) return { handled: true, reply: 'Which number? .forget 923001234567 923001234567' };
+      if (!second) {
+        return {
+          handled: true,
+          reply: `⚠️ This deletes every message, lead, booking, order and note for +${first}.\n\nIf that is what you want, type it twice:\n.forget ${first} ${first}`,
+        };
+      }
+      if (first !== second) {
+        return { handled: true, reply: `The two numbers do not match (+${first} ≠ +${second}). Nothing was deleted.` };
+      }
+
+      const result = forgetContact(first, { reason: 'owner_forget' });
+      if (!result.ok) {
+        const why = result.reason === 'owner_number' ? "That is your own number. It is not going to delete you." : `Could not delete: ${result.reason}`;
+        return { handled: true, reply: why };
+      }
+
+      const rows = Object.entries(result.removed)
+        .filter(([table]) => table !== 'tempSwept')
+        .map(([table, n]) => `${table}: ${n}`)
+        .join(' · ');
+      return {
+        handled: true,
+        reply: result.already
+          ? `+${first} was already forgotten. Nothing left to delete; they stay blocked and opted out.`
+          : `🗑️ Forgot +${first}.\n${rows}\n\nKept: a block/opt-out marker (so they are never messaged again) and an anonymous audit line. Nothing else.`,
+      };
+    }
+
+    case 'orders': {
+      const { orderTrackingEnabled, openOrders, statusLabel } = await import('../services/orders.js');
+      if (!orderTrackingEnabled()) {
+        return { handled: true, reply: 'Order tracking is off. Turn it on: .set features.orderTracking true' };
+      }
+      const rows = openOrders(20);
+      if (!rows.length) return { handled: true, reply: 'No open orders. (.status <id> delivered closes one.)' };
+      const lines = [`*Open orders* (${rows.length})`];
+      for (const row of rows) {
+        const items = (row.items || []).map((i) => `${i.qty}× ${i.name}`).join(', ');
+        lines.push(`#${row.id} ${statusLabel(row.status)} · ${formatMoney(row.total, row.currency)}${row.eta ? ` · ETA ${row.eta}` : ''}`);
+        if (items) lines.push(`   ${items}`);
+        lines.push(`   +${String(row.chat).split('@')[0].replace(/\D/g, '')} · .order ${row.id}`);
+      }
+      lines.push('');
+      lines.push('Move one: .status <id> ready|out_for_delivery|delivered');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'order': {
+      const id = Number(args[0]);
+      const { orderTrackingEnabled, orderDetail, orderSummaryText } = await import('../services/orders.js');
+      if (!orderTrackingEnabled()) {
+        return { handled: true, reply: 'Order tracking is off. Turn it on: .set features.orderTracking true' };
+      }
+      if (!id) return { handled: true, reply: 'Usage: .order 12 (ids come from .orders)' };
+      const order = orderDetail(id);
+      if (!order) return { handled: true, reply: `No order with id ${id}.` };
+      return { handled: true, reply: orderSummaryText(order) };
+    }
+
+    case 'tag': {
+      if (!crmEnabled()) return { handled: true, reply: 'CRM is off. Turn it on: .set features.crm true' };
+      if (!target || args.length < 2) return { handled: true, reply: 'Usage: .tag 923001234567 vip   (tags: lowercase, one word)' };
+      const res = addTag(target, args.slice(1).join(' '));
+      if (!res.ok) {
+        const why = {
+          invalid_tag: 'That is not a usable tag. Lowercase letters, digits and dashes.',
+          too_many_tags: `That contact already has ${res.limit} tags — remove one first (.untag).`,
+          invalid_number: 'Which number? .tag 923001234567 vip',
+        }[res.reason] || `Could not add: ${res.reason}`;
+        return { handled: true, reply: why };
+      }
+      return {
+        handled: true,
+        reply: res.already ? `+${target} is already tagged "${res.tag}".` : `🏷️ Tagged +${target} as "${res.tag}".`,
+      };
+    }
+
+    case 'untag': {
+      if (!crmEnabled()) return { handled: true, reply: 'CRM is off. Turn it on: .set features.crm true' };
+      if (!target || args.length < 2) return { handled: true, reply: 'Usage: .untag 923001234567 vip' };
+      const res = removeTag(target, args.slice(1).join(' '));
+      return {
+        handled: true,
+        reply: res.removed ? `Removed "${res.tag}" from +${target}.` : `+${target} is not tagged "${res.tag}".`,
+      };
+    }
+
+    case 'tags': {
+      if (!crmEnabled()) return { handled: true, reply: 'CRM is off. Turn it on: .set features.crm true' };
+      const counts = tagOverview();
+      if (!counts.length) return { handled: true, reply: 'No tags yet. .tag 923001234567 vip' };
+      const lines = ['🏷️ *Tags*'];
+      for (const row of counts) lines.push(`${row.tag}: ${row.n}${row.auto ? ` (${row.auto} auto)` : ''}`);
+      lines.push('');
+      lines.push('Who has one: .find vip');
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'find': {
+      if (!crmEnabled()) return { handled: true, reply: 'CRM is off. Turn it on: .set features.crm true' };
+      const res = findByTag(arg);
+      if (!res.ok) return { handled: true, reply: 'Usage: .find vip' };
+      if (!res.contacts.length) return { handled: true, reply: `Nobody is tagged "${res.tag}".` };
+      const lines = [`🏷️ *${res.tag}* — ${res.contacts.length} contact(s)`];
+      for (const c of res.contacts.slice(0, 20)) lines.push(`• ${c.name ? `${c.name} — ` : ''}+${c.number}${c.blocked ? ' (blocked)' : ''}`);
+      if (res.contacts.length > 20) lines.push(`…and ${res.contacts.length - 20} more`);
+      return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'note': {
+      if (!crmEnabled()) return { handled: true, reply: 'CRM is off. Turn it on: .set features.crm true' };
+      if (!target || args.length < 2) return { handled: true, reply: 'Usage: .note 923001234567 prefers evening delivery' };
+      const res = addNote(target, args.slice(1).join(' '));
+      if (!res.ok) return { handled: true, reply: res.reason === 'empty_note' ? 'That note is empty.' : `Could not save: ${res.reason}` };
+      return { handled: true, reply: `📝 Noted on +${target}: "${res.note.note}"` };
+    }
+
     case 'calls': {
       const calls = recentCalls(10);
       if (!calls.length) return { handled: true, reply: 'No calls yet.' };
+      const clock = (iso) => new Date(iso).toLocaleTimeString('en-GB', { timeZone: config.timezone });
       const lines = ['*Recent calls*'];
       for (const c of calls) {
         const when = new Date(c.created_at).toLocaleString('en-GB', { timeZone: config.timezone });
+        // The timeline is the point: when the call came in, when the chat
+        // rescue went out, and how long the gap was.
+        const gapSec = c.handled_at ? Math.max(0, Math.round((new Date(c.handled_at) - new Date(c.created_at)) / 1000)) : null;
+        // Ring start → when it stopped ringing → when the apology went out.
+        const ended = c.ended_at ? ` · ended ${clock(c.ended_at)}` : '';
+        const apologized = c.apologized_at ? ` · apology ${clock(c.apologized_at)}` : '';
+        const timeline = c.handled_at ? `\n  ${clock(c.created_at)} → ${clock(c.handled_at)} (${gapSec}s)${ended}${apologized}` : '';
+        const timelineAny = timeline || (c.ended_at ? `\n  ring ${clock(c.created_at)}${ended}${apologized}` : '');
         lines.push(
-          `• ${c.name || `+${c.number}`} — ${c.video ? 'video' : 'voice'} · ${c.status}${c.outcome ? ` · ${c.outcome}` : ''}\n  ${when}`
+          `• ${c.name || `+${c.number}`} — ${c.video ? 'video' : 'voice'} · ${c.status}${c.outcome ? ` · ${c.outcome}` : ''}\n  ${when}${timelineAny}`
+        );
+      }
+      if (config.calls.enabled) {
+        lines.push('');
+        lines.push(
+          `Rescue goes out ${config.calls.delayMinSeconds}–${config.calls.delayMaxSeconds}s after an unanswered call, and is cancelled if the customer writes first or you answer.`
         );
       }
       return { handled: true, reply: lines.join('\n') };
+    }
+
+    case 'debug': {
+      // Owner-only view of which model answered: provider, model, latency,
+      // tokens and why the first choice did not.
+      const sub = String(args[0] || 'last').toLowerCase();
+      const { formatLast, lastFor } = await import('../services/providerTrace.js');
+      const { formatTimeline, timingSummary } = await import('../services/timeline.js');
+      const { replyTiming } = await import('../core/timing.js');
+      if (sub === 'last') {
+        // The model trace says who answered; the timeline says where the
+        // seconds went between the customer's message and the reply; the
+        // delivery lines say whether WhatsApp acknowledged it.
+        const trace = formatLast({ limit: 5 });
+        const tl = formatTimeline({ limit: 5 });
+        const { deliveryLines } = await import('../services/transportAudit.js');
+        const delivery = deliveryLines({ limit: 5 });
+        const body = tl ? `${trace}\n\n${tl}` : trace;
+        return { handled: true, reply: delivery.length ? `${body}\n\n${delivery.join('\n')}` : body };
+      }
+      if (sub === 'timing') return { handled: true, reply: timingSummary(replyTiming()) };
+      if (/^\+?\d{8,}$/.test(sub)) {
+        const rows = lastFor(sub.replace('+', ''), 5);
+        if (!rows.length) return { handled: true, reply: `No model calls for +${sub.replace('+', '')} yet.` };
+        const lines = [`🧪 +${sub.replace('+', '')} — last ${rows.length}`];
+        for (const r of rows) {
+          lines.push(`• ${r.provider}/${r.model} · ${r.ms} ms · ${r.tokens || 0} tokens · ${r.kind}${r.fallback ? ` · fallback from ${r.fallback} (${r.reason || 'n/a'})` : ''}`);
+        }
+        // The same reply timeline, for this one chat.
+        const chatLines = formatTimeline({ limit: 3, chat: sub.replace('+', '') });
+        return { handled: true, reply: chatLines ? `${lines.join('\n')}\n\n${chatLines}` : lines.join('\n') };
+      }
+      return { handled: true, reply: 'Usage: .debug last — or .debug 923001234567' };
+    }
+
+    case 'typing-test': {
+      // Diagnostic, owner-only, presence-only. It sends no text: a test that
+      // looks like a message to the customer is worse than no test.
+      const audit = await import('../services/transportAudit.js');
+      const typing = await import('../services/typingTest.js');
+      const sub = String(args[0] || '').toLowerCase();
+
+      if (sub === 'use') {
+        try {
+          const picked = typing.setStrategy(args[1]);
+          return {
+            handled: true,
+            reply: `✅ Typing strategy ${picked} — ${typing.STRATEGIES[picked].label}.\nEvery reply from now on uses it. Undo with .typing-test use 1.`,
+          };
+        } catch (err) {
+          return { handled: true, reply: err.message };
+        }
+      }
+
+      const effective = typing.strategy();
+      if (!args.length || ['show', 'status', 'info'].includes(sub)) {
+        const forms = audit.jidForms('');
+        return {
+          handled: true,
+          reply: [
+            '🐞 *Typing test* — presence only, no message is sent',
+            '',
+            ...audit.environmentLines(),
+            `Strategy: ${effective} — ${typing.STRATEGIES[effective].label}`,
+            forms.lastInboundJid ? `Last inbound JID: ${forms.lastInboundJid}${forms.lid ? ` (alt ${forms.lid})` : ''}` : 'No inbound message seen yet, so only the phone form is known.',
+            '',
+            'Usage: .typing-test 923001234567',
+            'Then say which number showed “typing…”: .typing-test use <number>',
+            `Variants: ${typing.STRATEGY_IDS.map((id) => `${id}=${typing.STRATEGIES[id].label}`).join(' · ')}`,
+          ].join('\n'),
+        };
+      }
+
+      const number = String(sub).replace(/[^\d]/g, '');
+      if (number.length < 8) {
+        return { handled: true, reply: 'Usage: .typing-test 923001234567 — or .typing-test use <number> after you pick one.' };
+      }
+
+      const transport = getTransport() || sock;
+      const live = transport?.sock || transport;
+      if (!live) {
+        return { handled: true, reply: 'No transport in this process, so there is nothing to send presence with.' };
+      }
+
+      const forms = audit.jidForms(number);
+      const report = await typing.runTypingTest({ target: live, number, forms });
+      const header = [
+        '🐞 *Typing test* — presence only, no message is sent',
+        ...audit.environmentLines(),
+        `Strategy currently: ${effective}`,
+        forms.lastInboundJid ? `Last inbound JID: ${forms.lastInboundJid}${forms.lid && forms.lid !== forms.lastInboundJid ? ` · alt ${forms.lid}` : ''}` : 'No inbound message from this number was seen in this process.',
+        '',
+      ];
+      return { handled: true, reply: [...header, typing.describeResults(report)].join('\n') };
+    }
+
+    case 'marketing': {
+      return handleMarketingCommand({ sub: 'marketing', args, raw: input });
+    }
+
+    // ── the business brain (Part 3) ─────────────────────────
+    case 'brain':
+    case 'impact':
+    case 'strategy':
+    case 'do':
+    case 'why':
+    case 'goal':
+    case 'experiment':
+    case 'proposals': {
+      return handleBrainCommand({ sub: cmd, args, raw: input, now: nowDate });
+    }
+
+    case 'plan': {
+      return handleMarketingCommand({ sub: 'plan', args, raw: input });
+    }
+
+    case 'offer': {
+      return handleMarketingCommand({ sub: 'offer', args, raw: input });
+    }
+
+    case 'promo': {
+      return handleMarketingCommand({ sub: 'promo', args, raw: input });
+    }
+
+    case 'channels': {
+      return handleMarketingCommand({ sub: 'channels', args, raw: input });
+    }
+
+    case 'adcopy': {
+      return handleMarketingCommand({ sub: 'adcopy', args, raw: input });
+    }
+
+    case 'reply-review':
+    case 'review-reply': {
+      return handleMarketingCommand({ sub: 'reply-review', args, raw: input });
+    }
+
+    case 'agents':
+    case 'agent': {
+      if (cmd === 'agents') return await handleAgentCommand({ sub: 'list' });
+      const [sub, ...rest] = args;
+      return await handleAgentCommand({ sub, args: [cmd, ...rest], raw: arg });
     }
 
     default:

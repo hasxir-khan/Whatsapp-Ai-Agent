@@ -1,0 +1,24 @@
+{
+  "id": "salon-price-objection-en",
+  "title": "A price objection is answered with a discount inside the owner's cap",
+  "template": "salon",
+  "category": "discount",
+  "language": "en",
+  "profile": {
+    "features": { "closerAgent": true },
+    "policies": { "maxDiscountPercent": 10 }
+  },
+  "fixture": { "numbers": [5, 1425] },
+  "turns": [
+    {
+      "user": "a ladies haircut for 1500 is too expensive for me",
+      "expect": "the closer answers with a real number from the price list, and a discount inside the cap"
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "events": ["closer_turn"],
+    "require": [{ "match": "1425|5%", "why": "the discounted price is computed, not invented" }],
+    "forbid": ["20%", "25%", "free"]
+  }
+}

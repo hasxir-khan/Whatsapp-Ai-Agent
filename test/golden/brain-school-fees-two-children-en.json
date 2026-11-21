@@ -1,0 +1,51 @@
+{
+  "id": "brain-school-fees-two-children-en",
+  "title": "Fees for two children in different grades come straight from the price list",
+  "template": "school",
+  "category": "price",
+  "language": "en",
+  "profile": {
+    "features": {
+      "toolCalling": true
+    }
+  },
+  "turns": [
+    {
+      "user": "One child in primary and one in secondary — what do I pay per month, and is the van extra?",
+      "model": [
+        {
+          "tool": "check_stock",
+          "args": {
+            "item": "Monthly fee — Primary"
+          }
+        },
+        {
+          "tool": "check_stock",
+          "args": {
+            "item": "Monthly fee — Secondary"
+          }
+        },
+        {
+          "text": "Primary is 8000 a month and secondary is 11000 a month. The van is separate at 5000 a month per child, subject to route availability."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "minReplies": 1,
+    "language": "en",
+    "require": [
+      {
+        "match": "8000"
+      },
+      {
+        "match": "11000"
+      },
+      {
+        "match": "5000"
+      }
+    ],
+    "sideEffects": "none"
+  }
+}

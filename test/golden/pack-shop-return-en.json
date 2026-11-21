@@ -1,0 +1,75 @@
+{
+  "id": "pack-shop-return-en",
+  "title": "A damaged item routes to Returns, which explains the policy and does not approve a refund",
+  "template": "shop",
+  "category": "complaint",
+  "language": "en",
+  "profile": {
+    "features": {
+      "multiAgent": true
+    },
+    "agents": [
+      {
+        "id": "sales",
+        "name": "Sales",
+        "role": "sales",
+        "routing": [
+          "price",
+          "stock",
+          "available"
+        ],
+        "instructions": "Answer from the catalogue.",
+        "never": "Never approve a discount.",
+        "tools": [],
+        "enabled": true,
+        "default": true
+      },
+      {
+        "id": "returns",
+        "name": "Returns",
+        "role": "support",
+        "routing": [
+          "return",
+          "exchange",
+          "refund",
+          "damaged"
+        ],
+        "instructions": "Explain the configured return window, then hand off for approval.",
+        "never": "Never auto-approve a return.",
+        "tools": [
+          "handoff"
+        ],
+        "enabled": true,
+        "default": false
+      }
+    ],
+    "policies": {
+      "returns": "Unused or damaged items can be returned within 7 days with the receipt."
+    }
+  },
+  "turns": [
+    {
+      "user": "the item arrived damaged, I want a refund",
+      "model": [
+        {
+          "text": "I am sorry about that. Damaged items can be returned within 7 days with the receipt — I will pass this to the owner to approve."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "agent": "returns",
+    "minReplies": 1,
+    "language": "en",
+    "require": [
+      {
+        "match": "7 days",
+        "why": "the configured window, not an invented one"
+      }
+    ],
+    "forbid": [
+      "refund approved|money is on its way"
+    ],
+    "numbers": "hard"
+  }
+}

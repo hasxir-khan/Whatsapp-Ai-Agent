@@ -9,9 +9,47 @@ qr.png
 *.log
 .DS_Store
 
+# Each user's own business profile — name, number, payment details, friends.
+# The schema lives in config/owner.example.json; this file is private data.
+config/owner.json
+config/owner.local.json
+
+# The operator's external tool servers: host paths, tenant names, maybe a
+# service-account id. The example is committed; the real one is not.
+config/mcp.servers.json
+
 # each user's private workspace (keys, session, clients)
 tenants/
+
+# the zero-key demo writes here
+demo/
 qr-*.png
 
 # Backups are data, not code — keep them off the repo.
 backups/
+
+# the golden-chat eval report is regenerated on every run
+eval-report.json
+
+# ── Everything below is data or a secret, never code ──────────
+# Generated documents and printed entry points.
+invoices/
+posters/
+
+# Compressed database dumps and per-machine overrides.
+*.json.gz
+*.local.json
+
+# The owner's own phone-number prefixes for scripts/scan-secrets.js.
+# Local by design: a list of your friends' numbers must not be committed
+# either.
+.private-prefixes
+
+# The "old = new" table of real numbers and friend nicknames used to rewrite
+# placeholders. Local by design: it is the one file that still lists the real
+# values, so it must never be committed.
+.replacements
+
+# The platform's own state: accounts, usage, audit. Never committed.
+platform/data/
+qr-*.png

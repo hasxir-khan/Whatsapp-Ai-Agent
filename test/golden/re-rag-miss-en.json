@@ -1,0 +1,20 @@
+{
+  "id": "re-rag-miss-en",
+  "title": "An area the agency does not cover is not promised",
+  "template": "real-estate",
+  "category": "rag",
+  "language": "en",
+  "profile": { "features": { "rag": true, "knowledge": true } },
+  "seed": { "knowledge": [{ "title": "Coverage", "text": "We list property in Islamabad and Rawalpindi only." }] },
+  "turns": [
+    {
+      "user": "do you have plots in Lahore?",
+      "model": [{ "text": "Our listings are in Islamabad and Rawalpindi only — I will check with the owner about Lahore." }]
+    }
+  ],
+  "assert": {
+    "events": ["rag_miss"],
+    "require": [{ "match": "Islamabad|Rawalpindi|owner" }],
+    "forbid": ["Lahore plot from", "we have plots in Lahore"]
+  }
+}

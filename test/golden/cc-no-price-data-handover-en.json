@@ -1,0 +1,47 @@
+{
+  "id": "cc-no-price-data-handover-en",
+  "title": "With no published price, the customer is told it will be confirmed and the owner gets the question",
+  "template": "agency",
+  "category": "price",
+  "language": "en",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    },
+    "catalog": {
+      "items": []
+    },
+    "owner": {
+      "services": []
+    }
+  },
+  "turns": [
+    {
+      "user": "what is your price for a website like this?"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision",
+      "owner_task_created"
+    ],
+    "minReplies": 1,
+    "maxReplies": 1,
+    "ownerNotified": true,
+    "require": [
+      {
+        "match": "confirm|owner",
+        "why": "the customer is told it will be confirmed"
+      },
+      {
+        "match": "asked about price",
+        "stream": "owner",
+        "why": "the owner gets the exact question"
+      }
+    ],
+    "forbid": [
+      "starts at|starting from|our price is"
+    ],
+    "numbers": "hard"
+  }
+}

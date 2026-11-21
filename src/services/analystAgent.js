@@ -9,11 +9,14 @@
 
 import { config } from '../config/env.js';
 import { business, featureOn, analystSchedule, effectiveCatalog } from './profile.js';
+import { agentStats as agentReport } from './agents.js';
+import { period, shiftDay, midnight } from './reportCalendar.js';
 import { partsInTz } from './hours.js';
 import { sendToOwner } from './growth.js';
 import { formatMoney } from './geo.js';
 import { all, get, getSetting, setSetting, logEvent } from '../utils/db.js';
 import { chat, hasLLM } from '../core/llm.js';
+import { sourceCounts, sourceLinksEnabled } from './sourceLinks.js';
 
 const DAY_MS = 86_400_000;
 const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -30,6 +33,11 @@ export function analystAgentEnabled() {
  * comparison. Both are plain instants so a fake clock in a test works.
  */
 export function weekWindow(now = new Date()) {
+  if (process.env.TENANT_DASHBOARD === '1') {
+    const zone = business()?.timezone || config.timezone,
+      w = period(now, zone, 7);
+    return { from: w.from, to: w.to, prevFrom: midnight(shiftDay(w.first, -7), zone), prevTo: w.from };
+  }
   const to = new Date(now.getTime());
   const from = new Date(to.getTime() - 7 * DAY_MS);
   const prevFrom = new Date(from.getTime() - 7 * DAY_MS);
@@ -209,6 +217,7 @@ export function weeklyNumbers({ from, to } = weekWindow()) {
       ? Math.round((reviewsRated.reduce((a, r) => a + Number(r.rating || 0), 0) / reviewsRated.length) * 10) / 10
       : null,
     referrals,
+    sources: sourceLinksEnabled() ? sourceCounts() : [],
     low: conv.conversations < MIN_CONVERSATIONS,
   };
 }
@@ -356,10 +365,42 @@ export async function buildWeeklyReport({ now = new Date(), withSuggestions = tr
   );
   lines.push(`✍️ follow-ups ${numbers.followUpsSent} sent, ${numbers.followUpsAnswered} answered`);
   lines.push(`🚫 ${numbers.optOuts} opt-outs · 😠 ${numbers.complaints} complaints`);
+
+  // Custom agents (phase 6): who answered, who handed off, who closed.
+  if (featureOn('multiAgent')) {
+    const rows = agentReport({ days: 7, now });
+    if (rows.length) {
+      lines.push('');
+      lines.push('🧑‍💼 *By assistant*');
+      for (const r of rows.slice(0, 6)) {
+        const bits = [`${r.conversations} chat${r.conversations === 1 ? '' : 's'}`];
+        if (r.avgFirstReplySec !== null) bits.push(`first reply ${r.avgFirstReplySec}s`);
+        if (r.handoffs) bits.push(`${r.handoffs} hand-off${r.handoffs === 1 ? '' : 's'}`);
+        if (r.orders || r.bookings) {
+          bits.push(`${r.orders} order${r.orders === 1 ? '' : 's'} · ${r.bookings} booking${r.bookings === 1 ? '' : 's'}`);
+        }
+        if (r.revenue) bits.push(`PKR ${Math.round(r.revenue).toLocaleString()}`);
+        lines.push(`  • ${r.name} — ${bits.join(' · ')}`);
+      }
+    }
+  }
   if (numbers.reviewsAsked) {
     lines.push(`⭐ ${numbers.reviewsAsked} reviews asked, ${numbers.reviewsRated} rated${numbers.avgRating ? ` (avg ${numbers.avgRating}/5)` : ''}`);
   }
   if (numbers.referrals) lines.push(`🤝 ${numbers.referrals} referral${numbers.referrals === 1 ? '' : 's'} arrived`);
+  // Tracked links: which printed thing actually brought people, and which one
+  // has been hanging on a wall for a fortnight without a single scan.
+  if (numbers.sources?.length) {
+    lines.push('🔗 Where they came from:');
+    for (const row of numbers.sources) {
+      const bits = [`${row.conversations} chat${row.conversations === 1 ? '' : 's'}`];
+      if (row.leads) bits.push(`${row.leads} lead${row.leads === 1 ? '' : 's'}`);
+      if (row.orders) bits.push(`${row.orders} paid`);
+      const money = row.revenue ? ` (${formatMoney(row.revenue, numbers.currency)})` : '';
+      const flag = row.stale ? ` — ⚠️ nothing in ${row.ageDays} days` : '';
+      lines.push(`  ${row.label}: ${bits.join(' → ')}${money}${flag}`);
+    }
+  }
   if (numbers.busiestHours.length) {
     lines.push(`🕒 busiest: ${numbers.busiestHours.map((b) => b.label).join(', ')}`);
   }
@@ -386,10 +427,25 @@ export async function buildWeeklyReport({ now = new Date(), withSuggestions = tr
     for (const tip of tips) lines.push(tip.startsWith('- ') ? tip : `- ${tip}`);
   }
 
+  // Phase 6: the marketing team's brief rides along with the report. It is
+  // null unless features.marketingAgents is on, so nothing changes for anyone
+  // else — and it adds no new send, so quiet hours and opt-outs are unchanged.
+  let marketing = null;
+  try {
+    const M = await import('./marketing.js');
+    marketing = M.marketingBrief({ now });
+    if (marketing?.text) {
+      lines.push('');
+      lines.push(marketing.text);
+    }
+  } catch (err) {
+    logEvent('marketing_brief_error', null, err.message);
+  }
+
   lines.push('');
   lines.push(numbers.low ? 'A week like this is normal. Nothing is broken.' : 'Reply .report week any time for this again.');
 
-  return { numbers, previous, delta, suggestions: tips, text: lines.join('\n'), low: numbers.low };
+  return { numbers, previous, delta, suggestions: tips, text: lines.join('\n'), low: numbers.low, marketing };
 }
 
 /** Plain text for `.report week`. Never throws. */
@@ -452,7 +508,11 @@ export async function runWeeklyReport({ transport, now = new Date(), force = fal
 
   if (outcome.sent) {
     setSetting('analyst_last_report', now.toISOString());
-    logEvent('analyst_report_sent', null, { conversations: report.numbers.conversations });
+    const fields =
+      process.env.TENANT_DASHBOARD === '1'
+        ? ['conversations', 'newLeads', 'bookings', 'orders', 'revenue']
+        : ['conversations'];
+    logEvent('analyst_report_sent', null, Object.fromEntries(fields.map((k) => [k, report.numbers[k]])));
   }
   return { ...outcome, report };
 }

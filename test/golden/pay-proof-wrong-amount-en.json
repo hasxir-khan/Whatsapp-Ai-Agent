@@ -1,0 +1,61 @@
+{
+  "id": "pay-proof-wrong-amount-en",
+  "title": "An amount short of the order is carded as needing attention, not as a refusal",
+  "template": "shop",
+  "category": "payment",
+  "language": "en",
+  "profile": {
+    "features": {
+      "paymentReview": true,
+      "ownerDecisions": true
+    },
+    "business": {
+      "payment": {
+        "accountTail": "1234",
+        "accountName": "Test Studio"
+      }
+    }
+  },
+  "seed": {
+    "orders": [
+      {
+        "total": 5000,
+        "status": "awaiting_payment",
+        "hoursAgo": 5
+      }
+    ],
+    "contact": {
+      "message_count": 4
+    }
+  },
+  "turns": [
+    {
+      "image": true,
+      "user": "",
+      "caption": "Payment done Rs 3,500 TID 77665544",
+      "expect": "the short amount is visible on the card before anyone decides"
+    }
+  ],
+  "assert": {
+    "numbers": false,
+    "events": [
+      "payment_proof_received"
+    ],
+    "require": [
+      {
+        "match": "needs attention|short",
+        "stream": "owner",
+        "why": "the owner sees what to look at"
+      },
+      {
+        "match": "owner is checking|payment proof",
+        "stream": "customer",
+        "why": "the customer is not accused at the door"
+      }
+    ],
+    "forbid": [
+      "fake|fraud|you lied|cheat"
+    ],
+    "maxLength": 700
+  }
+}

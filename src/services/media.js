@@ -6,7 +6,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { downloadMediaMessage } from '@whiskeysockets/baileys';
+// Baileys is optional (a Cloud-only install omits it), so the one function we
+// need from it is loaded on demand. `downloadMediaMessage` is only reached for
+// Baileys messages, which cannot exist without the package.
+async function baileys() {
+  try {
+    return await import('@whiskeysockets/baileys');
+  } catch (err) {
+    const e = new Error(
+      'This message needs @whiskeysockets/baileys, which is not installed.\n' +
+        '  Install it:  npm install     (optional deps included)\n' +
+        '  Cloud-only:  TRANSPORT=cloud does not download Baileys media this way\n' +
+        `  Underlying error: ${err.message}`
+    );
+    e.code = 'baileys_missing';
+    throw e;
+  }
+}
 import { config } from '../config/env.js';
 
 // ── chat type guards ────────────────────────────────────────
@@ -153,37 +169,52 @@ export function describeMessage(msg) {
 // ── downloads ───────────────────────────────────────────────
 export class MediaTooBigError extends Error {}
 
-/**
- * Download media with a size cap so a 500 MB video can't kill the process.
- * @returns {Promise<{buffer:Buffer, mimetype:string}>}
- */
-export async function downloadMedia(msg, info = describeMessage(msg)) {
-  const limit =
-    info.kind === 'video' ? config.vision.maxVideoBytes
-      : info.kind === 'image' ? config.vision.maxImageBytes
-        : 25 * 1024 * 1024;
-
-  const declared = info.content?.fileLength
-    ? Number(info.content.fileLength)
-    : info.content?.imageMessage?.fileLength
-      ? Number(info.content.imageMessage.fileLength)
-      : 0;
-
-  if (declared && declared > limit) {
-    throw new MediaTooBigError(`media ${(declared / 1048576).toFixed(1)}MB exceeds limit`);
+// Callers can tighten these bounds, never remove the transport's own limit.
+export function mediaByteLimit(kind, requested) {
+  let limit = 25 * 1024 * 1024;
+  if (kind === 'video') limit = config.vision.maxVideoBytes;
+  if (kind === 'image' || kind === 'sticker') limit = config.vision.maxImageBytes;
+  const cap = Math.min(64 * 1024 * 1024, limit, requested ?? Infinity);
+  return Number.isFinite(cap) ? Math.max(0, cap) : 0;
+}
+export const mediaTimeout = ms => Math.max(1, Math.min(ms ?? Infinity, config.media.timeoutMs, 30000));
+export async function downloadMedia(msg, info = describeMessage(msg), { maxBytes, timeoutMs } = {}) {
+  const limit = mediaByteLimit(info.kind, maxBytes);
+  const content = info.content || {};
+  const node =
+    content.videoMessage ||
+    content.audioMessage ||
+    content.imageMessage ||
+    content.documentMessage ||
+    content.stickerMessage;
+  const length = node?.fileLength ?? content.fileLength;
+  // A protobuf Long can arrive hydrated or as its JSON {low, high} limbs.
+  const declared =
+    Number.isInteger(length?.high) && Number.isInteger(length?.low)
+      ? (length.high >>> 0) * 2 ** 32 + (length.low >>> 0)
+      : Number(length);
+  if (declared > limit || (['audio', 'voice'].includes(info.kind) && info.seconds > config.stt.maxSeconds))
+    throw new MediaTooBigError('media_limit');
+  const { downloadMediaMessage } = await baileys();
+  const controller = new AbortController();
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(mediaTimeout(timeoutMs))]);
+  let stream;
+  const abort = () => stream?.destroy(new Error('download_timeout'));
+  try {
+    stream = await downloadMediaMessage(msg, 'stream', { options: { signal } });
+    signal.throwIfAborted();
+    signal.addEventListener('abort', abort, { once: true });
+    return { buffer: await boundedMedia(stream, limit), mimetype: info.mimetype };
+  } finally {
+    signal.removeEventListener('abort', abort);
+    stream?.destroy();
+    controller.abort();
   }
-
-  const buffer = await downloadMediaMessage(msg, 'buffer', {});
-
-  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
-  if (buf.length > limit) throw new MediaTooBigError('media too large');
-  if (!buf.length) throw new Error('empty media');
-  return { buffer: buf, mimetype: info.mimetype };
 }
 
 // ── temp files ──────────────────────────────────────────────
 function ensureTmp() {
-  fs.mkdirSync(config.paths.tmp, { recursive: true });
+  fs.mkdirSync(config.paths.tmp, { recursive: true, mode: 0o700 });
   return config.paths.tmp;
 }
 
@@ -195,13 +226,13 @@ export function tempFile(ext = 'bin', prefix = 'wa') {
 
 export function writeTemp(buffer, ext = 'bin', prefix = 'wa') {
   const file = tempFile(ext, prefix);
-  fs.writeFileSync(file, buffer);
+  fs.writeFileSync(file, buffer, { mode: 0o600 });
   return file;
 }
 
 export function tempDir(prefix = 'job') {
   const dir = path.join(ensureTmp(), `${prefix}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 
@@ -251,3 +282,18 @@ export default {
   unwrapContent, extractText, describeMessage, downloadMedia,
   tempFile, writeTemp, tempDir, cleanupPath, extFromMime, sweepTemp, MediaTooBigError,
 };
+
+// Stop reading untrusted downloads
+// as soon as the limit is crossed, even if Content-Length was absent or false.
+export async function boundedMedia(stream, limit) {
+  if (!stream?.[Symbol.asyncIterator]) throw Error('no_media_stream');
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of stream) {
+    size += chunk.length;
+    if (size > limit) throw new MediaTooBigError('too_large');
+    chunks.push(chunk);
+  }
+  if (!size) throw Error('empty_media');
+  return Buffer.concat(chunks, size);
+}

@@ -1,0 +1,21 @@
+{
+  "id": "school-rag-miss-ur",
+  "title": "A service the school never wrote down is checked with the owner",
+  "template": "school",
+  "category": "rag",
+  "language": "ur",
+  "profile": { "features": { "rag": true, "knowledge": true } },
+  "seed": { "knowledge": [{ "title": "Transport", "text": "Van service covers Gulberg and DHA only, 5000 rupees monthly." }] },
+  "turns": [
+    {
+      "user": "کیا وین فیصل ٹاؤن جاتی ہے؟",
+      "model": [{ "text": "وین کے راستے محدود ہیں — میں آفس سے تصدیق کر کے بتاتا ہوں۔" }],
+      "expect": "no route is invented"
+    }
+  ],
+  "assert": {
+    "events": ["rag_miss"],
+    "require": [{ "match": "تصدیق|آفس" }],
+    "forbid": ["فیصل ٹاؤن جاتی ہے"]
+  }
+}

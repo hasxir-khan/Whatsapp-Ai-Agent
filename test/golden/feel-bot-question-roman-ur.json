@@ -1,0 +1,34 @@
+{
+  "id": "feel-bot-question-roman-ur",
+  "title": "A sincere \"are you a bot?\" gets an honest, short answer in Roman Urdu",
+  "template": "agency",
+  "category": "persona",
+  "language": "roman-ur",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": false
+    }
+  },
+  "turns": [
+    {
+      "user": "ek baat batayein, kya aap insan hain ya bot?",
+      "expect": "the honest answer comes from the fixed line, not from a model that might deny it"
+    }
+  ],
+  "assert": {
+    "language": "roman-ur",
+    "maxSentences": 2,
+    "require": [
+      {
+        "match": "AI assistant|assistant hoon",
+        "why": "it says plainly what it is"
+      }
+    ],
+    "events": [
+      "bot_disclosure"
+    ],
+    "noErrorEvents": true,
+    "sideEffects": "none"
+  }
+}

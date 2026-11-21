@@ -266,7 +266,7 @@ test('the owner commands work end to end', async () => {
   pastCustomer('923001110001', 60, new Date(Date.now() - 60 * DAY).toISOString().slice(0, 10));
   const { handleOwnerCommand } = await import('../src/handlers/ownerCommands.js');
   const sock = fakeSock();
-  const jid = '923169896229@s.whatsapp.net';
+  const jid = '923001234567@s.whatsapp.net';
 
   const preview = await handleOwnerCommand(sock, jid, '.campaign preview');
   assert.match(preview.reply, /Reactivation preview/);

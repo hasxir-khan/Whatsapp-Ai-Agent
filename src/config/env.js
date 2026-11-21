@@ -1,3 +1,4 @@
+import {billingLimit} from '../services/billingLease.js';
 // src/config/env.js
 // Central, validated configuration. Everything is optional — the bot degrades
 // gracefully when a provider or feature is not configured.
@@ -40,7 +41,11 @@ const toList = (v, def = []) =>
         .map((s) => s.trim())
         .filter(Boolean);
 
-/** Normalise any phone input ("+92 316 9896229", "0316-9896229") to 923169896229 */
+/**
+ * Normalise any phone input ("+92 300 1234567", "0300-1234567") to the digits
+ * only: 923001234567. The examples use a made-up number; nothing that ships in
+ * this repo should contain a real one.
+ */
 export function normalizePhone(input) {
   if (!input) return '';
   let digits = String(input).replace(/[^\d]/g, '');
@@ -49,7 +54,10 @@ export function normalizePhone(input) {
   return digits;
 }
 
-export const DEFAULT_OWNER_NUMBER = '923169896229';
+// A placeholder, deliberately: a fresh clone must not inherit anyone's number.
+// MY_NUMBER in .env (or `npm run tenant`) is the only real source, and doctor
+// says so plainly when it is missing.
+export const DEFAULT_OWNER_NUMBER = '920000000000';
 
 // ── owner / persona knowledge base ──────────────────────────
 function deepMerge(base, override) {
@@ -92,8 +100,8 @@ export function loadOwnerProfile() {
 
   // Env overrides for the handful of things people change most often
   profile.owner = profile.owner || {};
-  profile.owner.name = process.env.MY_NAME || profile.owner.name || 'Hashir';
-  profile.owner.brand = process.env.MY_BRAND || profile.owner.brand || 'HasDevs';
+  profile.owner.name = process.env.MY_NAME || profile.owner.name || 'Your Name';
+  profile.owner.brand = process.env.MY_BRAND || profile.owner.brand || 'Your Brand';
   profile.owner.timezone = process.env.MY_TIMEZONE || profile.owner.timezone || 'Asia/Karachi';
   profile.owner.location = process.env.MY_LOCATION || profile.owner.location || 'Pakistan';
   if (process.env.MY_PERSONALITY) profile.bot.persona = process.env.MY_PERSONALITY;
@@ -131,7 +139,7 @@ export function reloadProfile() {
   if (!target) return fresh;
   mergeInPlace(target, fresh);
 
-  config.owner.name = fresh.owner?.name || config.owner.name || 'Hashir';
+  config.owner.name = fresh.owner?.name || config.owner.name || 'Your Name';
   config.owner.pushName = process.env.MY_PUSHNAME || config.owner.name;
   if (config.bot) {
     config.bot.name = fresh.bot?.name || `${config.owner.name}'s Assistant`;
@@ -146,7 +154,7 @@ export function reloadProfile() {
 // ── main config object ──────────────────────────────────────
 const ownerNumber = normalizePhone(process.env.MY_NUMBER || process.env.OWNER_NUMBER || DEFAULT_OWNER_NUMBER);
 const ownerProfile = loadOwnerProfile();
-const ownerName = ownerProfile.owner?.name || 'Hashir';
+const ownerName = ownerProfile.owner?.name || 'Your Name';
 
 export const config = {
   root: ROOT,
@@ -225,6 +233,18 @@ export const config = {
     maxGapMs: toInt(process.env.REACTIVATION_MAX_GAP_MS, 420_000),
   },
 
+  // Phase 4: documents and the learning loop.
+  invoice: {
+    // Old PDFs are swept on every write; the order row is the real record.
+    keepDays: toInt(process.env.INVOICE_KEEP_DAYS, 90),
+  },
+  selfHealing: {
+    // A manual reply further apart than this from the bot's last answer is a
+    // different conversation, not a correction of it.
+    windowMinutes: toInt(process.env.SELF_HEALING_WINDOW_MINUTES, 30),
+    maxPerDay: toInt(process.env.SELF_HEALING_MAX_PER_DAY, 3),
+  },
+
   // Content agent: when the weekly pack lands.
   content: {
     day: process.env.CONTENT_DAY || 'wed',
@@ -288,6 +308,15 @@ export const config = {
     ),
   },
 
+  // The admin panel is a different kind of surface from the inbox: it can create
+  // and delete tenants, read their profiles and write their keys. It gets its own
+  // token, separate from DASHBOARD_TOKEN, so a leaked inbox link is not a leaked
+  // control panel.
+  admin: {
+    token: process.env.ADMIN_TOKEN || '',
+    sessionMinutes: toInt(process.env.ADMIN_SESSION_MINUTES, 720),
+  },
+
   server: {
     enabled: toBool(process.env.ENABLE_WEB, true),
     port: toInt(process.env.PORT, 3000),
@@ -295,6 +324,9 @@ export const config = {
     // Optional shared secret for the dashboard. Set it on any box with a public
     // IP: the growth figures are business data, not a landing page.
     token: process.env.DASHBOARD_TOKEN || '',
+    // Optional public base URL (e.g. behind a cloudflared tunnel), used only to
+    // print a clickable inbox link in .inbox.
+    publicUrl: (process.env.PUBLIC_URL || '').replace(/\/$/, ''),
   },
 
   // How the Gemini key is presented: "key" → x-goog-api-key header,
@@ -331,6 +363,15 @@ export const config = {
     ]),
     temperature: toNum(process.env.LLM_TEMPERATURE, 0.7),
     maxTokens: toInt(process.env.LLM_MAX_TOKENS, 700),
+    // Customer replies get a larger, explicit budget: the old 700-token cap is
+    // what cut a menu answer off at "1, 2, 3, 4, 5, 6,". Small JSON jobs keep
+    // the cheap budget above.
+    replyMaxTokens: toInt(process.env.LLM_REPLY_MAX_TOKENS, 1000),
+    // How long one provider may take before the chain moves on.
+    providerTimeoutMs: toInt(process.env.LLM_TIMEOUT_MS, 45000),
+    // OpenRouter is only used for models named here — no wildcard, no
+    // ":free" routing surprise, and it always sits last in the chain.
+    openrouterAllowlist: toList(process.env.OPENROUTER_ALLOWED_MODELS, null),
     historyTurns: toInt(process.env.HISTORY_TURNS, 16),
   },
 
@@ -357,24 +398,65 @@ export const config = {
     videoFrames: toInt(process.env.VIDEO_FRAMES, 6),
   },
 
+  // All video ingestion uses bounded local extraction.
+  media: {
+    maxBytes: Math.max(1, toInt(process.env.MEDIA_VIDEO_MB, 25)) * 1024 * 1024,
+    maxSeconds: Math.max(1, toInt(process.env.MEDIA_VIDEO_SECONDS, 60)),
+    frames: Math.min(12, Math.max(1, toInt(process.env.MEDIA_VIDEO_FRAMES, 6))),
+    timeoutMs: Math.max(100, toInt(process.env.MEDIA_PROVIDER_TIMEOUT_MS, 20000)),
+    videosDay: Math.max(0, toInt(process.env.MEDIA_VIDEOS_DAY, 10)),
+    videosMonth: Math.max(0, toInt(process.env.MEDIA_VIDEOS_MONTH, 120)),
+    visionDay: Math.max(0, toInt(process.env.MEDIA_VISION_CALLS_DAY, 30)),
+    visionMonth: Math.max(0, toInt(process.env.MEDIA_VISION_CALLS_MONTH, 300)),
+  },
+
   stt: {
     enabled: toBool(process.env.STT_ENABLED, true),
     model: process.env.WHISPER_MODEL || 'whisper-large-v3-turbo',
     fallbackModel: process.env.WHISPER_FALLBACK_MODEL || 'whisper-large-v3',
     // '' = auto-detect language (best for foreign clients)
     language: process.env.STT_LANGUAGE || '',
-    maxSeconds: toInt(process.env.MAX_AUDIO_SECONDS, 600),
+    maxSeconds: Math.max(0, Math.min(600, toInt(process.env.MAX_AUDIO_SECONDS, 600))),
   },
 
   tts: {
-    // off | on_request | match_voice | always
-    mode: (process.env.VOICE_REPLY_MODE || 'on_request').toLowerCase(),
+    // off | on_request | match_voice | always   ('match' is accepted for match_voice)
+    mode: (process.env.VOICE_REPLY_MODE || 'match_voice').toLowerCase(),
     providers: toList(process.env.TTS_PROVIDERS, ['edge', 'groq']),
     edgeVoice: process.env.TTS_VOICE || '',
+    groqModelArabic: 'canopylabs/orpheus-arabic-saudi',
     groqModelEnglish: process.env.GROQ_TTS_MODEL || 'canopylabs/orpheus-v1-english',
     groqVoice: process.env.GROQ_TTS_VOICE || 'troy',
     maxChars: toInt(process.env.TTS_MAX_CHARS, 600),
+    // A voice note longer than ~20 s is a podcast episode; the spoken part is
+    // cut at a sentence boundary and the rest stays as text.
+    maxSeconds: toInt(process.env.TTS_MAX_SECONDS, 20),
+    // A voice note for the very first message to a new contact (off by default).
+    greetVoice: toBool(process.env.TTS_GREET_VOICE, false),
     ffmpegPath: process.env.FFMPEG_PATH || '',
+  },
+
+  // Human-feel timing. Every value can also live in the profile under
+  // business.tone.replyTiming; an environment variable set here wins over both.
+  timing: {
+    enabled: toBool(process.env.REPLY_TIMING, true),
+    debounceMs: toInt(process.env.DEBOUNCE_MS, 2000),
+    readMinMs: toInt(process.env.READ_DELAY_MIN_MS, 1000),
+    readMaxMs: toInt(process.env.READ_DELAY_MAX_MS, 3000),
+    typingMinMs: toInt(process.env.TYPING_MIN_MS, 3000),
+    typingMaxMs: toInt(process.env.TYPING_MAX_MS, 10000),
+    targetMinMs: toInt(process.env.REPLY_TARGET_MIN_MS, 5000),
+    targetMaxMs: toInt(process.env.REPLY_TARGET_MAX_MS, 15000),
+    refreshMs: toInt(process.env.TYPING_REFRESH_MS, 8000),
+    hardCapMs: toInt(process.env.TYPING_HARD_CAP_MS, 30000),
+    holdingAfterMs: toInt(process.env.HOLDING_AFTER_MS, 30000),
+    maxSentences: toInt(process.env.REPLY_MAX_SENTENCES, 2),
+    // Show "available" to the chat before the first "composing". A device that
+    // never announced itself is a device WhatsApp may ignore presence from.
+    goOnline: toBool(process.env.TYPING_GO_ONLINE, true),
+    // The call shape fix. Off restores the pre-fix behaviour exactly, for a
+    // one-release rollback.
+    fix: toBool(process.env.TYPING_FIX, true),
   },
 
   behavior: {
@@ -401,7 +483,16 @@ export const config = {
   // call goes unanswered.
   calls: {
     enabled: toBool(process.env.CALLS_ENABLED, true),
+    // The old fixed delay still wins when it is set explicitly, so an existing
+    // install that tuned CALL_FALLBACK_SECONDS keeps its behaviour.
     delaySeconds: toInt(process.env.CALL_FALLBACK_SECONDS, 60),
+    // A person does not answer a missed call on a stopwatch: 60–90 s, random.
+    delayMinSeconds: toInt(process.env.CALL_DELAY_MIN_SECONDS, toInt(process.env.CALL_FALLBACK_SECONDS, 60)),
+    delayMaxSeconds: toInt(process.env.CALL_DELAY_MAX_SECONDS, toInt(process.env.CALL_FALLBACK_SECONDS, 90)),
+    // One apology per contact per 30 min, whatever happens.
+    apologyWindowMinutes: toInt(process.env.CALL_APOLOGY_WINDOW_MIN, 30),
+    // Voice note for the apology, on top of the text.
+    apologyVoice: toBool(process.env.CALL_APOLOGY_VOICE, false),
     // auto | voice_note | text
     mode: (process.env.CALL_FALLBACK_MODE || 'auto').toLowerCase(),
     // auto | formal | casual  (auto follows the client's own register)
@@ -473,6 +564,7 @@ const ROLE_PERMISSIONS = {
 export function teamMembers() {
   const team = config.owner.profile?.owner?.team || [];
   return team
+    .slice(0, billingLimit('team_members', team.length))
     .map((m) => ({ ...m, number: normalizePhone(m.number || '') }))
     .filter((m) => m.number);
 }
@@ -518,9 +610,9 @@ export function describeConfig() {
     `OpenRouter   : ${has(config.keys.openrouter)}   (vision fallback)`,
     `Voice replies: ${config.tts.mode} via ${config.tts.providers.join(' > ')}`,
     `Transport    : ${config.transport === 'cloud' ? `Cloud API (webhook /webhook/${config.cloud.slug})` : 'Baileys (QR / pairing code)'}`,
-    `Missed calls: ${config.calls.enabled ? `answered in chat after ${config.calls.delaySeconds}s` : 'off'}`,
+    `Missed calls: ${config.calls.enabled ? `answered in chat after ${config.calls.delayMinSeconds}–${config.calls.delayMaxSeconds}s` : 'off'}`,
     `Team         : ${(config.owner.profile?.owner?.team || []).length} teammate(s) + owner`,
-    `Dashboard    : ${config.server.enabled ? `http://0.0.0.0:${config.server.port}` : 'disabled'}`,
+    `Web          : ${config.server.enabled ? `http://${config.server.host}:${config.server.port}${config.server.token ? ' (token required)' : ' (no token)'}` : 'disabled'}`,
   ].join('\n');
 }
 

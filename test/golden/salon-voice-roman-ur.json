@@ -1,0 +1,24 @@
+{
+  "id": "salon-voice-roman-ur",
+  "title": "A Roman Urdu voice note is answered in Roman Urdu",
+  "template": "salon",
+  "category": "voice",
+  "language": "roman-ur",
+  "profile": { "features": { "toolCalling": true } },
+  "turns": [
+    {
+      "user": "",
+      "voice": true,
+      "voiceTranscript": "gents haircut kitne ka hai?",
+      "model": [
+        { "tool": "check_stock", "args": { "item": "haircut gents" } },
+        { "text": "Gents haircut 800 PKR hai. Beard trim 500 PKR — dono saath le lein to acha hai." }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "800" }],
+    "noErrorEvents": true
+  }
+}

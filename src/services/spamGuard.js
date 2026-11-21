@@ -42,23 +42,34 @@ function floodCheck(number, text) {
 }
 
 /**
- * @returns {{score:number, isScam:boolean, reasons:string[], action:'none'|'warn'|'block'}}
+ * The patterns alone — no contact, no flood window, no writes. The decision
+ * engine uses this so a rule can ask "does this look like a scam?" without
+ * changing anyone's spam score as a side effect.
+ * @returns {{score:number, reasons:string[]}}
  */
-export function analyze(number, text = '') {
+export function textSignals(text = '') {
   const reasons = [];
   let score = 0;
-
   for (const { re, weight, reason } of SCAM_PATTERNS) {
     if (re.test(text)) {
       score += weight;
       reasons.push(reason);
     }
   }
-
   if (SHORTENER.test(text) && /\b(click|verify|claim|urgent)\b/i.test(text)) {
     score += 2;
     reasons.push('shortened link + urgency');
   }
+  return { score, reasons };
+}
+
+/**
+ * @returns {{score:number, isScam:boolean, reasons:string[], action:'none'|'warn'|'block'}}
+ */
+export function analyze(number, text = '') {
+  const signals = textSignals(text);
+  const reasons = [...signals.reasons];
+  let score = signals.score;
 
   const flood = floodCheck(number, text);
   if (flood.count >= 12) {
@@ -96,4 +107,4 @@ export function applyAction(number, action) {
 export const WARN_MESSAGE =
   "I'm going to stop here — this looks like a scam pattern, and I don't share codes or send money. If this is a real project, tell me what you're building and I'll help.";
 
-export default { analyze, applyAction, WARN_MESSAGE };
+export default { analyze, applyAction, textSignals, WARN_MESSAGE };

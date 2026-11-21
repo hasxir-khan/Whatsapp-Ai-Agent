@@ -1,0 +1,116 @@
+{
+  "id": "fix-regression-chat-en",
+  "title": "The regression chat: services, a logo, a brief, a price, a yes, and a missed call",
+  "template": "agency",
+  "category": "dedupe",
+  "language": "en",
+  "mode": "both",
+  "profile": {
+    "features": {
+      "businessProfile": true
+    }
+  },
+  "fixture": {
+    "docNotes": [
+      "• Online store with a product catalogue, cart and checkout\n• Card and cash-on-delivery payment\n• Admin dashboard for orders\n• Content and photos provided by the client"
+    ]
+  },
+  "turns": [
+    {
+      "user": "Hi! What services do you offer?",
+      "expect": "the published services, in English, once",
+      "model": [
+        {
+          "text": "We build business websites from 60,000 PKR, e-commerce stores from 120,000 PKR, and mobile apps from 250,000 PKR. What are you thinking of building?"
+        }
+      ]
+    },
+    {
+      "user": "This is the logo we want to use.",
+      "image": true,
+      "caption": "This is the logo we want to use.",
+      "expect": "the photo is acknowledged, not invented about",
+      "model": [
+        {
+          "text": "Got the logo, thanks. We can use those colours across the store. Is the store for pickup orders only, or delivery as well?"
+        }
+      ]
+    },
+    {
+      "user": "",
+      "document": {
+        "name": "bakery-brief.txt",
+        "text": "Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. Project brief: we are a small bakery in Islamabad. We need an online store with a product catalogue, a cart and checkout, card and cash-on-delivery payment, and an admin dashboard for orders. Content and photos are provided by us. "
+      },
+      "expect": "the file is read in full and understood back to the customer",
+      "model": [
+        {
+          "text": "Would you like a quote for it, or do you want to change anything first?"
+        }
+      ]
+    },
+    {
+      "user": "I want a project like this: an online store with card payments and delivery.",
+      "expect": "one answer about the scope",
+      "model": [
+        {
+          "text": "That fits our e-commerce store build: catalogue, checkout, card payments and delivery. We would need the product photos and your delivery charges."
+        }
+      ]
+    },
+    {
+      "user": "How much will it cost?",
+      "expect": "one price answer, and the same range if it is said again",
+      "model": [
+        {
+          "text": "An e-commerce store is 120,000 to 350,000 PKR depending on the catalogue and checkout work. Shall I put the scope in writing?"
+        }
+      ]
+    },
+    {
+      "user": "Yes",
+      "expect": "a short acknowledgement in English, not a language switch",
+      "model": [
+        {
+          "text": "Great — I will put the scope together and send it today. Anything else you want included?"
+        }
+      ]
+    },
+    {
+      "action": "call_offer",
+      "delaySeconds": 1,
+      "expect": "the missed call is rescued in chat once",
+      "model": [
+        {
+          "text": "Sorry I missed your call — tell me here what you need and we will carry on from there."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "language": "en",
+    "oneReplyPerTurn": true,
+    "noMidSentence": true,
+    "samePrice": true,
+    "maxReplies": 7,
+    "require": [
+      {
+        "match": "60,000|120,000|250,000",
+        "why": "the published services are named"
+      },
+      {
+        "match": "store",
+        "why": "the conversation stays on the store"
+      },
+      {
+        "match": "call|missed",
+        "why": "the missed call is acknowledged"
+      }
+    ],
+    "noErrorEvents": true,
+    "events": [
+      "document_read",
+      "call_fallback"
+    ]
+  }
+}

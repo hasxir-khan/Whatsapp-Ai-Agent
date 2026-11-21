@@ -1,0 +1,19 @@
+{
+  "id": "rest-quiet-payment-reminder",
+  "title": "A payment reminder at 23:00 is held, not sent",
+  "template": "restaurant",
+  "category": "quiet",
+  "language": "en",
+  "profile": { "features": { "orderTracking": true, "growthApproval": false } },
+  "seed": { "orders": [{ "status": "awaiting_payment", "total": 1450, "hoursAgo": 13 }] },
+  "turns": [
+    { "action": "payment_reminder", "now": "night", "expect": "quiet hours must hold the reminder" },
+    { "action": "payment_reminder", "now": "2026-11-18T08:00:00.000Z", "expect": "the same reminder goes out in the morning" }
+  ],
+  "assert": {
+    "growthHold": ["quiet_hours"],
+    "minReplies": 1,
+    "require": [{ "match": "payment", "why": "the reminder text mentions payment" }],
+    "sideEffects": "none"
+  }
+}

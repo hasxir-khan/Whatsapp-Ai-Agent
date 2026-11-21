@@ -1,0 +1,21 @@
+{
+  "id": "clinic-rag-fee-en",
+  "title": "A fact from an uploaded document is answered, not guessed",
+  "template": "clinic",
+  "category": "rag",
+  "language": "en",
+  "profile": { "features": { "rag": true, "knowledge": true } },
+  "seed": {
+    "knowledge": [{ "title": "Lab fees", "text": "The basic lab panel costs 4500 PKR and runs every morning from 9am." }]
+  },
+  "turns": [
+    {
+      "user": "How much is the basic lab panel?",
+      "model": [{ "text": "The basic lab panel is 4500 PKR, and it runs every morning from 9am." }]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "require": [{ "match": "4500", "why": "the number is in the owner's document" }]
+  }
+}

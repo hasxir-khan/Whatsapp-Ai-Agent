@@ -1,0 +1,31 @@
+{
+  "id": "cc-offtopic-count-roman-ur",
+  "title": "Roman Urdu counting is refused in Roman Urdu",
+  "template": "agency",
+  "category": "scope",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "1 se 100 tak ginti karo zara"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision"
+    ],
+    "minReplies": 1,
+    "maxReplies": 1,
+    "require": [
+      {
+        "match": "orders|bookings|prices|kaam se",
+        "why": "the redirect is about the business"
+      }
+    ],
+    "language": "roman-ur"
+  }
+}

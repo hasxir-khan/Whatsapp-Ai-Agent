@@ -1,0 +1,39 @@
+{
+  "id": "brain-salon-complaint-roman-ur",
+  "title": "An upset customer with two problems is calmed first, then handed over",
+  "template": "salon",
+  "category": "complaint",
+  "language": "roman-ur",
+  "profile": {
+    "features": {
+      "toolCalling": true
+    }
+  },
+  "turns": [
+    {
+      "user": "mujhe kal colour karwaya tha, rang bilkul different hai aur main 30 minute late thi to unhone jaldi khatam kar diya",
+      "model": [
+        {
+          "text": "Sorry, ye theek nahi hua. Main ye baat owner tak pahuncha raha hoon — wohi aap ke colour ke liye next step batayenge. Aap kis din aa sakti hain?"
+        }
+      ]
+    },
+    {
+      "user": "par mujhe free fix chahiye",
+      "model": [
+        {
+          "text": "Main free ya paid ka wada nahi kar sakta — ye owner ka faisla hai. Unhone aap ko yahan reply karna hai, main unhe abhi bata raha hoon."
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "numbers": "hard",
+    "minReplies": 2,
+    "language": "roman-ur",
+    "sideEffects": "none",
+    "forbid": [
+      "free of charge confirm|guarantee"
+    ]
+  }
+}

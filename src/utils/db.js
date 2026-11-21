@@ -3,6 +3,7 @@
 // no native modules, works on any free host). Everything the assistant learns
 // about a client lives here, so memory survives restarts and redeploys.
 
+import { initArchive, archiveBeforePurge } from '../services/reportArchive.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import initSqlJs from 'sql.js';
@@ -40,6 +41,13 @@ CREATE TABLE IF NOT EXISTS contacts (
   last_seen         TEXT
 );
 
+-- Aggregate-only admission ledger. No chat, file path or media content.
+CREATE TABLE IF NOT EXISTS media_daily (
+  tenant TEXT NOT NULL, day TEXT NOT NULL,
+  videos INTEGER DEFAULT 0, vision INTEGER DEFAULT 0, processed INTEGER DEFAULT 0,
+  refused INTEGER DEFAULT 0, video_ms INTEGER DEFAULT 0, voice INTEGER DEFAULT 0,
+  correct INTEGER DEFAULT 0, errors INTEGER DEFAULT 0, PRIMARY KEY(tenant,day)
+);
 CREATE TABLE IF NOT EXISTS messages (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   number      TEXT,
@@ -50,6 +58,18 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_number ON messages(number, id);
+
+-- .review: one vote per bot reply, so a thumbs-down survives a restart and can
+-- become a draft golden scenario. No message text is copied here.
+CREATE TABLE IF NOT EXISTS reply_reviews (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id  INTEGER,
+  number      TEXT,
+  vote        TEXT,          -- up | down
+  note        TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reply_reviews_message ON reply_reviews(message_id);
 
 CREATE TABLE IF NOT EXISTS seen_messages (
   msg_id      TEXT PRIMARY KEY,
@@ -159,6 +179,23 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status, id);
 
+-- Outgoing messages kept for a short while so a recipient's retry can be
+-- answered: WhatsApp asks for the payload again when a message will not
+-- decrypt, and "I never had it" is what leaves a bubble on "Waiting for this
+-- message". Expires (default 48h), capped, exported and forgotten with the
+-- contact, and never logged. See src/services/outboundStore.js.
+CREATE TABLE IF NOT EXISTS outbound_messages (
+  id          TEXT PRIMARY KEY,   -- the id WhatsApp gave us when we sent it
+  chat        TEXT,
+  kind        TEXT,               -- text (media cannot be rebuilt from JSON)
+  body        TEXT,               -- JSON of the message, handed straight back
+  bytes       INTEGER DEFAULT 0,
+  created_at  TEXT,
+  expires_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outbound_expires ON outbound_messages(expires_at);
+CREATE INDEX IF NOT EXISTS idx_outbound_chat ON outbound_messages(chat);
+
 -- Cloud API: what we sent, and what Meta said happened to it.
 CREATE TABLE IF NOT EXISTS cloud_messages (
   wa_id       TEXT PRIMARY KEY,
@@ -237,10 +274,166 @@ CREATE TABLE IF NOT EXISTS calls (
   video       INTEGER DEFAULT 0,
   status      TEXT,          -- offer | accepted | missed | rejected | handled
   outcome     TEXT,          -- what the assistant did about it
-  created_at  TEXT,
+  created_at  TEXT,          -- when it started ringing
+  ended_at    TEXT,          -- when the phone stopped ringing (answered, hung up, timed out)
+  apologized_at TEXT,        -- when the chat apology went out
   handled_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_calls_created ON calls(created_at);
+
+CREATE TABLE IF NOT EXISTS image_embeddings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id TEXT,
+  image_path TEXT UNIQUE,
+  hash TEXT,
+  model TEXT,
+  dim INTEGER,
+  vector TEXT,
+  updated_at TEXT
+);
+
+-- Every call that leaves this machine for an external tool server.
+-- The arguments themselves are never stored, only a hash: a tool argument can
+-- be a customer's address or an order's contents.
+CREATE TABLE IF NOT EXISTS mcp_calls (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  server      TEXT,
+  tool        TEXT,
+  arg_hash    TEXT,
+  ok          INTEGER,
+  status      TEXT,          -- ok | error | timeout | rejected | breaker | budget
+  ms          INTEGER,
+  error       TEXT,
+  truncated   INTEGER,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_calls_created ON mcp_calls(created_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_calls_tenant ON mcp_calls(tenant, created_at);
+
+-- A write tool must not run twice for one confirmation, however often the
+-- customer's "yes" is replayed.
+CREATE TABLE IF NOT EXISTS mcp_idempotency (
+  key         TEXT PRIMARY KEY,
+  tenant      TEXT,
+  server      TEXT,
+  tool        TEXT,
+  result      TEXT,
+  created_at  TEXT
+);
+
+-- Reliability incidents: one row per thing that went wrong, when it opened,
+-- when the owner was told, and when it recovered. "detail" never holds a
+-- customer's words — it holds numbers and states.
+CREATE TABLE IF NOT EXISTS incidents (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  key         TEXT,
+  kind        TEXT,
+  severity    TEXT,          -- warn | bad
+  detail      TEXT,
+  status      TEXT,          -- open | resolved
+  opened_at   TEXT,
+  resolved_at TEXT,
+  notified_at TEXT,
+  notify_count INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_key ON incidents(key, status);
+CREATE INDEX IF NOT EXISTS idx_incidents_opened ON incidents(opened_at);
+
+-- A customer asked to be forgotten; the owner decides.
+CREATE TABLE IF NOT EXISTS privacy_requests (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      TEXT,
+  status      TEXT,          -- pending | done | declined
+  language    TEXT,
+  created_at  TEXT,
+  decided_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_privacy_requests_status ON privacy_requests(status, created_at);
+
+-- The audit line for a deletion: what happened, how much, never who or what.
+CREATE TABLE IF NOT EXISTS privacy_audit (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  action      TEXT,          -- forget | retention
+  subject_hash TEXT,         -- sha256(number)[0..16] — irreversible, and enough
+  detail      TEXT,          -- row counts, never content
+  created_at  TEXT
+);
+
+-- Mini-CRM: free-text tags and notes on a person, per tenant.
+-- Tags are normalised before they get here; the UNIQUE key is what makes a
+-- double ".tag vip" harmless.
+CREATE TABLE IF NOT EXISTS contact_tags (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  number      TEXT,
+  tag         TEXT,
+  source      TEXT,          -- owner | auto
+  created_at  TEXT,
+  UNIQUE(tenant, number, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_contact_tags_tag ON contact_tags(tenant, tag);
+
+-- Tracked entry points: a QR, a poster or a link the owner printed somewhere.
+-- One row per source name per tenant, with the short code that travels inside
+-- the prefilled message. First touch wins in contact_sources, so a customer can
+-- only ever be counted once.
+CREATE TABLE IF NOT EXISTS tracked_sources (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  source      TEXT NOT NULL,
+  code        TEXT NOT NULL,
+  label       TEXT,
+  message     TEXT,
+  created_at  TEXT,
+  UNIQUE(tenant, source),
+  UNIQUE(tenant, code)
+);
+
+CREATE TABLE IF NOT EXISTS contact_sources (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  number      TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  code        TEXT,
+  detail      TEXT,          -- the ad headline, when the arrival came from a click-to-WhatsApp ad
+  created_at  TEXT,
+  UNIQUE(tenant, number)
+);
+CREATE INDEX IF NOT EXISTS idx_contact_sources_source ON contact_sources(tenant, source);
+
+CREATE TABLE IF NOT EXISTS contact_notes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  number      TEXT,
+  note        TEXT,
+  author      TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_contact_notes_number ON contact_notes(tenant, number, id);
+
+-- Every order transition, with who did it and when. The order row keeps "where",
+-- this table keeps "how it got there".
+CREATE TABLE IF NOT EXISTS order_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id    INTEGER,
+  from_status TEXT,
+  to_status   TEXT,
+  actor       TEXT,          -- owner | bot | customer
+  detail      TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_order_events_order ON order_events(order_id, id);
+
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT,
+  action TEXT,
+  slug TEXT,
+  detail TEXT,
+  ip TEXT,
+  ok INTEGER DEFAULT 1
+);
 
 CREATE TABLE IF NOT EXISTS settings (
   key         TEXT PRIMARY KEY,
@@ -323,8 +516,94 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at  TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_key ON orders(key);
+-- What the customer has actually paid so far. A partial payment leaves the
+-- order open with the remainder due, so the number has to live on the order.
+-- ("paid" is the status; this is the money.)
+
+-- Owner decisions (payments, discounts, refunds…): one row per question that
+-- needs a human. The AI opens it; only a person answers it.
+CREATE TABLE IF NOT EXISTS decision_requests (
+  id               TEXT PRIMARY KEY,
+  tenant           TEXT,
+  type             TEXT,              -- payment | discount_above_cap | refund | custom_quote | cancellation | delivery_exception | other
+  contact          TEXT,              -- customer number
+  order_id         INTEGER,
+  payload          TEXT,              -- JSON, already masked (last 4 only)
+  status           TEXT DEFAULT 'pending',
+  created_at       TEXT,
+  deadline_at      TEXT,
+  step             INTEGER DEFAULT 0, -- where we are in the escalation chain
+  chain            TEXT,              -- JSON array of chain steps
+  assignee         TEXT,              -- who it is waiting on right now
+  resolved_at      TEXT,
+  resolved_by      TEXT,
+  reason_code      TEXT,
+  reason_text      TEXT,
+  customer_notified INTEGER DEFAULT 0,
+  updated_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decision_requests_status ON decision_requests(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_decision_requests_contact ON decision_requests(contact, status);
+CREATE INDEX IF NOT EXISTS idx_decision_requests_order ON decision_requests(order_id);
+
+-- Append-only: who did what, when, and why. Rows are never updated or deleted,
+-- so a reversal is visible in the history rather than hidden by an edit.
+CREATE TABLE IF NOT EXISTS decision_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id  TEXT,
+  actor       TEXT,
+  kind        TEXT,               -- opened | notified | reminded | decided | reversed | expired | escalated | note
+  from_status TEXT,
+  to_status   TEXT,
+  reason_code TEXT,
+  reason_text TEXT,
+  detail      TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decision_events_request ON decision_events(request_id, id);
+
+-- Payment proofs: the file stays in the tenant folder, the row keeps the hash,
+-- the masked reading and the deterministic checks. Never card numbers.
+CREATE TABLE IF NOT EXISTS payment_proofs (
+  id          TEXT PRIMARY KEY,
+  request_id  TEXT,
+  contact     TEXT,
+  order_id    INTEGER,
+  kind        TEXT,               -- image | document | text
+  file        TEXT,               -- path relative to the tenant folder
+  sha256      TEXT,
+  mimetype    TEXT,
+  bytes       INTEGER,
+  extracted   TEXT,               -- JSON, masked
+  checks      TEXT,               -- JSON
+  risk        TEXT,               -- consistent | needs_attention | inconsistent
+  created_at  TEXT,
+  expires_at  TEXT,
+  deleted_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_payment_proofs_request ON payment_proofs(request_id);
+CREATE INDEX IF NOT EXISTS idx_payment_proofs_hash ON payment_proofs(sha256);
+CREATE INDEX IF NOT EXISTS idx_payment_proofs_contact ON payment_proofs(contact, created_at);
 
 -- Which specialist answered, and how we decided (phase 2 step 3).
+-- Conversation Control: one row per inbound batch. The decision, its reason code
+-- and a fixed-phrase rationale — never the customer's words.
+CREATE TABLE IF NOT EXISTS decisions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      TEXT,
+  action      TEXT,          -- reply | clarify | redirect | handover | react | ignore
+  reason      TEXT,          -- the reason code, e.g. human_request
+  confidence  REAL,
+  source      TEXT,          -- rules | llm | cache | protection | fallback
+  rationale   TEXT,          -- <=200 chars, built from a fixed phrase per reason
+  urgent      INTEGER DEFAULT 0,
+  lang        TEXT,
+  batch       TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_number ON decisions(number, id);
+CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions(created_at);
+
 CREATE TABLE IF NOT EXISTS message_intents (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   tenant      TEXT,
@@ -390,6 +669,116 @@ CREATE TABLE IF NOT EXISTS tenant_usage (
   llm_calls   INTEGER DEFAULT 0,
   PRIMARY KEY (day, tenant)
 );
+
+-- Self-healing: rules learned from the owner's own corrections wait here.
+-- Nothing written to this table can change the bot's behaviour until it says
+-- 'approved', and only then does it become a normal FAQ entry.
+CREATE TABLE IF NOT EXISTS pending_rules (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      TEXT,
+  question    TEXT,
+  answer      TEXT,
+  status      TEXT DEFAULT 'pending',   -- pending | approved | rejected
+  source      TEXT DEFAULT 'owner_correction',
+  reason      TEXT,
+  created_at  TEXT,
+  decided_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_rules_status ON pending_rules(status, created_at);
+
+-- Phase 6 part 1 ────────────────────────────────────────────
+-- Which custom agent owns a conversation, and how many hand-offs it has used.
+CREATE TABLE IF NOT EXISTS agent_chats (
+  tenant      TEXT,
+  chat        TEXT,
+  agent       TEXT,
+  handoffs    INTEGER DEFAULT 0,
+  updated_at  TEXT,
+  PRIMARY KEY (tenant, chat)
+);
+
+-- One row per thing an agent did: route, first_reply, handoff, order, booking.
+-- Analytics only — nothing here changes what the bot says.
+CREATE TABLE IF NOT EXISTS agent_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant      TEXT,
+  chat        TEXT,
+  agent       TEXT,
+  kind        TEXT,
+  detail      TEXT,
+  created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_created ON agent_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events(agent, kind);
+
+-- ── phase 6, part 3: the business brain ─────────────────────
+-- Every proposal, every decision and its short rationale. The rationale is
+-- capped in code (300 chars): the chain of thought itself is never stored.
+CREATE TABLE IF NOT EXISTS brain_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT,
+  chat TEXT,
+  kind TEXT,              -- route | verify | next_best_action | strategy | experiment
+  action TEXT,
+  rationale TEXT,
+  payload TEXT,
+  outcome TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_brain_decisions_created ON brain_decisions(created_at);
+CREATE INDEX IF NOT EXISTS idx_brain_decisions_chat ON brain_decisions(chat);
+
+CREATE TABLE IF NOT EXISTS brain_proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT,
+  kind TEXT,              -- campaign | faq | offer | followups | reactivation
+  title TEXT,
+  detail TEXT,
+  payload TEXT,
+  status TEXT DEFAULT 'proposed',   -- proposed | drafted | approved | rejected | done
+  created_at TEXT,
+  decided_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT,
+  metric TEXT,
+  target INTEGER,
+  due_at TEXT,
+  status TEXT DEFAULT 'active',
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS experiments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT,
+  kind TEXT,              -- followup | offer | review_ask
+  variant_a TEXT,
+  variant_b TEXT,
+  min_sample INTEGER DEFAULT 30,
+  status TEXT DEFAULT 'running',
+  winner TEXT,
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS experiment_sends (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  experiment_id INTEGER,
+  number TEXT,
+  variant TEXT,
+  outcome TEXT,           -- replied | converted | none
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_experiment_sends ON experiment_sends(experiment_id, variant);
+
+CREATE TABLE IF NOT EXISTS brain_weights (
+  tenant TEXT,
+  key TEXT,
+  value REAL,
+  updated_at TEXT,
+  PRIMARY KEY (tenant, key)
+);
 `;
 
 export async function initDB({ file = DB_FILE } = {}) {
@@ -411,6 +800,12 @@ export async function initDB({ file = DB_FILE } = {}) {
 
   db.run('PRAGMA journal_mode = MEMORY;');
   db.run(SCHEMA);
+  if (process.env.TENANT_DASHBOARD === '1') initArchive(db);
+  else if (db.exec("SELECT 1 FROM sqlite_master WHERE name='report_coverage'").length) {
+    // A disabled worker can prune raw events without archiving them. Re-arm
+    // coverage at the next opted-in boot instead of claiming an unobserved gap.
+    db.run('DELETE FROM report_coverage');
+  }
   migrate();
   saveDB(true);
 
@@ -449,9 +844,14 @@ function migrate() {
   add('contacts', 'assigned_at', 'TEXT');
   add('calls', 'video', 'INTEGER DEFAULT 0');
   add('calls', 'outcome', 'TEXT');
+  add('calls', 'ended_at', 'TEXT');
+  add('calls', 'apologized_at', 'TEXT');
   add('leads', 'score', 'INTEGER DEFAULT 0');
   add('leads', 'priority', 'TEXT');
   add('leads', 'next_action', 'TEXT');
+  add('orders', 'eta', 'TEXT');
+  add('orders', 'updated_at', 'TEXT');
+  add('orders', 'paid_amount', 'INTEGER DEFAULT 0');
   add('knowledge', 'embedding_model', 'TEXT');
   add('knowledge', 'embedded_hash', 'TEXT');
 }
@@ -699,10 +1099,18 @@ export function recordCall({ id, number, name = null, video = false, status = 'o
   return getCall(id);
 }
 
-export function updateCall(id, { status, outcome } = {}) {
+export function updateCall(id, { status, outcome, endedAt = null, apologizedAt = null } = {}) {
   if (!id) return null;
   const fields = [];
   const values = [];
+  if (endedAt) {
+    fields.push('ended_at = ?');
+    values.push(endedAt instanceof Date ? endedAt.toISOString() : String(endedAt));
+  }
+  if (apologizedAt) {
+    fields.push('apologized_at = ?');
+    values.push(apologizedAt instanceof Date ? apologizedAt.toISOString() : String(apologizedAt));
+  }
   if (status) {
     fields.push('status = ?');
     values.push(status);
@@ -1008,7 +1416,13 @@ export function logEvent(type, number = null, detail = null) {
     typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : null,
     new Date().toISOString(),
   ]);
-  run(`DELETE FROM events WHERE created_at < datetime('now', '-30 days')`);
+  if (process.env.TENANT_DASHBOARD === '1' && process.env.PLATFORM_TENANT_TOKEN) {
+    const cutoff = new Date(Date.now() - 30 * 86400000).toISOString();
+    if (get('SELECT 1 FROM events WHERE created_at<? LIMIT 1', [cutoff])) {
+      const days = Math.min(90, Math.max(31, Number(process.env.TENANT_REPORT_DAYS) || 31));
+      archiveBeforePurge(db, all, new Date(Date.now() - (days + 1) * 86400000).toISOString(), cutoff);
+    }
+  } else run(`DELETE FROM events WHERE created_at < datetime('now', '-30 days')`);
 }
 
 export function recentEvents(limit = 20) {
@@ -1070,6 +1484,10 @@ export function exportAll() {
     contacts: all('SELECT * FROM contacts'),
     leads: all('SELECT * FROM leads'),
     intake: listIntakes(1000),
+    // Conversation Control: a brief is a view of `intake` (covered above); the
+    // decisions are counts and reason codes, and they are exported so the owner
+    // can see what was decided about them.
+    decisions: all('SELECT number, action, reason, created_at FROM decisions ORDER BY id DESC LIMIT 1000'),
     followups: all('SELECT * FROM followups ORDER BY id DESC LIMIT 500'),
     usage: usageHistory(60),
   };
@@ -1248,6 +1666,239 @@ export function recentToolCalls(limit = 10) {
   }));
 }
 
+// ── incidents ───────────────────────────────────────────────
+
+export function findOpenIncident(key) {
+  return get("SELECT * FROM incidents WHERE key = ? AND status = 'open' ORDER BY id DESC LIMIT 1", [key]) || null;
+}
+
+export function openIncident({ key, kind, severity = 'warn', detail = null }) {
+  run(
+    `INSERT INTO incidents (key, kind, severity, detail, status, opened_at, notified_at, notify_count)
+     VALUES (?,?,?,?,?,?,?,?)`,
+    [key, kind, severity, detail, 'open', new Date().toISOString(), null, 0]
+  );
+  saveDB(true);
+  const row = get("SELECT * FROM incidents WHERE key = ? AND status = 'open' ORDER BY id DESC LIMIT 1", [key]);
+  return row || null;
+}
+
+/** Record that the owner was told (or that a repeat was deliberately skipped). */
+export function markIncidentNotified(id, at = new Date().toISOString()) {
+  run('UPDATE incidents SET notified_at = ?, notify_count = notify_count + 1 WHERE id = ?', [at, id]);
+  saveDB(true);
+}
+
+export function resolveIncident(id) {
+  run("UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?", [new Date().toISOString(), id]);
+  saveDB(true);
+}
+
+export function openIncidents() {
+  return all("SELECT * FROM incidents WHERE status = 'open' ORDER BY id DESC");
+}
+
+export function recentIncidents(limit = 10) {
+  return all('SELECT * FROM incidents ORDER BY id DESC LIMIT ?', [limit]);
+}
+
+export function incidentStats() {
+  const row = get("SELECT COUNT(*) AS open FROM incidents WHERE status = 'open'");
+  const day = get("SELECT COUNT(*) AS today FROM incidents WHERE opened_at >= ?", [new Date().toISOString().slice(0, 10)]);
+  return { open: row?.open || 0, today: day?.today || 0 };
+}
+
+// ── privacy requests and audit ──────────────────────────────
+
+export function addPrivacyRequest(number, { language = 'en' } = {}) {
+  const existing = get("SELECT * FROM privacy_requests WHERE number = ? AND status = 'pending' ORDER BY id DESC LIMIT 1", [number]);
+  if (existing) return existing;
+  run('INSERT INTO privacy_requests (number, status, language, created_at) VALUES (?,?,?,?)', [
+    number,
+    'pending',
+    language,
+    new Date().toISOString(),
+  ]);
+  saveDB(true);
+  return get("SELECT * FROM privacy_requests WHERE number = ? AND status = 'pending' ORDER BY id DESC LIMIT 1", [number]);
+}
+
+export function pendingPrivacyRequests(limit = 20) {
+  return all("SELECT * FROM privacy_requests WHERE status = 'pending' ORDER BY id DESC LIMIT ?", [limit]);
+}
+
+export function resolvePrivacyRequests(number, status = 'done') {
+  const changed = run("UPDATE privacy_requests SET status = ?, decided_at = ? WHERE number = ? AND status = 'pending'", [
+    status,
+    new Date().toISOString(),
+    number,
+  ]);
+  if (changed) saveDB(true);
+  return changed;
+}
+
+export function logPrivacyAction({ action, subjectHash, detail = null }) {
+  run('INSERT INTO privacy_audit (action, subject_hash, detail, created_at) VALUES (?,?,?,?)', [
+    action,
+    subjectHash,
+    detail ? JSON.stringify(detail).slice(0, 500) : null,
+    new Date().toISOString(),
+  ]);
+  saveDB(true);
+}
+
+export function recentPrivacyAudit(limit = 10) {
+  return all('SELECT * FROM privacy_audit ORDER BY id DESC LIMIT ?', [limit]);
+}
+
+// ── tags, notes, order events ───────────────────────────────
+
+export function addContactTag({ tenant = null, number, tag, source = 'owner' }) {
+  run('INSERT OR IGNORE INTO contact_tags (tenant, number, tag, source, created_at) VALUES (?,?,?,?,?)', [
+    tenant, number, tag, source, new Date().toISOString(),
+  ]);
+  saveDB(true);
+  return get('SELECT * FROM contact_tags WHERE tenant IS ? AND number = ? AND tag = ?', [tenant, number, tag]);
+}
+
+export function removeContactTag({ tenant = null, number, tag }) {
+  // `run` does not report a row count, so check first: the caller wants to know
+  // whether the tag was really there ("removed" vs "they never had it").
+  const found = get('SELECT 1 AS x FROM contact_tags WHERE tenant IS ? AND number = ? AND tag = ?', [tenant, number, tag]);
+  if (!found) return 0;
+  run('DELETE FROM contact_tags WHERE tenant IS ? AND number = ? AND tag = ?', [tenant, number, tag]);
+  saveDB(true);
+  return 1;
+}
+
+export function contactTags(number, { tenant = null } = {}) {
+  return all('SELECT tag, source, created_at FROM contact_tags WHERE tenant IS ? AND number = ? ORDER BY tag', [tenant, number]);
+}
+
+export function tagCounts({ tenant = null } = {}) {
+  return all(
+    `SELECT tag, COUNT(*) AS n, SUM(source = 'auto') AS auto
+       FROM contact_tags WHERE tenant IS ?
+      GROUP BY tag ORDER BY n DESC, tag`,
+    [tenant]
+  );
+}
+
+export function numbersWithTag(tag, { tenant = null } = {}) {
+  return all('SELECT number FROM contact_tags WHERE tenant IS ? AND tag = ? ORDER BY number', [tenant, tag]).map((r) => r.number);
+}
+
+export function countTagsFor(number, { tenant = null } = {}) {
+  return get('SELECT COUNT(*) AS n FROM contact_tags WHERE tenant IS ? AND number = ?', [tenant, number])?.n || 0;
+}
+
+export function addContactNote({ tenant = null, number, note, author = 'owner' }) {
+  run('INSERT INTO contact_notes (tenant, number, note, author, created_at) VALUES (?,?,?,?,?)', [
+    tenant, number, String(note || '').slice(0, 500), author, new Date().toISOString(),
+  ]);
+  saveDB(true);
+  return get('SELECT * FROM contact_notes WHERE tenant IS ? AND number = ? ORDER BY id DESC LIMIT 1', [tenant, number]);
+}
+
+export function contactNotes(number, { tenant = null, limit = 20 } = {}) {
+  return all('SELECT id, note, author, created_at FROM contact_notes WHERE tenant IS ? AND number = ? ORDER BY id DESC LIMIT ?', [
+    tenant, number, limit,
+  ]);
+}
+
+export function logOrderEvent({ orderId, from = null, to = null, actor = 'owner', detail = null }) {
+  run('INSERT INTO order_events (order_id, from_status, to_status, actor, detail, created_at) VALUES (?,?,?,?,?,?)', [
+    orderId, from, to, actor, detail ? String(detail).slice(0, 300) : null, new Date().toISOString(),
+  ]);
+  saveDB(true);
+}
+
+export function orderEvents(orderId) {
+  return all('SELECT * FROM order_events WHERE order_id = ? ORDER BY id', [orderId]);
+}
+
+// How many reminders have been attempted for this order. A draft counts (it is
+// a stage that has been spent), the "we are giving up" marker does not.
+export function countOrderReminders(orderId) {
+  return get(
+    "SELECT COUNT(*) AS n FROM order_events WHERE order_id = ? AND detail LIKE 'reminder:%' AND detail NOT LIKE '%:stop'",
+    [orderId]
+  )?.n || 0;
+}
+
+export function ordersWithStatus(statuses = [], limit = 50) {
+  if (!statuses.length) return [];
+  const holes = statuses.map(() => '?').join(',');
+  return all(`SELECT * FROM orders WHERE status IN (${holes}) ORDER BY id DESC LIMIT ?`, [...statuses, limit]);
+}
+
+export function setOrderEta(id, eta) {
+  run('UPDATE orders SET eta = ?, updated_at = ? WHERE id = ?', [eta, new Date().toISOString(), id]);
+  saveDB(true);
+}
+
+// ── MCP call log ────────────────────────────────────────────
+// The log is the only place a tool call is remembered. Arguments are hashed,
+// results are not kept: the point is to be able to answer "what did the bot
+// send out, to whom, and did it work", not to build a second copy of the data.
+
+export function logMcpCall({
+  tenant = null, server = null, tool = null, argHash = null,
+  ok = null, status = 'ok', ms = null, error = null, truncated = 0,
+} = {}) {
+  run(
+    `INSERT INTO mcp_calls (tenant, server, tool, arg_hash, ok, status, ms, error, truncated, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    [tenant, String(server || '').slice(0, 40), String(tool || '').slice(0, 80), argHash, ok === null ? null : ok ? 1 : 0, status, ms, error ? String(error).slice(0, 300) : null, truncated ? 1 : 0, new Date().toISOString()]
+  );
+  saveDB(true);
+}
+
+export function recentMcpCalls(limit = 10) {
+  return all('SELECT * FROM mcp_calls ORDER BY id DESC LIMIT ?', [limit]);
+}
+
+export function mcpCallStats(sinceIso = null) {
+  const row = sinceIso
+    ? get('SELECT COUNT(*) AS total, SUM(ok = 0) AS errors FROM mcp_calls WHERE created_at >= ?', [sinceIso])
+    : get('SELECT COUNT(*) AS total, SUM(ok = 0) AS errors FROM mcp_calls');
+  return { total: row?.total || 0, errors: row?.errors || 0 };
+}
+
+/** Calls that actually reached a server today, for the per-tenant budget. */
+export function mcpCallsSince(tenant, sinceIso) {
+  const row = get('SELECT COUNT(*) AS n FROM mcp_calls WHERE tenant = ? AND created_at >= ? AND status NOT IN (?, ?, ?)', [
+    tenant || null,
+    sinceIso,
+    'rejected',
+    'budget',
+    'breaker',
+  ]);
+  return row?.n || 0;
+}
+
+export function getMcpIdempotent(key) {
+  if (!key) return null;
+  const row = get('SELECT * FROM mcp_idempotency WHERE key = ?', [key]);
+  if (!row) return null;
+  try {
+    return { ...row, result: row.result ? JSON.parse(row.result) : null };
+  } catch {
+    return { ...row, result: null };
+  }
+}
+
+export function saveMcpIdempotent({ key, tenant = null, server, tool, result }) {
+  if (!key) return false;
+  run(
+    `INSERT OR IGNORE INTO mcp_idempotency (key, tenant, server, tool, result, created_at)
+     VALUES (?,?,?,?,?,?)`,
+    [key, tenant, server, tool, JSON.stringify(result ?? null).slice(0, 8000), new Date().toISOString()]
+  );
+  saveDB(true);
+  return true;
+}
+
 export function toolCallStats(sinceIso = null) {
   const row = sinceIso
     ? get(
@@ -1363,6 +2014,14 @@ export function setOrderStatus(id, status) {
   return get('SELECT * FROM orders WHERE id = ?', [id]);
 }
 
+/** How much of an order has been paid. A partial payment leaves the rest due. */
+export function setOrderPaidAmount(id, amount) {
+  const n = Math.max(0, Math.round(Number(amount) || 0));
+  run('UPDATE orders SET paid_amount = ? WHERE id = ?', [n, id]);
+  saveDB(true);
+  return get('SELECT * FROM orders WHERE id = ?', [id]);
+}
+
 export function ordersAwaitingPayment(limit = 10) {
   return all("SELECT * FROM orders WHERE status = 'awaiting_payment' ORDER BY id DESC LIMIT ?", [limit]).map((o) => ({
     ...o,
@@ -1421,6 +2080,30 @@ export function cloudTrack({ waId, tenant = null, number = null, kind = 'text', 
      VALUES (?, ?, ?, ?, 'sent', ?, ?, ?)
      ON CONFLICT(wa_id) DO UPDATE SET updated_at = excluded.updated_at`,
     [waId, tenant, number, kind, outboxId, now, now]
+  );
+  return get('SELECT * FROM cloud_messages WHERE wa_id = ?', [waId]);
+}
+
+/**
+ * Has this inbound Meta message already been handled?
+ *
+ * `cloud_messages` already exists with `wa_id` as its primary key, so the
+ * ledger Meta's retries need is the one we already keep — no second table.
+ */
+export function cloudInboundSeen(waId) {
+  if (!waId) return false;
+  const row = get('SELECT kind FROM cloud_messages WHERE wa_id = ?', [waId]);
+  return !!row && row.kind === 'inbound';
+}
+
+/** Record an inbound message id before it is acted on, so a retry is a no-op. */
+export function cloudInboundMark(waId, { tenant = null, number = null, now = new Date().toISOString() } = {}) {
+  if (!waId) return null;
+  run(
+    `INSERT INTO cloud_messages (wa_id, tenant, number, kind, status, created_at, updated_at)
+     VALUES (?, ?, ?, 'inbound', 'received', ?, ?)
+     ON CONFLICT(wa_id) DO NOTHING`,
+    [waId, tenant, number, now, now]
   );
   return get('SELECT * FROM cloud_messages WHERE wa_id = ?', [waId]);
 }
@@ -1848,4 +2531,48 @@ export function revenueBySource(rows = []) {
   let total = 0;
   for (const r of rows) total += Number(r.total) || 0;
   return total;
+}
+
+// ════════════════════════════════════════════════════════════
+// Self-healing: candidate rules, and who said yes
+// ════════════════════════════════════════════════════════════
+export function addPendingRule({ number = null, question, answer, source = 'owner_correction', created_at = null } = {}) {
+  const at = created_at || new Date().toISOString();
+  run(
+    'INSERT INTO pending_rules (number, question, answer, status, source, created_at) VALUES (?,?,?,?,?,?)',
+    [number, question, answer, 'pending', source, at]
+  );
+  return get('SELECT * FROM pending_rules ORDER BY id DESC LIMIT 1');
+}
+
+export function pendingRules(status = 'pending', limit = 20) {
+  return all('SELECT * FROM pending_rules WHERE status = ? ORDER BY id DESC LIMIT ?', [status, limit]);
+}
+
+export function getPendingRule(id) {
+  return get('SELECT * FROM pending_rules WHERE id = ?', [Number(id)]);
+}
+
+export function decidePendingRule(id, status, { reason = null, at = null } = {}) {
+  const row = getPendingRule(id);
+  if (!row) return null;
+  run('UPDATE pending_rules SET status = ?, reason = ?, decided_at = ? WHERE id = ?', [
+    status,
+    reason,
+    at || new Date().toISOString(),
+    Number(id),
+  ]);
+  return getPendingRule(id);
+}
+
+/** How many proposals were made since a given day (the daily cap). */
+export function rulesProposedSince(iso) {
+  return get('SELECT COUNT(*) AS c FROM pending_rules WHERE created_at >= ?', [iso])?.c || 0;
+}
+
+/** Any row at all with this question — pending, approved or rejected. */
+export function ruleByQuestion(question) {
+  const q = String(question || '').trim().toLowerCase();
+  if (!q) return null;
+  return get('SELECT * FROM pending_rules WHERE LOWER(TRIM(question)) = ? ORDER BY id DESC LIMIT 1', [q]);
 }

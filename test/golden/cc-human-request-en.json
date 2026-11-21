@@ -1,0 +1,32 @@
+{
+  "id": "cc-human-request-en",
+  "title": "A request for a human is handed over immediately",
+  "template": "agency",
+  "category": "complaint",
+  "language": "en",
+  "profile": {
+    "features": {
+      "conversationControl": true
+    }
+  },
+  "turns": [
+    {
+      "user": "I want to speak to a human please"
+    }
+  ],
+  "assert": {
+    "events": [
+      "decision",
+      "handoff"
+    ],
+    "minReplies": 1,
+    "maxReplies": 1,
+    "ownerNotified": true,
+    "require": [
+      {
+        "match": "owner|person|hand",
+        "why": "the customer is told a person is coming"
+      }
+    ]
+  }
+}
