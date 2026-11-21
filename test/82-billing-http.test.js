@@ -11,7 +11,7 @@ after(async () => {
   jobs.stopBilling();
   await new Promise((r) => http.close(r));
 });
-const basic = 'Basic ' + Buffer.from('operator:' + process.env.PLATFORM_OPERATOR_TOKEN).toString('base64');
+const operatorAuth = await demo.operatorHeaders(origin);
 const ops = '/api/platform/operator/billing';
 const call = async (url, { auth = null, post, headers = {}, operator = false, csrf = true } = {}) => {
   const r = await fetch(origin + url, {
@@ -19,7 +19,7 @@ const call = async (url, { auth = null, post, headers = {}, operator = false, cs
     method: post !== undefined ? 'POST' : 'GET',
     headers: {
       ...(auth ? { cookie: auth.cookie, ...(csrf ? { 'x-platform-csrf': auth.csrf } : {}) } : {}),
-      ...(operator ? { authorization: basic } : {}),
+      ...(operator ? operatorAuth : {}),
       ...(post !== undefined ? { 'content-type': 'application/json' } : {}),
       ...headers,
     },
@@ -183,7 +183,7 @@ test('scoped object matrix (owner, staff, outsider, wrong tenant, operator); act
   assert.ok(!JSON.stringify(state).includes(demo.fakeKey));
   assert.ok(!JSON.stringify(state).includes(demo.phone));
   assert.equal(
-    (await call(path + '/reverse', { operator: true, headers: h, post: { reason: 'bank_reversal' } })).status,
+    (await call(path + '/reverse', { operator: true, headers: h, post: { reason: 'bank_reversal', explanation: 'Bank returned the transfer.' } })).status,
     200
   );
   assert.equal((await call(base, { auth: t.account })).body.entitlement.hasTerm, false);

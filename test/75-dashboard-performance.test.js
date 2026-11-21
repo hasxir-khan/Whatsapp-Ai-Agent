@@ -8,6 +8,7 @@ import {
   reports,
   store,
   serve,
+  operatorHeaders,
   dir,
   now,
   midnight,
@@ -70,10 +71,7 @@ test('50,000 observations over 90 business dates: every dashboard page inside it
           : `/platform/reports/${slug}/${name}?range=custom&from=${shiftDay(day, -89)}&to=${day}`;
       const headers =
         name === 'operator'
-          ? {
-              authorization:
-                'Basic ' + Buffer.from('operator:' + process.env.PLATFORM_OPERATOR_TOKEN).toString('base64'),
-            }
+          ? await operatorHeaders(origin)
           : { cookie: owner.cookie };
       const times = [];
       for (let i = 0; i < 8; i++) {

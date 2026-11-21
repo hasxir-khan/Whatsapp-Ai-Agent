@@ -1,10 +1,11 @@
+import { pausedBehaviour, handoverLine } from '../../src/services/billingNotices.js';
 import { all, get } from '../db.js';
 import { readTenantProfile } from '../../src/services/adminPanel.js';
 import { catalog, settings } from './catalog.js';
 import { entitlementsFor, opsReasons, accountCapacity } from './subscriptions.js';
 import { policyText, stamp, DAY, choice, bounded } from './rules.js';
 import { history } from './payments.js';
-import { readUsage } from './leases.js';
+import { billingBanner, readUsage } from './leases.js';
 import { FEATURE_KEYS } from '../../src/services/profile.js';
 import { REJECT_REASONS } from '../../src/services/paymentReview.js';
 export function customerView(slug, owner, now = Date.now()) {
@@ -20,6 +21,9 @@ export function customerView(slug, owner, now = Date.now()) {
   const account = get('SELECT account_id FROM tenants WHERE slug=?', [slug]);
   return {
     entitlement: e,
+    banner: billingBanner(e, now),
+    pausedSetting: pausedBehaviour(e.pausedReply),
+    handoverLine,
     owner,
     zone,
     usage: {

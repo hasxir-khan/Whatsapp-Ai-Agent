@@ -22,6 +22,7 @@ import {
   dashboard,
   pages,
   serve,
+  operatorHeaders,
   reports,
   store,
   record,
@@ -229,9 +230,7 @@ test('brief requires independent tenant credential AND a short-lived owner grant
       (await call(op, null, { headers: { authorization: 'Bearer ' + process.env.PLATFORM_SECRET } })).status,
       401,
     );
-    const admin = {
-      authorization: 'Basic ' + Buffer.from('operator:' + process.env.PLATFORM_OPERATOR_TOKEN).toString('base64'),
-    };
+    const admin = await operatorHeaders(origin);
     const r = await call(op, null, { headers: admin });
     assert.equal(r.status, 200);
     safe(r.raw);

@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHmac } from 'node:crypto';
 import { get, all, run, saveDB, isOptedOut } from '../utils/db.js';
+import { privateMedia } from './ephemeralMedia.js';
 import { config, isTeam } from '../config/env.js';
 import { workerAccess, billedWorker } from './billingLease.js';
+import { handoverLine as copy, termNotice } from './billingNotices.js';
 const metric = { chat: 'conversations_month', voice: 'voice_minutes', video: 'videos_month' };
 const rawSend = new WeakMap();
-const copy = 'Thanks for your message. A team member will need to help you directly.';
 function setup(month) {
   run(
     'CREATE TABLE IF NOT EXISTS billing_counts(month TEXT,kind TEXT,who TEXT,n INTEGER NOT NULL, PRIMARY KEY(month,kind,who))'
@@ -89,7 +90,9 @@ export async function handover(t, jid, number, now = Date.now()) {
   if (get("SELECT 1 FROM billing_counts WHERE month=? AND kind='handover' AND who=?", [month, actor])) return;
   run("INSERT INTO billing_counts VALUES(?,'handover',?,1)", [month, actor]);
   saveDB(true);
-  return rawSend.has(t) ? rawSend.get(t)(jid, { text: copy }) : t.sendMessage(jid, { text: copy });
+  return privateMedia(() =>
+    rawSend.has(t) ? rawSend.get(t)(jid, { text: copy }) : t.sendMessage(jid, { text: copy })
+  );
 }
 export function protectTransport(t) {
   if (!billedWorker() || rawSend.has(t)) return;
@@ -118,20 +121,28 @@ export function protectTransport(t) {
 
 export async function deliverOwnerNotices(t, now = Date.now()) {
   const e = workerAccess(now);
-  if (!e?.canRun || !rawSend.has(t) || (t.kind === 'cloud' && !t.windowOpen(config.owner.number))) return;
-  const month = new Date(now).toISOString().slice(0, 7);
-  setup(month);
-  for (const n of e.notices || []) {
-    if (![1, 3, 7].includes(n.days) || Date.parse(n.end) <= +new Date(now)) continue;
+  if (!e?.notices?.length || !rawSend.has(t) || isOptedOut(config.owner.number)) return;
+  if (t.kind === 'cloud' && !t.windowOpen(config.owner.number)) return;
+  for (const n of e.notices) {
+    const daysLeft = Math.ceil((Date.parse(n.end) - +new Date(now)) / 86400000);
+    if (!/^[a-f0-9]{64}$/.test(n.id) || !Number.isFinite(daysLeft)) continue;
+    if (n.kind === 'paused') {
+      if (e.canRun || daysLeft > 0) continue;
+    } else {
+      const current = [1, 3, 7].find(d => daysLeft > 0 && daysLeft <= d);
+      if (!e.canRun || !current || n.days !== current) continue;
+    }
     run('CREATE TABLE IF NOT EXISTS billing_notice(id TEXT PRIMARY KEY,at TEXT NOT NULL)');
     run('DELETE FROM billing_notice WHERE at<?', [new Date(+new Date(now) - 32 * 86400000).toISOString()]);
     if (get('SELECT 1 FROM billing_notice WHERE id=?', [n.id])) continue;
     run('INSERT INTO billing_notice VALUES(?,?)', [n.id, new Date(now).toISOString()]);
     saveDB(true);
     try {
-      await rawSend.get(t)(config.owner.jid, {
-        text: `Your assistant term ends on ${n.end.slice(0, 10)} UTC. Open Billing to review it.`,
-      });
+      await privateMedia(() =>
+        rawSend.get(t)(config.owner.jid, {
+          text: termNotice(n.kind === 'paused' ? 'paused' : 'remind_' + n.days, n.end, e.pausedReply),
+        })
+      );
     } catch {
       run('DELETE FROM billing_notice WHERE id=?', [n.id]);
       saveDB(true);

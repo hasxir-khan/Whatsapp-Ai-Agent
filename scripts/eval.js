@@ -121,6 +121,7 @@ if (live) {
   }
 } else {
   console.log(`  deterministic: ${outcome.meta.calls} recorded model turns, no network`);
+  if (!(await import('../src/services/ffmpeg.js')).hasFfmpeg()) console.log('  No ffmpeg: voice chat scenarios replay the recorded transcript as text (no STT).');
 }
 
 // A fresh process keeps the media recorder/tenant config out of the chat suite.

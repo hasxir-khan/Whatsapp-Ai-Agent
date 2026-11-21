@@ -58,3 +58,13 @@ export function choice(value, set, code = 'invalid_option') {
 }
 export const policyText =
   'Paid months use the UTC calendar, clamped to the last day. Renewals extend from the later of now or the paid end. An operator-priced upgrade changes the plan immediately, not the end date. A downgrade starts at the period end; it does not buy another period. No automatic debits.';
+
+// Preserved only in the operator audit, not customer receipts or exports.
+export function adjustmentExplanation(s) {
+  need(typeof s === 'string', 'explanation_required');
+  const text = s.trim();
+  need(text.length >= 8 && text.length <= 160 && /\p{L}/u.test(text) && !/[\x00-\x1f\x7f]/.test(text), 'explanation_required');
+  need(!/\d{5}|@|https?:|(?:gsk_|sk-|Bearer )/i.test(text) &&
+    !['PLATFORM_KEY_SECRET', 'PLATFORM_TENANT_TOKEN','PLATFORM_OPERATOR_TOKEN','PLATFORM_OPERATOR_TOTP_SECRET'].some(k=>process.env[k] && text.includes(process.env[k])), 'omit_private_details');
+  return text;
+}

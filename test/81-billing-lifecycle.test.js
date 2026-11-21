@@ -180,7 +180,7 @@ test('operator queue overdue clock, operational filters, reason-required comp/ex
   );
   assert.equal(p.plan, v.plan);
   assert.equal(
-    subs.changeSubscription(t.slug, 'extend', { units: 2, reason: 'support_correction' }, now + DAY).end,
+    subs.changeSubscription(t.slug, 'extend', { units: 2, reason: 'support_correction', explanation: 'Restore time lost to outage.' }, now + DAY).end,
     stamp(Date.parse(p.end) + 2 * DAY)
   );
   const higher = offer({ plan: 'expanded', rank: 2 });

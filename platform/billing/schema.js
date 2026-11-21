@@ -33,7 +33,7 @@ export const billingSchema = [
   `CREATE INDEX IF NOT EXISTS b_proof_hash ON b_proof(digest)`,
   `CREATE INDEX IF NOT EXISTS b_proof_ref ON b_proof(reference)`,
   `CREATE TABLE IF NOT EXISTS b_refund(id TEXT PRIMARY KEY,payment TEXT NOT NULL,amount INTEGER NOT NULL,currency TEXT NOT NULL,reason TEXT NOT NULL,at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS b_delivery(id TEXT PRIMARY KEY,sid TEXT NOT NULL,kind TEXT NOT NULL,channel TEXT NOT NULL,object TEXT NOT NULL,state TEXT DEFAULT 'queued',lease TEXT,at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS b_delivery(id TEXT PRIMARY KEY,sid TEXT NOT NULL,kind TEXT NOT NULL,channel TEXT NOT NULL,object TEXT NOT NULL,state TEXT DEFAULT 'queued',lease TEXT,at TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0)`,
   `CREATE INDEX IF NOT EXISTS b_delivery_state ON b_delivery(state,lease)`,
   `CREATE TABLE IF NOT EXISTS b_provider_event(provider TEXT,id TEXT,sid TEXT NOT NULL,PRIMARY KEY(provider,id))`,
   `CREATE TABLE IF NOT EXISTS b_churn(month TEXT,state TEXT,n INTEGER NOT NULL,PRIMARY KEY(month,state))`,

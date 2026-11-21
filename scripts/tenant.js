@@ -479,11 +479,12 @@ function cmdKeys(slug, pairs = []) {
   }
   for (const pair of pairs) {
     const idx = pair.indexOf('=');
-    if (idx < 1) die(`Expected KEY=VALUE, got "${pair}"`);
+    if (idx < 1) die('Expected KEY=VALUE.');
     const key = pair.slice(0, idx).trim();
     const value = pair.slice(idx + 1).trim();
+    if (['PLATFORM_KEY_SECRET','PLATFORM_TENANT_TOKEN','PLATFORM_OPERATOR_TOKEN','PLATFORM_OPERATOR_TOTP_SECRET'].includes(key)) die('Do not pass platform secrets on the command line. See Backups and secrets.');
     if (platformManaged(tenantDir(slug), t) && key in emptyProviderSlots()) die('Manage AI keys from the platform dashboard.');
-    if (!/^[A-Z0-9_]+$/.test(key)) die(`Invalid key name "${key}"`);
+    if (!/^[A-Z0-9_]+$/.test(key)) die('Invalid environment key name.');
     writeEnvValue(slug, key, value);
     console.log(`${c.green('✔')} ${slug}: ${key} set (${mask(value)})`);
   }

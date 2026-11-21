@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { get, all, run, billingTransaction as transaction, lastId } from '../db.js';
 import { recordAudit } from './audit.js';
 import { initCatalog, settings, latest, version } from './catalog.js';
-import { monthsAfter, stamp, DAY, need, bounded, choice } from './rules.js';
+import { monthsAfter, stamp, DAY, need, bounded, adjustmentExplanation, choice } from './rules.js';
 
 export const subscription = (slug) => get('SELECT * FROM b_sub WHERE slug=?', [slug]);
 // Provisioning retries return the same term. A migrated assistant inherits at most its
@@ -214,7 +214,7 @@ export function changeSubscription(slug, action, input = {}, now = Date.now()) {
       e = entitlementsFor(slug, now);
     need(e, 'not_found', 404);
     const cfg = settings();
-    let event = { now };
+    let event = { now }, explanation;
     if (action === 'paused_reply') {
       need(typeof input.enabled === 'boolean', 'invalid_option');
       run('UPDATE b_sub SET paused_reply=? WHERE sid=?', [+input.enabled, s.sid]);
@@ -249,12 +249,13 @@ export function changeSubscription(slug, action, input = {}, now = Date.now()) {
         if (e.next?.version === v.version) return e;
         event.version = v.version;
       } else if (['comp', 'extend', 'change'].includes(action)) {
+        event.reason = choice(input.reason, opsReasons, 'reason_required');
+        if (action === 'extend') explanation = adjustmentExplanation(input.explanation);
         if (input.requestId) {
           need(/^[a-f0-9-]{36}$/.test(input.requestId), 'invalid_request_id');
           event.source = s.sid + ':' + action + ':' + input.requestId;
           if (get('SELECT 1 FROM b_event WHERE source=?', [event.source])) return e;
         }
-        event.reason = choice(input.reason, opsReasons, 'reason_required');
         event.version = action === 'extend' ? e.version : version(input.version)?.version;
         need(event.version, 'invalid_version');
         if (action === 'change') need(e.hasTerm && stamp(now) < e.end, 'no_current_term', 409);
@@ -262,7 +263,7 @@ export function changeSubscription(slug, action, input = {}, now = Date.now()) {
       } else need(false, 'invalid_action');
       addEvent(s, action, event);
     }
-    recordAudit({ action: 'billing_' + action, tenant: slug, detail: { reason: event.reason || action } });
+    recordAudit({ action: 'billing_' + action, tenant: slug, detail: { reason: event.reason || action, units: event.units, version: event.version, ...(explanation ? { explanation } : {}) } });
     return recordState(slug, action, now);
   });
 }

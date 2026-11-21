@@ -169,53 +169,47 @@ export function describeMessage(msg) {
 // ── downloads ───────────────────────────────────────────────
 export class MediaTooBigError extends Error {}
 
-/**
- * Download media with a size cap so a 500 MB video can't kill the process.
- * @returns {Promise<{buffer:Buffer, mimetype:string}>}
- */
+// Callers can tighten these bounds, never remove the transport's own limit.
+export function mediaByteLimit(kind, requested) {
+  let limit = 25 * 1024 * 1024;
+  if (kind === 'video') limit = config.vision.maxVideoBytes;
+  if (kind === 'image' || kind === 'sticker') limit = config.vision.maxImageBytes;
+  const cap = Math.min(64 * 1024 * 1024, limit, requested ?? Infinity);
+  return Number.isFinite(cap) ? Math.max(0, cap) : 0;
+}
+export const mediaTimeout = ms => Math.max(1, Math.min(ms ?? Infinity, config.media.timeoutMs, 30000));
 export async function downloadMedia(msg, info = describeMessage(msg), { maxBytes, timeoutMs } = {}) {
-  if (maxBytes) {
-    if (Number((info.content?.videoMessage || info.content?.audioMessage)?.fileLength) > maxBytes)
-      throw new MediaTooBigError('too_large');
-    const { downloadMediaMessage } = await baileys();
-    const controller = new AbortController();
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs || 30000)]);
-    const stream = await downloadMediaMessage(msg, 'stream', { options: { signal } });
-    const abort = () => stream.destroy(new Error('download_timeout'));
-    signal.addEventListener('abort', abort, { once: true });
-    try {
-      signal.throwIfAborted();
-      return { buffer: await boundedMedia(stream, maxBytes), mimetype: info.mimetype };
-    } finally {
-      signal.removeEventListener('abort', abort);
-      stream.destroy();
-      controller.abort();
-    }
-  }
-  const limit =
-    info.kind === 'video'
-      ? config.vision.maxVideoBytes
-      : info.kind === 'image'
-        ? config.vision.maxImageBytes
-        : 25 * 1024 * 1024;
-
-  const declared = info.content?.fileLength
-    ? Number(info.content.fileLength)
-    : info.content?.imageMessage?.fileLength
-      ? Number(info.content.imageMessage.fileLength)
-      : 0;
-
-  if (declared && declared > limit) {
-    throw new MediaTooBigError(`media ${(declared / 1048576).toFixed(1)}MB exceeds limit`);
-  }
-
+  const limit = mediaByteLimit(info.kind, maxBytes);
+  const content = info.content || {};
+  const node =
+    content.videoMessage ||
+    content.audioMessage ||
+    content.imageMessage ||
+    content.documentMessage ||
+    content.stickerMessage;
+  const length = node?.fileLength ?? content.fileLength;
+  // A protobuf Long can arrive hydrated or as its JSON {low, high} limbs.
+  const declared =
+    Number.isInteger(length?.high) && Number.isInteger(length?.low)
+      ? (length.high >>> 0) * 2 ** 32 + (length.low >>> 0)
+      : Number(length);
+  if (declared > limit || (['audio', 'voice'].includes(info.kind) && info.seconds > config.stt.maxSeconds))
+    throw new MediaTooBigError('media_limit');
   const { downloadMediaMessage } = await baileys();
-  const buffer = await downloadMediaMessage(msg, 'buffer', {});
-
-  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
-  if (buf.length > limit) throw new MediaTooBigError('media too large');
-  if (!buf.length) throw new Error('empty media');
-  return { buffer: buf, mimetype: info.mimetype };
+  const controller = new AbortController();
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(mediaTimeout(timeoutMs))]);
+  let stream;
+  const abort = () => stream?.destroy(new Error('download_timeout'));
+  try {
+    stream = await downloadMediaMessage(msg, 'stream', { options: { signal } });
+    signal.throwIfAborted();
+    signal.addEventListener('abort', abort, { once: true });
+    return { buffer: await boundedMedia(stream, limit), mimetype: info.mimetype };
+  } finally {
+    signal.removeEventListener('abort', abort);
+    stream?.destroy();
+    controller.abort();
+  }
 }
 
 // ── temp files ──────────────────────────────────────────────
@@ -289,7 +283,7 @@ export default {
   tempFile, writeTemp, tempDir, cleanupPath, extFromMime, sweepTemp, MediaTooBigError,
 };
 
-// Used only by the protected media path. Stop reading untrusted downloads
+// Stop reading untrusted downloads
 // as soon as the limit is crossed, even if Content-Length was absent or false.
 export async function boundedMedia(stream, limit) {
   if (!stream?.[Symbol.asyncIterator]) throw Error('no_media_stream');

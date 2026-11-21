@@ -122,10 +122,9 @@ import { formatMinor } from './billing-money.js';
     const e = state.entitlement,
       main = section(e.name + ' · version ' + e.revision);
     badge(main, e.state);
+    if (state.banner) el('p', state.banner, main).setAttribute('role', 'status');
     el('p', 'Term ends ' + date(e.end) + '.', main);
     if (e.next) el('p', 'Scheduled plan version ' + e.next.version + ' from ' + date(e.next.start), main);
-    if (!e.canRun)
-      el('p', 'The assistant is paused. You can still review billing and export your data.', main);
     if (e.state === 'grace') el('p', 'Access continues until ' + date(e.until), main);
     if (e.deleteAt)
       el(
@@ -251,6 +250,8 @@ import { formatMinor } from './billing-money.js';
       }
     }
     const access = section('Cancellation and data');
+    el('p', state.pausedSetting, access);
+    el('p', 'Silent is the default. If enabled, the only automatic line is: “' + state.handoverLine + '” (at most once per contact per UTC day, if messaging is permitted).', access);
     if (state.owner) {
       if (!e.canceling) {
         const r = select(
@@ -327,8 +328,12 @@ import { formatMinor } from './billing-money.js';
       if (p.receipt) {
         el('p', 'Confirmed: ' + cash(p.amount, p.currency) + ' · ' + p.receipt, card);
         const r = reasons(card, state.opsReasons);
-        if (p.state === 'accepted')
-          btn(card, 'Reverse confirmation', () => mutate(prefix + 'reverse', { reason: r.value }));
+        if (p.state === 'accepted') {
+          const why = field(card, 'Reason for reversal (8–160 characters; no personal or payment details)');
+          btn(card, 'Reverse confirmation', () =>
+            mutate(prefix + 'reverse', { reason: r.value, explanation: why.value })
+          );
+        }
         const amount = field(card, 'Refund record (minor units)', 'number');
         btn(card, 'Record refund only', () =>
           mutate(prefix + 'refund', {
@@ -371,6 +376,7 @@ import { formatMinor } from './billing-money.js';
           state.catalog.map((p) => [p.version, p.name + ' v' + p.revision])
         ),
         n = field(row, 'Days to extend, or months to comp', 'number');
+      const why = field(row, 'Reason for manual extension (8–160 characters; no personal or payment details)');
       for (const [act, title] of [
         ['extend', 'Extend days'],
         ['comp', 'Comp term'],
@@ -378,6 +384,7 @@ import { formatMinor } from './billing-money.js';
       ])
         btn(row, title, () =>
           mutate('/' + s.slug + '/subscriptions/' + act, {
+            ...(act === 'extend' ? { explanation: why.value } : {}),
             units: Number(n.value),
             version: Number(v.value),
             reason: r.value,

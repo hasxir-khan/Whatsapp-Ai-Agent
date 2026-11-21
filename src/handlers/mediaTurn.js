@@ -178,6 +178,7 @@ export async function handleMediaTurn({ sock, jid, number, items, contact, ctx, 
           });
         } else if (isVoice(msg) && featureOn('voiceLanguagePolicy')) {
           voiceIn = true;
+          if (msg.seconds > config.stt.maxSeconds) continue;
           try {
             const { buffer, mimetype } = await download({
               maxBytes: 25 * 1024 * 1024,

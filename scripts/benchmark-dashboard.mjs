@@ -284,6 +284,7 @@ async function main() {
       PLATFORM_SECRET: randomUUID(),
       PLATFORM_KEY_SECRET: randomUUID(),
       PLATFORM_OPERATOR_TOKEN: randomUUID(),
+      PLATFORM_OPERATOR_EMAIL: 'operator@example.invalid',
     };
     const fixture = await withChild('seed', env, async (r) => r);
     console.log(
@@ -305,6 +306,12 @@ async function main() {
           op = name === 'operator',
           mixed = name === 'mixed';
         const urls = mixed ? TENANTS * fixture.pages.length : TENANTS;
+        let operatorCookie;
+        if (op) {
+          const r = await fetch(`http://127.0.0.1:${port}/api/platform/operator/login`, {method:'POST',headers:{'content-type':'application/json','x-operator-login':'1'},body:JSON.stringify({credential:env.PLATFORM_OPERATOR_TOKEN})});
+          assert.equal(r.status,200);
+          operatorCookie=r.headers.get('set-cookie').split(';')[0];
+        }
         async function request(i) {
           const { slug, cookie } = fixture.accounts[(i + p * CLIENTS) % TENANTS];
           const section = mixed
@@ -313,12 +320,7 @@ async function main() {
           const url = op
             ? `/platform/operator?p.tenants=${1 + (i % 2)}`
             : `/platform/reports/${slug}/${section}?range=custom&from=${fixture.first}&to=${env.BENCH_DAY}`;
-          const headers = op
-            ? {
-                authorization:
-                  'Basic ' + Buffer.from('operator:' + env.PLATFORM_OPERATOR_TOKEN).toString('base64'),
-              }
-            : { cookie };
+          const headers = {cookie:op ? operatorCookie : cookie};
           const r = await fetch(`http://127.0.0.1:${port}` + url, { headers, redirect: 'error' }),
             html = await r.text();
           assert.equal(r.status, 200, name);

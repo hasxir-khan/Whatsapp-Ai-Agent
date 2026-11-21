@@ -11,7 +11,7 @@
 //     *customer* opens. Outside it, only an approved template goes through.
 //     Anything else is held and the owner is told — never dropped silently.
 
-import { boundedMedia, MediaTooBigError } from '../services/media.js';
+import { boundedMedia, mediaByteLimit, mediaTimeout, MediaTooBigError } from '../services/media.js';
 import { isPrivateMedia } from '../services/ephemeralMedia.js';
 import crypto from 'node:crypto';
 import { config } from '../config/env.js';
@@ -127,7 +127,7 @@ export function normalizeCloudMessage(message = {}, { pushName = null } = {}) {
     caption,
     mimetype: mediaNode?.mime_type || '',
     fileName: message.document?.filename || '',
-    seconds: 0,
+    seconds: Number(mediaNode?.seconds) || 0,
     isVoice: !!message.audio?.voice,
     location: message.location
       ? { lat: message.location.latitude, lng: message.location.longitude, name: message.location.name || '' }
@@ -502,7 +502,7 @@ export class CloudTransport extends Transport {
   }
 
   /** The actual Graph API call, with the token kept out of every log line. */
-  async graph(path, { method = 'GET', body = null, raw = null, contentType = 'application/json', signal } = {}) {
+  async graph(path, { method = 'GET', body = null, raw = null, contentType = 'application/json', signal, responseLimit } = {}) {
     if (!this.token) throw new TransportError('cloud: CLOUD_TOKEN missing', { code: 'no_token', permanent: true });
     const doFetch = this.fetchImpl || globalThis.fetch;
     const url = `${GRAPH_BASE}/${this.apiVersion}/${String(path).replace(/^\//, '')}`;
@@ -518,7 +518,7 @@ export class CloudTransport extends Transport {
       throw new TransportError(`cloud: network error (${err.message})`, { code: 'network', status: 503 });
     }
 
-    const text = await res.text();
+    const text = responseLimit ? (await boundedMedia(res.body, responseLimit)).toString('utf8') : await res.text();
     let data = null;
     try {
       data = text ? JSON.parse(text) : null;
@@ -578,24 +578,19 @@ export class CloudTransport extends Transport {
     const ref = incoming?.mediaRef;
     if (!ref?.mediaId) throw new TransportError('cloud: nothing to download', { code: 'no_media', permanent: true });
 
-    const signal = maxBytes ? AbortSignal.timeout(timeoutMs) : undefined;
-    const meta = await this.graph(ref.mediaId, { method: 'GET', signal });
-    if (maxBytes && Number(meta?.file_size) > maxBytes) throw new MediaTooBigError('too_large');
+    if (['voice','audio'].includes(incoming.kind || ref.kind) && incoming.seconds > config.stt.maxSeconds)
+      throw new MediaTooBigError('media_limit');
+    const signal = AbortSignal.timeout(mediaTimeout(timeoutMs));
+    const meta = await this.graph(ref.mediaId, { method: 'GET', signal, responseLimit: 64 * 1024 });
+    const kind = incoming.kind || ref.kind || (meta?.mime_type || ref.mimetype || '').split('/')[0];
+    const limit = mediaByteLimit(kind, maxBytes);
+    if (Number(meta?.file_size) > limit) throw new MediaTooBigError('too_large');
     if (!meta?.url) throw new TransportError('cloud: media url missing', { code: 'no_media_url' });
-
     const doFetch = this.fetchImpl || globalThis.fetch;
     const res = await doFetch(meta.url, { signal, headers: { Authorization: `Bearer ${this.token}` } });
-    if (!res.ok) throw new TransportError(`cloud: media download failed (${res.status})`, { status: res.status });
-
-    if (maxBytes) {
-      if (Number(res.headers?.get('content-length')) > maxBytes) { await res.body?.cancel(); throw new MediaTooBigError('too_large'); }
-      return { buffer: await boundedMedia(res.body, maxBytes), mimetype: meta.mime_type || ref.mimetype };
-    }
-    const arrayBuffer = await res.arrayBuffer();
-    return {
-      buffer: Buffer.from(arrayBuffer),
-      mimetype: meta.mime_type || ref.mimetype || 'application/octet-stream',
-    };
+    if (!res.ok) { await res.body?.cancel(); throw new TransportError(`cloud: media download failed (${res.status})`, { status: res.status }); }
+    if (Number(res.headers?.get('content-length')) > limit) { await res.body?.cancel(); throw new MediaTooBigError('too_large'); }
+    return { buffer: await boundedMedia(res.body, limit), mimetype: meta.mime_type || ref.mimetype || 'application/octet-stream' };
   }
 
   async markRead(keys = []) {

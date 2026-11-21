@@ -1,10 +1,5 @@
 // src/services/video.js
-// "Can you see what's in this video?" — three layers, in order of quality:
-//   1. Native video understanding (Gemini free tier): frames + audio in one go.
-//   2. ffmpeg frames  → vision model, plus Whisper for the soundtrack.
-//   3. Whisper only (audio track) when nothing can look at pixels.
-// Whatever happens, the caller gets an honest description or null.
-
+// All tenants use local extraction. Original clips never leave the worker.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { detectInjection, neutralise } from '../core/injection.js';
@@ -20,116 +15,24 @@ import {
 import { transcriptQuality } from './voicePolicy.js';
 import { config } from '../config/env.js';
 import { logEvent } from '../utils/db.js';
-import { analyzeVideo, analyzeFrames, visionEnabled } from './vision.js';
+import { analyzeFrames, visionEnabled } from './vision.js';
 import { transcribe, sttEnabled } from './transcription.js';
 import {
-  hasFfmpeg, extractFrames, extractAudioForStt, duration, cleanup, probeClip, sceneFrames, clipAudio,
+  hasFfmpeg, cleanup, probeClip, sceneFrames, clipAudio,
 } from './ffmpeg.js';
-import { writeTemp, tempDir, cleanupPath, MediaTooBigError } from './media.js';
+import { tempDir, MediaTooBigError } from './media.js';
 
-/**
- * @param {object} opts
- * @param {Buffer} opts.buffer
- * @param {string} opts.mimetype
- * @param {string} [opts.caption] what the client typed with the video
- * @param {string} [opts.context] project/client context
- * @returns {Promise<{description:string, transcript:string, provider:string, seconds:number}|null>}
- */
-export async function understandVideo({ buffer, mimetype = 'video/mp4', caption = '', context = '', declaredSeconds = 0 }) {
-  if (!buffer?.length) return null;
-  const notes = [];
-
-  // 1) Best path: native video
-  if (visionEnabled()) {
-    const native = await analyzeVideo({ buffer, mimetype, caption, context });
-    if (native?.description) {
-      return {
-        description: native.description,
-        transcript: '',
-        provider: `${native.provider}:native`,
-        seconds: declaredSeconds,
-      };
-    }
-  }
-
-  // 2) Frames + audio
-  if (hasFfmpeg()) {
-    const workDir = tempDir('video');
-    let videoFile = null;
-    try {
-      const ext = /quicktime/.test(mimetype) ? 'mov' : /webm/.test(mimetype) ? 'webm' : /3gpp/.test(mimetype) ? '3gp' : 'mp4';
-      videoFile = writeTemp(buffer, ext, 'video');
-
-      const seconds = declaredSeconds || (await duration(videoFile)) || 0;
-      const frames = await extractFrames(videoFile, workDir, {
-        count: config.vision.videoFrames,
-        totalSeconds: seconds,
-      });
-
-      let visual = '';
-      if (frames.length && visionEnabled()) {
-        const frameResult = await analyzeFrames({ frames, caption, context });
-        if (frameResult?.description) visual = frameResult.description;
-      }
-
-      let transcript = '';
-      if (sttEnabled()) {
-        const audioPath = await extractAudioForStt(videoFile, `${workDir}/audio.mp3`);
-        if (audioPath) {
-          const fs = await import('node:fs/promises');
-          const audioBuffer = await fs.readFile(audioPath);
-          const result = await transcribe(audioBuffer, { mimetype: 'audio/mpeg' });
-          if (result?.text) transcript = result.text;
-        }
-      }
-
-      if (visual || transcript) {
-        if (visual && transcript) notes.push('On-screen / visual content:', visual, '', 'What is said in the video:', transcript);
-        else if (visual) notes.push(visual);
-        else notes.push('Audio transcript of the video (visuals could not be analysed):', transcript);
-        return {
-          description: notes.join('\n'),
-          transcript,
-          provider: visual ? 'frames' : 'stt-only',
-          seconds,
-        };
-      }
-    } catch (err) {
-      logEvent('video_frames_error', null, err.message);
-    } finally {
-      cleanupPath(videoFile);
-      cleanup(workDir);
-    }
-  }
-
-  // 3) Last resort: just listen to the audio track. WhatsApp videos are usually
-  //    mp4, which Whisper accepts directly.
-  if (sttEnabled()) {
-    try {
-      const result = await transcribe(buffer, { mimetype: mimetype.includes('mp4') ? 'audio/mp4' : mimetype });
-      if (result?.text) {
-        return {
-          description: `Audio transcript only (I could not see the picture):\n${result.text}`,
-          transcript: result.text,
-          provider: 'stt-only',
-          seconds: declaredSeconds,
-        };
-      }
-    } catch (err) {
-      logEvent('video_stt_error', null, err.message);
-    }
-  }
-
-  return null;
+// Preserve the old handler's result contract; share the bounded, local-only
+// extraction pipeline rather than falling back to uploading the source as audio.
+export async function understandVideo({ buffer, mimetype = 'video/mp4', download, caption = '', declaredSeconds = 0 }) {
+  const clip = await inspectClip({ download: download || (async () => ({ buffer, mimetype })), caption, declaredSeconds });
+  const s = clip.summary;
+  if (!s || s.injection) return null;
+  const description = [s.shown && `On screen: ${s.shown}`, s.said && `Speech: ${s.said}`].filter(Boolean).join('\n');
+  return description ? { description, transcript: s.said, provider: clip.provider, seconds: clip.seconds } : null;
 }
-
 export function videoCapabilities() {
-  return {
-    native: visionEnabled() && config.vision.providers.includes('gemini'),
-    frames: hasFfmpeg() && visionEnabled(),
-    audioOnly: sttEnabled(),
-    ready: visionEnabled() || sttEnabled(),
-  };
+  return { native: false, frames: hasFfmpeg() && visionEnabled(), audioOnly: hasFfmpeg() && sttEnabled(), ready: hasFfmpeg() && (visionEnabled() || sttEnabled()) };
 }
 
 export default { understandVideo, videoCapabilities };
@@ -231,7 +134,7 @@ export function clipHandoff(summary, business = config.owner.profile?.business |
   );
 }
 
-// The protected alternative to understandVideo. All heavy work, including
+// Shared by both media paths. All heavy work, including
 // the bounded download, is inside the tenant lease. No native-video upload
 // and no retry of the original file as audio. Output text is turn-local.
 export async function inspectClip(

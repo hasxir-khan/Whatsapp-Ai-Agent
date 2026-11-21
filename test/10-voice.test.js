@@ -7,6 +7,7 @@ isolate('voice');
 const { shouldSpeak, ttsEnabled, wantsVoice } = await import('../src/services/tts.js');
 const { forSpeech } = await import('../src/core/humanizer.js');
 const { videoCapabilities } = await import('../src/services/video.js');
+const { hasFfmpeg } = await import('../src/services/ffmpeg.js');
 const { sttEnabled } = await import('../src/services/transcription.js');
 const { visionEnabled, visionProviders } = await import('../src/services/vision.js');
 
@@ -36,7 +37,7 @@ test('capability reporting is honest when only a Groq key is present', () => {
   assert.equal(visionProviders().length, 0);
   assert.equal(videoCapabilities().native, false);
   assert.equal(videoCapabilities().frames, false);
-  assert.equal(videoCapabilities().audioOnly, true);
+  assert.equal(videoCapabilities().audioOnly, hasFfmpeg());
 });
 
 test('on_request mode speaks only when asked', () => {

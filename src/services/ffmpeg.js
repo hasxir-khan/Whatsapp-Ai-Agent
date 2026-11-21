@@ -205,11 +205,35 @@ export async function clipAudio(file, dir, { seconds }) {
   return peak && Number(peak[1]) < -55 ? null : out;
 }
 
-// Count actual audio packet time, not the duration claimed by a WhatsApp sender.
-export async function billableAudioSeconds(file) {
-  if (!hasFfmpeg()) return null;
-  try { const {stdout} = await run(['-nostdin','-v','error','-progress','pipe:1','-protocol_whitelist','file,pipe','-format_whitelist','ogg,mp3,mov,matroska,webm,wav,flac,aac','-i',file,'-map','0:a:0','-c','copy','-t','601','-f','null','-'],{timeout:8000});
-    const us = [...stdout.matchAll(/^out_time_us=(\d+)$/gm)].reduce((n,m)=>Math.max(n,Number(m[1])),0);
-    return us>0 && us<=600e6 ? Math.ceil(us/1e6) : null;
-  } catch {return null;}
+// Decode only self-contained local audio. Count mono PCM samples, not a
+// container duration/WhatsApp hint. Decode at most one second beyond the cap
+// so an overlength recording is refused, never silently truncated and sent.
+export async function speechWav(input, dir, cap) {
+  if (!hasFfmpeg() || !Number.isSafeInteger(cap) || cap <= 0 || cap > 600) return null;
+  const pcm = path.join(dir, 'audio.pcm');
+  const rate = 16000, bytesPerSec = rate * 2;
+  await run([
+    '-nostdin', '-hide_banner', '-v', 'error', '-xerror', '-protocol_whitelist', 'file,pipe',
+    '-format_whitelist', 'ogg,mp3,mov,matroska,webm,wav,flac,aac', '-max_alloc', '67108864',
+    '-threads', '1', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn', '-ac', '1',
+    '-af', 'aresample=16000,asetpts=N/SR/TB', '-ar', String(rate), '-t', String(cap + 1),
+    '-fs', String(bytesPerSec * (cap + 1) + 4096), '-f', 's16le', pcm,
+  ], { timeout: 15000 });
+  const size = fs.statSync(pcm).size;
+  if (size < 2 || size > bytesPerSec * cap) return null;
+  // Canonical mono PCM WAV. No original metadata or unexamined streams.
+  const h = Buffer.alloc(44);
+  h.write('RIFF');
+  h.writeUInt32LE(size + 36, 4);
+  h.write('WAVEfmt ', 8);
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(rate, 24);
+  h.writeUInt32LE(bytesPerSec, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write('data', 36);
+  h.writeUInt32LE(size, 40);
+  return { bytes: Buffer.concat([h, fs.readFileSync(pcm)]), seconds: size / bytesPerSec };
 }

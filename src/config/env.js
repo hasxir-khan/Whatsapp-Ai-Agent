@@ -398,7 +398,7 @@ export const config = {
     videoFrames: toInt(process.env.VIDEO_FRAMES, 6),
   },
 
-  // Opt-in path only; the legacy native-video limits remain unchanged.
+  // All video ingestion uses bounded local extraction.
   media: {
     maxBytes: Math.max(1, toInt(process.env.MEDIA_VIDEO_MB, 25)) * 1024 * 1024,
     maxSeconds: Math.max(1, toInt(process.env.MEDIA_VIDEO_SECONDS, 60)),
@@ -416,7 +416,7 @@ export const config = {
     fallbackModel: process.env.WHISPER_FALLBACK_MODEL || 'whisper-large-v3',
     // '' = auto-detect language (best for foreign clients)
     language: process.env.STT_LANGUAGE || '',
-    maxSeconds: toInt(process.env.MAX_AUDIO_SECONDS, 600),
+    maxSeconds: Math.max(0, Math.min(600, toInt(process.env.MAX_AUDIO_SECONDS, 600))),
   },
 
   tts: {
@@ -424,6 +424,7 @@ export const config = {
     mode: (process.env.VOICE_REPLY_MODE || 'match_voice').toLowerCase(),
     providers: toList(process.env.TTS_PROVIDERS, ['edge', 'groq']),
     edgeVoice: process.env.TTS_VOICE || '',
+    groqModelArabic: 'canopylabs/orpheus-arabic-saudi',
     groqModelEnglish: process.env.GROQ_TTS_MODEL || 'canopylabs/orpheus-v1-english',
     groqVoice: process.env.GROQ_TTS_VOICE || 'troy',
     maxChars: toInt(process.env.TTS_MAX_CHARS, 600),

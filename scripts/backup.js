@@ -79,7 +79,14 @@ export function buildBundle({ slug = 'default', dir, withKeys = false, withSessi
 
   // Optional, and off by default for good reasons.
   if (withKeys) {
-    if (fs.existsSync(path.join(dir, '.env'))) files['.env'] = fs.readFileSync(path.join(dir, '.env')).toString('base64');
+    if (fs.existsSync(path.join(dir, '.env'))) {
+      const raw = fs.readFileSync(path.join(dir, '.env'));
+      // Omit the whole file rather than trying to redact dotenv quoting, export
+      // prefixes, multiline values, comments and duplicate assignments.
+      if (/PLATFORM_(?:KEY_SECRET|TENANT_TOKEN|OPERATOR_TOKEN|OPERATOR_TOTP_SECRET)/i.test(raw.toString('utf8')))
+        skipped.push('.env (protected platform secrets; restore from your secret manager)');
+      else files['.env'] = raw.toString('base64');
+    }
   } else {
     skipped.push('.env (contains API keys — use --with-keys)');
   }
@@ -186,7 +193,7 @@ function main() {
   console.log(`  files: ${Object.keys(bundle.files).length}`);
   for (const s of bundle.skipped) console.log(`  ${c.yellow('skipped')} ${s}`);
   console.log(`\n  Restore: node scripts/restore.js ${path.basename(file)} --slug ${slug}\n`);
-  if (bundle.withKeys) {
+  if (bundle.files['.env']) {
     console.log(`  ${c.yellow('⚠ This archive contains .env (API keys). Keep it private.')}\n`);
   }
 }

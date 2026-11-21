@@ -533,7 +533,7 @@ test('processing refreshes beyond the ordinary hard cap and holding line is sent
   await session.stop();
   assert.equal(states.at(-1), 'paused');
 });
-test('flag-off video takes legacy native provider; flag-on refuses the same bad clip with no caption in storage', async () => {
+test('flag-off and flag-on both refuse original video upload; private path keeps no caption', async () => {
   config.owner.profile.features = {};
   assert.equal(featureOn('voiceLanguagePolicy'), false);
   assert.equal(featureOn('videoUnderstanding'), false);
@@ -554,13 +554,13 @@ test('flag-off video takes legacy native provider; flag-on refuses the same bad 
   });
   await handleIncoming(sock, raw('legacy-case', ''));
   assert.ok(await drainBatches());
-  assert.equal(native, 1);
+  assert.equal(native, 0);
   assert.equal(db.countEvents('media_language', '2000'), 0);
   config.owner.profile.features = { videoUnderstanding: true };
   const secret = 'cap-private-synthetic';
   await handleIncoming(sock, raw('private-case', secret));
   assert.ok(await drainBatches());
-  assert.equal(native, 1);
+  assert.equal(native, 0);
   assert.equal(db.recallIncoming('private-case'), null);
   assert.ok(!JSON.stringify(exportContact('12025550129')).includes(secret));
 });
@@ -597,7 +597,7 @@ test('a legacy incoming voice still uses the old Whisper/reply path without poli
     message: { audioMessage: { ptt: true, mimetype: 'audio/ogg', seconds: 6 } },
   });
   assert.ok(await drainBatches());
-  assert.equal(calls, 1);
+  assert.equal(calls, hasFfmpeg() ? 1 : 0);
   assert.equal(db.countEvents('media_language', '2000'), 0);
   assert.equal(mediaTotals().voice, 0);
   assert.ok(sock.sent.some((m) => m.payload.text));
@@ -704,6 +704,11 @@ test('actual protected voice ingress uses transcript above detector, without sto
     message: { audioMessage: { ptt: true, mimetype: 'audio/ogg', seconds: 8 } },
   });
   assert.ok(await drainBatches());
+  if (!hasFfmpeg()) {
+    assert.equal(stt, 0, 'never send unmeasured audio');
+    assert.notEqual(sock.sent.at(-1)?.payload.text, reply);
+    return;
+  }
   assert.equal(stt, 1);
   assert.equal(sock.sent.at(-1).payload.text, reply);
   assert.equal(mediaTotals().correct, 1);

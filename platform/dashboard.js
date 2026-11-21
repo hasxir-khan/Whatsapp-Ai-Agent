@@ -1,3 +1,6 @@
+import { billingEnabled } from './env.js';
+import { entitlementsFor } from './billing/subscriptions.js';
+import { billingBanner } from './billing/leases.js';
 // Read model only. None of the customer or operator pages opens a worker DB,
 // consumes a journal, or queries usage_events. All list queries are bounded.
 import { all, get } from './db.js';
@@ -52,6 +55,7 @@ export function dashboard(slug, name, q = new URLSearchParams(), { owner = false
   const conv = scalar(`SELECT COUNT(DISTINCT who) n FROM r_people WHERE ${span} AND first_at IS NOT NULL`, p);
   const meta = {
     ...b,
+    ...(billingEnabled() ? { billingBanner: billingBanner(entitlementsFor(slug, now), now) } : {}),
     slug,
     page: name,
     owner,

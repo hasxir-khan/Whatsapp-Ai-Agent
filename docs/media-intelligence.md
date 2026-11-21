@@ -1,6 +1,6 @@
 # Media Intelligence: audit and verification
 
-Both features are **off by default**. This change extends the existing media services; it does not enable a new path for every tenant. Configuration, limits and rollout commands are in [Voice and video](../README.md#voice-and-video).
+This report records the original opt-in rollout. The subsequent [safety pass](safety-pass.md) made transport limits, duration enforcement, voice delivery and local clip extraction unconditional. The language and private-reply features are still **off by default**. See [Voice and video](../README.md#voice-and-video) for current behaviour.
 
 ## Step 0 findings (before changes)
 

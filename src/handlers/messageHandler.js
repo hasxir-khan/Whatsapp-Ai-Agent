@@ -1663,7 +1663,7 @@ async function runBatch(sock, jid, number, items, ctx) {
   // ── voice reply decision ────────────────────────────────
   const voiceMode = db.getSetting('tts_mode', config.tts.mode);
   const firstMessage = (contact?.message_count || 0) <= 1;
-  let voice = null;
+  let voice = null, shortened = false;
   if (shouldSpeak({ mode: voiceMode, clientSentVoice, text: humanText, firstMessage })) {
     try {
       // Only the part that fits in ~20 s is spoken; the text is sent either way,
@@ -1671,6 +1671,7 @@ async function runBatch(sock, jid, number, items, ctx) {
       const spoken = speechTextFor(replyText, { langInfo });
       voice = await buildVoiceNote(spoken, { langInfo });
       if (voice && spoken.trim() !== replyText.trim()) {
+        shortened = true;
         db.logEvent('tts_shortened', number, { from: replyText.length, to: spoken.length });
       }
     } catch (err) {
@@ -1680,7 +1681,7 @@ async function runBatch(sock, jid, number, items, ctx) {
     }
   }
 
-  const sent = await channel.say(replyText, { incomingText: humanText, voice });
+  const sent = await channel.say(replyText, { incomingText: humanText, voice, companionText: shortened });
   noteSent(Array.isArray(sent) ? sent.map((m) => m?.key?.id) : sent?.key?.id ? [sent.key.id] : []);
   rememberClaims(number, replyText);
 
@@ -1772,7 +1773,7 @@ async function interpretItem({ transport, incoming, number }) {
 
     case 'voice':
     case 'audio': {
-      if (!sttEnabled()) return { kind: 'voice', text: '[Voice note — could not be transcribed]', unreadable: true };
+      if (!sttEnabled() || info.seconds > config.stt.maxSeconds) return { kind: 'voice', text: '[Voice note — could not be transcribed]', unreadable: true };
       const { buffer, mimetype } = await download();
       const result = await transcribe(buffer, { mimetype });
       if (!result?.text || !looksMeaningful(result.text)) {
@@ -1834,13 +1835,9 @@ async function interpretItem({ transport, incoming, number }) {
       if (!caps.ready) {
         return { kind: 'video', text: caption || '[Video sent — I cannot watch videos right now]', unreadable: !caption };
       }
-      const { buffer, mimetype } = await download();
-      const dossier = memory.getDossier(number);
       const vision = await understandVideo({
-        buffer,
-        mimetype,
+        download: (opts) => transport.getMedia(incoming, opts),
         caption,
-        context: describeContext(dossier),
         declaredSeconds: info.seconds,
       });
       if (!vision?.description) {

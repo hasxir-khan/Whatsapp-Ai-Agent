@@ -91,7 +91,7 @@ Everything the demo writes lives in `./demo` and is gitignored; delete the folde
 | **Feels like a human** | Typing indicator, human pauses, 1–3 short bubbles, waits for a burst before replying, read receipts, no menus, no signatures, no "as an AI language model". |
 | **86 languages** | Urdu, Hindi, Arabic, Persian, Bengali, Turkish, Russian, Chinese, Japanese, Spanish, French, German, Vietnamese, Swahili… detected from script + vocabulary, with register matching (formal vs casual). |
 | **Hears voice messages** | Whisper transcribes with automatic language detection. |
-| **Sees images and video** | Gemini vision for screenshots, mockups, invoices; native video understanding (or frames + audio track via ffmpeg). |
+| **Sees images and video** | Gemini vision for screenshots, mockups, invoices; video understanding from locally extracted frames and audio (ffmpeg required). |
 | **Takes project details** | A real discovery flow — one question at a time, never repeats, ingests PDF/DOCX briefs, scores completeness. |
 | **Talks back** | Neural voice replies in the client's language on request, or when they use voice notes. |
 | **Remembers everything** | SQLite: recent turns, rolling summary, structured facts, project state, quotes. Survives restarts. |
@@ -209,7 +209,9 @@ How to add them:
 3. Run `npm run doctor` — it calls each API and tells you if the key works, is rejected, or the model is missing.
 4. Restart the bot (`Ctrl+C`, then `npm start`).
 
-Model names (optional):
+`npm run doctor -- models` checks the effective worker configuration against Groq, Gemini and OpenRouter **list** endpoints (each configured key slot; all Gemini pages). It checks chat, small/fallback, reasoning, vision, embedding, Whisper and Groq speech models. It makes no generation call. Unknown names are warnings: correct or remove them; an unreachable list or a missing key means **unverified**, not retired. Managed live workers also check at launch because BYOK values exist only there. A listed ID does not prove quota, modality or inference quality. Edge voices are language mappings, not model IDs.
+
+Model names (optional; verify on your provider account):
 
 ```env
 GEMINI_MODEL=gemini-4-hydrogen            # images/video model chain starts here
@@ -2005,7 +2007,7 @@ Force one register with `bot.formality` if you prefer.
 
 ## Voice and video
 
-Two independent switches in the tenant's `owner.json` opt into the protected media paths. **Both default to `false`**: existing tenants keep their previous Whisper, native-video and voice-reply behaviour. To enable both for a Pakistani shop, merge these fields into its profile:
+Two independent switches in the tenant's `owner.json` opt into the protected media paths. **Both default to `false`**: language selection, private replies and handoffs remain opt-in. Download ceilings, timeouts, voice delivery and local-only video extraction apply to **all** tenants. To enable both for a Pakistani shop, merge these fields into its profile:
 
 ```json
 {
@@ -2026,15 +2028,17 @@ Two independent switches in the tenant's `owner.json` opt into the protected med
 
 For Urdu text, the customer's recent **writing**, not the transcriber's choice of alphabet, sets the script. With voice only, `business.voice.textScript` selects `urdu` or `roman`. With `VOICE_REPLY_MODE=match_voice`, a mapped voice and ffmpeg, the customer gets a short text **and** an Opus voice note, capped at `TTS_MAX_SECONDS` (default 20). A Roman Urdu companion stays in Latin script; the Urdu voice receives Urdu script. The protected path uses `business.voice.voiceByLanguage` or the existing `bot.voice.voiceByLanguage`; a map entry may also specify provider voices, e.g. `"en": {"edge":"en-US-AriaNeural","groq":"troy"}`. Groq speech is limited to English/Arabic. An unavailable voice, failed synthesis or failed conversion leaves the text, not a voice in a different language. Edge is unofficial.
 
+**Ingress safety (also with both features off).** Cloud and Baileys stream media up to the applicable byte limit; neither trusts a size declaration. `MEDIA_PROVIDER_TIMEOUT_MS` bounds downloads too (at most 30 seconds). Inbound speech needs local ffmpeg: the worker counts decoded mono samples, refuses audio longer than `MAX_AUDIO_SECONDS` (0–600, default 600), and sends only a metadata-free audio track to STT. Without ffmpeg it declines inbound voice/video rather than guessing a duration or uploading the source. Unmanaged outbound speech can still use a playable audio attachment.
+
 **Clips.** The worker bounds the download, checks the actual container, streams and duration with ffmpeg, and sends **extracted audio** to Whisper and **downscaled scene frames** to the configured vision provider. It does not upload the original video to Gemini Files. A silent clip can use frames alone; an audio-only container can use speech alone. Over-limit → ask for a shorter clip or voice note; unreadable → ask to resend; unavailable/busy/quota → ask for a description. With reply timing enabled, the indicator refreshes during processing; `HOLDING_AFTER_MS` allows one holding line before the answer. Transport support still determines what a phone displays.
 
 Speech and screen text are untrusted evidence. The internal reading separates what was said, what was shown, the apparent request and what is unclear. A normal reply confirms one detail. Complaints, unsafe or uncertain readings, payment review and clinic/regulated profiles go to a person. The owner gets a short summary; a thumbnail is sent **only** with `business.video.ownerThumbnail: true`. A clip is not a price, diagnosis, identity check or proof of payment. Intake can ask if it is a reference; the worker does not turn its contents into intake facts or mark an order paid.
 
-| Protected-path setting | Default | What it limits |
+| Media setting | Default | What it limits |
 |---|---:|---|
 | `MEDIA_VIDEO_MB` / `MEDIA_VIDEO_SECONDS` | 25 MiB / 60 s | Incoming clip. A declaration may reject early, never admit by itself. |
 | `MEDIA_VIDEO_FRAMES` | 6 | First frame plus scene changes, at most 12; ≤480 px on either side. Static footage need not consume six frames. |
-| `MEDIA_PROVIDER_TIMEOUT_MS` | 20000 | Protected downloads and media-provider attempts. Three recent failures open the tenant/provider/operation breaker for five minutes. |
+| `MEDIA_PROVIDER_TIMEOUT_MS` | 20000 | All downloads and protected media-provider attempts. Three recent failures open the tenant/provider/operation breaker for five minutes. |
 | `MEDIA_VIDEOS_DAY` / `MEDIA_VIDEOS_MONTH` | 10 / 120 | Validated admissions per tenant, not just successful interpretations. One clip runs per tenant worker at a time. |
 | `MEDIA_VISION_CALLS_DAY` / `MEDIA_VISION_CALLS_MONTH` | 30 / 300 | Shared still-image/frame **provider attempts**, including model fallbacks, when video understanding is on. |
 
@@ -2487,7 +2491,7 @@ it is a placeholder, not a working mailbox).
 | "Connection closed (401)" | Logged out — delete the session folder and re-link |
 | Replies but no images described | `npm run doctor -- gemini`; check the key, then `GEMINI_VISION_MODEL` |
 | "Gemini rejected the API key" | Revoked or restricted — mint a fresh `AQ.…` key |
-| Voice notes not understood | Check Groq STT, the download size and recording clarity. `MAX_AUDIO_SECONDS` is not a probed voice-input limit; see [Voice and video](#voice-and-video). |
+| Voice notes not understood | Check Groq STT, the download size and recording clarity. `MAX_AUDIO_SECONDS` caps measured audio and requires ffmpeg; see [Voice and video](#voice-and-video). |
 | Voice reply arrives as a file | No ffmpeg — install it |
 | `.status` shows outbox queued | Normal during a dropout; it flushes on reconnect. Stuck? Check the number isn't logged out |
 | Two users disconnect each other | They share a WhatsApp number — one number per user |
@@ -3908,7 +3912,7 @@ movement. No paid offers or receiver instructions are invented at startup.
   its reference, and submit redacted proof. Until a human confirms receipt in
   the receiving ledger, a screenshot is not payment. A partial confirmation
   gives a receipt but does not unlock the term. Receipts are downloadable PDFs.
-  Staff can see status and usage, not change a plan or inspect financial documents.
+  Failed email delivery retries after 10, 20, 40 minutes and so on, capped at 24 hours. A delivery retry does not reconfirm money. Staff can see status and usage, not change a plan or inspect financial documents.
 - **Operator:** Use `/platform/operator/billing` with the independent operator
   credential over HTTPS. Publish prices in integer minor units by duration
   (e.g. 1, 2 or 6 months), configure the trial, masked receiver/payment alias,
@@ -3919,12 +3923,12 @@ movement. No paid offers or receiver instructions are invented at startup.
   operator-priced difference; downgrades wait until the end. A free trial is
   once per account **and** number. Expiry alone pauses the bot, never schedules
   deletion. Cancellation preserves access through the current end and suppresses
-  renewal reminders. Canceling starts a separate export/retention/deletion path.
+  renewal reminders. A current dashboard banner, email and (where a linked worker and WhatsApp window permit) a fixed message to the owner announce 7/3/1-day expiry and the pause. In Billing the owner chooses silent mode (default) or one handover per contact per UTC day. Canceling starts a separate export/retention/deletion path.
 - **Operation:** One platform DB writer, one worker per assistant, private
   durable volumes and a production mail adapter. `npm run doctor` checks for
   missing paid offers, transfer instructions, operator credential and mailer.
   Use only synthetic evidence in tests. Default file mail is a local artifact,
-  **not** evidence of delivery. [State machine, verification and limitations](docs/phase-7-part-4.md).
+  **not** evidence of delivery. [State machine](docs/phase-7-part-4.md) · [Safety-pass verification and limits](docs/safety-pass.md).
 
 ### Legacy plans (billing disabled)
 
@@ -4126,6 +4130,19 @@ pretend otherwise:
 
 ---
 
+## Backups and secrets
+
+| Secret | Keep and restore | If lost or changed |
+|---|---|---|
+| `PLATFORM_KEY_SECRET` | One independent random master (at least 32 characters) in the **control-plane** secret manager. Pin its version to each encrypted platform DB snapshot; keep the master separately from the DB. Never put it in a tenant env. | Existing AES-GCM provider-key envelopes cannot be opened. Changing the environment variable does not re-encrypt them. |
+| `PLATFORM_TENANT_TOKEN` | One independent token per managed tenant, generated from 24 random bytes. Its `tenant_secrets` row in the private platform DB and its copy in that tenant’s private `.env` must match. Back up the exact value in a restricted, versioned secret manager. | The HMAC contact IDs, some dimension aliases and signed brief grants change. There is no way to translate an old handle without the original identity input. This is **not** the meter key, dashboard login, or session-signing secret. |
+
+**Take and rehearse a restore.** Quiesce the platform writer, supervisors and workers; take one consistent encrypted, access-controlled snapshot of the platform and tenant volumes. Record snapshot ID, tenant slug and secret *version*, not values. Restore to an isolated host without outbound delivery or WhatsApp jobs, with the matching secret versions and mounts; run `npm run doctor -- platform` there. It checks active key envelopes and missing, weak or mismatched tenant tokens without printing them. Confirm a known synthetic contact retains its handle and its authorised brief works before reopening traffic. Retain encrypted backups and recovery access only for the agreed retention period. Account/report JSON, logs, CLI stdout and `backup.js --with-keys` are **not** secret backups: the latter omits the entire `.env` if it names protected platform secrets. Restrict directories/files to 0700/0600. Never paste values into commands, logs, tickets or exports.
+
+**Rotate the master (supported re-enrolment path).** Arrange a maintenance window and out-of-band recovery with every affected owner. Snapshot and retain the old master for rollback. Pause workers and prevent automatic restarts. Revoke all active BYOK slots through the platform while the old master is installed; revoke/replace the corresponding credentials at the provider if compromise is suspected. Stop the platform, install a fresh master from the secret manager and restart the single writer. Owners re-enter keys over HTTPS, test compatibility, then resume each tenant. Run doctor and confirm every active envelope opens. Never use a plaintext export to migrate. If rollback is necessary restore the *paired* DB snapshot and secret, with workers stopped; never re-enable a revoked provider credential or overwrite intervening financial events. Keep the old master only as long as an authorised old backup needs it.
+
+**Rotate a contact token (identity cutover).** Prefer restoring the original for a missing mount; do not regenerate at boot. For intentional rotation, drain reports and quiesce the affected worker, importer and control plane. Back up the matched DB, tenant volume and secret version. Generate a new per-tenant token inside the secret manager. In an offline maintenance process with exclusive access, use a bound update of `tenant_secrets.value` scoped to **both** slug and `name='PLATFORM_TENANT_TOKEN'` and atomically replace that one assignment in the tenant `.env` (0600). Do not put the value in SQL history or argv. There is no atomic transaction across the two volumes: keep them offline until both copies match. Invalidate that tenant’s old `dashboard-v1.jsonl` batch and contact-bearing day/card/people projections and clear its tenant-local `report_lead_index` and `report_sources` caches before republishing from retained source rows. Do **not** clear usage meters, subscriptions, orders or chats. Old grants/bookmarks stop working; historical aliases already exported or present only in expired source history cannot be repaired. Run doctor on the restored pair, restart the single writer and worker, wait for a fresh report and test a new owner brief. On failure stop again and restore the matched pair, not just the env file. If compromised, treat old pseudonymous reports/backups as exposed too.
+
 ## Dashboard metrics
 
 [What customers see](docs/customer-dashboard.md) · [Part 3 delivery](docs/phase-7-part-3.md) · [50-tenant follow-up measurements](docs/phase-7-part-3-follow-up.md)
@@ -4138,7 +4155,7 @@ pretend otherwise:
 
 **Authorization.** Customer HTML: `/platform/reports/<slug>/<section>`; matching JSON: `/api/platform/tenants/<slug>/reports/<section>`. Both check the same signed session, consent and membership. Owners alone see Payments and Export & data, can download aggregate/lead exports (POST with CSRF; audited; four/hour/account/tenant), or request a five-minute intake-brief grant. The collected values are served **only** by the tenant live inbox with its own credential. `PLATFORM_INBOX_ORIGIN` can be a tenant HTTPS origin template containing `{slug}`. Business-number/trial uniqueness uses blind lookup IDs, not stored phone numbers. Configuration and sensitive undo patches belong in tenant files, not analytics. On the first upgrade, mount existing tenant volumes before starting the writer: if a live customer’s previous undo patch cannot be moved, migration rolls back rather than losing it. Wizard resume stores only generic document labels, byte/chunk counts and timestamps.
 
-**Operations.** `/platform/operator` and `/api/platform/operator` have separate HTTPS Basic auth: username `operator`, independent random `PLATFORM_OPERATOR_TOKEN` of at least 32 characters. Unset disables the fleet view. A customer session is never an operator credential. Do not put operator credentials in tenant files or URLs. `npm run doctor -- platform` checks the reporting schema, credential separation and stale active workers. Share the existing tenant **data** volume with the single platform writer (same requirement as journal ingest); without it, reports cannot refresh. Do not open a second writable sql.js connection to the live database for cron or reporting.
+**Operations.** `/platform/operator` and `/api/platform/operator` require a separate 15-minute operator session. Sign in with the independent random `PLATFORM_OPERATOR_TOKEN` (at least 32 characters) and optional authenticator code. Configure a monitored `PLATFORM_OPERATOR_EMAIL` and a working mailer; each login sends an alert. No Basic-auth fallback. Unset disables the fleet view. A customer session is never an operator credential. Do not put operator credentials in tenant files or URLs. `npm run doctor -- platform` checks the reporting schema, credential separation and stale active workers. Share the existing tenant **data** volume with the single platform writer (same requirement as journal ingest); without it, reports cannot refresh. Do not open a second writable sql.js connection to the live database for cron or reporting.
 
 ### Report identifiers
 

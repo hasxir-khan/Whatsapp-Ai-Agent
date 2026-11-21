@@ -4,10 +4,13 @@ import fs from 'node:fs';
 import { STALE_MINUTES, staleBefore } from './reportFreshness.js';
 import { readSnapshot } from './db.js';
 import { platformDbFile, billingEnabled, platformEnabled, dashboardEnabled, platformSecret, secureOrigin, transportProblem } from './env.js';
-import { keySecretProblem, decryptValue } from './crypto.js';
+import { keySecretProblem, tenantTokenProblem, decryptValue } from './crypto.js';
 import { activeMailer } from './mailer.js';
 
-export function diagnostics(rows) {
+import { readTenantEnv } from '../src/services/adminPanel.js';
+import { operatorConfigured, operatorSetupProblem } from './operatorAuth.js';
+
+export function diagnostics(rows, { checkMounts = false } = {}) {
   const errors = [], warnings = [];
   if (!platformEnabled()) return { ok: true, enabled: false, errors, warnings };
   const production = process.env.NODE_ENV?.toLowerCase() === 'production';
@@ -38,22 +41,9 @@ export function diagnostics(rows) {
     }
     if (!methods.length) warnings.push('billing_instructions_missing');
     if (!paid) warnings.push('billing_paid_plans_missing');
-    const op = process.env.PLATFORM_OPERATOR_TOKEN;
-    if (
-      !op ||
-      op.length < 32 ||
-      [platformSecret(), process.env.PLATFORM_KEY_SECRET, process.env.ADMIN_TOKEN].includes(op)
-    )
-      errors.push('report_operator_credential');
   }
   if (dashboardEnabled()) {
-    const token = process.env.PLATFORM_OPERATOR_TOKEN;
-    if (!token) warnings.push('report_operator_disabled');
-    else if (
-      token.length < 32 ||
-      [platformSecret(), process.env.PLATFORM_KEY_SECRET, process.env.ADMIN_TOKEN].includes(token)
-    )
-      errors.push('report_operator_credential');
+    if (!process.env.PLATFORM_OPERATOR_TOKEN) warnings.push('report_operator_disabled');
     if (rows)
       try {
         if (rows('SELECT MAX(version) v FROM report_schema')[0]?.v !== 1) errors.push('report_schema');
@@ -69,8 +59,34 @@ export function diagnostics(rows) {
         errors.push('report_schema');
       }
   }
+  if (billingEnabled() || (dashboardEnabled() && process.env.PLATFORM_OPERATOR_TOKEN)) {
+    if (!operatorConfigured()) errors.push('report_operator_credential');
+    else {
+      const problem = operatorSetupProblem();
+      if (problem) warnings.push(problem);
+    }
+  }
   if (rows) {
     try {
+      const note = (code) => {
+        if (code && !warnings.includes(code)) warnings.push(code);
+      };
+      const seen = new Set();
+      for (const t of rows(
+        "SELECT t.slug,k.value FROM tenants t LEFT JOIN tenant_secrets k ON k.slug=t.slug AND k.name='PLATFORM_TENANT_TOKEN' WHERE t.status IN ('active','provisioned','paused')"
+      )) {
+        note(tenantTokenProblem(t.value));
+        if (t.value && seen.has(t.value)) note('tenant_token_weak');
+        seen.add(t.value);
+        if (checkMounts) {
+          let local;
+          try {
+            local = readTenantEnv(t.slug).PLATFORM_TENANT_TOKEN;
+          } catch {}
+          note(tenantTokenProblem(local));
+          if (local && t.value && local !== t.value) note('tenant_token_mismatch');
+        }
+      }
       if (!errors.includes('platform_keys_unavailable') && rows("SELECT slug FROM tenants WHERE key_source = 'platform' LIMIT 1").length) errors.push('platform_keys_unavailable');
       if (!problem && rows("SELECT slug, id, key_version, secret FROM tenant_keys WHERE status = 'active'").some((r) =>
         !decryptValue(r.secret, { aad: `${r.slug}:${r.id}:${r.key_version}` }).ok)) errors.push('cannot_decrypt');
@@ -83,10 +99,15 @@ export function diagnostics(rows) {
 export async function doctorDiagnostics() {
   const file = platformDbFile();
   if (!platformEnabled() || !fs.existsSync(file)) return diagnostics();
-  return readSnapshot(diagnostics, file);
+  return readSnapshot((rows) => diagnostics(rows, { checkMounts: true }), file);
 }
 
 export const remedy = {
+  tenant_token_missing: 'PLATFORM_TENANT_TOKEN is missing for a managed assistant. Restore its original private token; see Backups and secrets.',
+  tenant_token_weak: 'A managed PLATFORM_TENANT_TOKEN is weak or reused. Follow Backups and secrets for a coordinated rotation.',
+  tenant_token_mismatch: 'PLATFORM_TENANT_TOKEN differs between the platform and a tenant mount. Stop that worker and restore a matched pair.',
+  operator_totp_invalid: 'Operator login unavailable: configure a valid independent Base32 TOTP seed (at least 160 bits).',
+  operator_alert_unavailable: 'Operator login requires an alert address (PLATFORM_OPERATOR_EMAIL) and a delivering mail adapter in production.',
   billing_production_mailer_missing:
     'Use a production mail adapter with PDF attachments and idempotency before taking payments.',
   billing_instructions_missing: 'Configure a masked receiver and transfer instructions in Billing operations.',

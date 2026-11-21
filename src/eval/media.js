@@ -124,7 +124,9 @@ export async function runMedia({ live = false, only, maxCalls = 60, print = cons
         sttCalled = false;
       const listen = async (b, opts) => {
         sttCalled = true;
-        const out = await transcribe(b, opts);
+        // No ffmpeg means production must refuse unmeasured audio. Replay the
+        // recorded transcript here only, just like the recorded frame extraction.
+        const out = !live && !hasFfmpeg() ? rec.speech : await transcribe(b, opts);
         transcript = out?.text || '';
         // Explicit fault injection after real STT in live mode, not a substitute transcript.
         return out && c.detectorOverride ? { ...out, language: c.detectorOverride } : out;

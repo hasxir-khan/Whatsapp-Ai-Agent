@@ -47,7 +47,7 @@ function speechChunk(text, maxChars) {
 async function groqSpeech(text, options = {}) {
   if (!config.keys.groq) return null;
   const isArabic = options.code ? options.code === 'ar' : /[\u0600-\u06FF]/.test(text);
-  const model = isArabic ? 'canopylabs/orpheus-arabic-saudi' : config.tts.groqModelEnglish;
+  const model = isArabic ? config.tts.groqModelArabic : config.tts.groqModelEnglish;
   const voice = options.voice || (isArabic ? 'fahad' : config.tts.groqVoice);
 
   const res = await fetch('https://api.groq.com/openai/v1/audio/speech', {

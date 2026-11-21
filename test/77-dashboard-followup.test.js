@@ -18,6 +18,7 @@ import {
   zone,
   pages,
   serve,
+  operatorHeaders,
 } from './fixtures/dashboard.js';
 
 const usage = await import('../platform/usage.js');
@@ -176,9 +177,7 @@ test('every served report shows worker age and explicit stale/missing states eve
     assert.equal(r.status, 200, url);
     return r.text();
   };
-  const op = {
-    authorization: 'Basic ' + Buffer.from('operator:' + process.env.PLATFORM_OPERATOR_TOKEN).toString('base64'),
-  };
+  const op = await operatorHeaders(origin);
   const other = 'fresh-worker';
   db.run(
     "INSERT INTO tenants(slug,name,account_id,status,plan_id,created_at,updated_at) VALUES(?,?,?,'active','growth',?,?)",

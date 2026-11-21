@@ -63,10 +63,10 @@ try {
     .setInputFiles({ name: 'synthetic.pdf', mimeType: 'application/pdf', buffer: sample });
   await p.getByRole('button', { name: 'Submit proof' }).click();
   await p.getByText('Thank you. Your payment is under review.').waitFor();
-  const op = await phone(null, {
-    httpCredentials: { username: 'operator', password: process.env.PLATFORM_OPERATOR_TOKEN },
-  });
+  const op = await phone(null);
   await op.goto(origin + '/platform/operator/billing');
+  await op.getByLabel('Operator credential').fill(process.env.PLATFORM_OPERATOR_TOKEN);
+  await op.getByRole('button', {name: 'Sign in'}).click();
   await op.getByRole('heading', { name: 'Manual review queue' }).waitFor();
   assert.ok(await fits(op));
   await op.getByRole('button', { name: 'Read masked proof' }).click();

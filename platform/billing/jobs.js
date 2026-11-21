@@ -1,3 +1,4 @@
+import { termNotice, pausedBehaviour } from '../../src/services/billingNotices.js';
 import { createHash } from 'node:crypto';
 import { billingEnabled, platformPublicUrl } from '../env.js';
 import { get, all, run, billingTransaction as transaction, flush } from '../db.js';
@@ -45,6 +46,11 @@ function schedule(slug, now) {
   const e = recordState(slug, 'clock', now),
     days = reminderDays(e, now),
     cfg = settings();
+  if (!e.canRun) {
+    queue(e.sid, 'paused', e.end, 'whatsapp', now);
+    // A migrated / ineligible trial can start paused, without a transition.
+    if (e.state === 'paused') queue(e.sid, 'paused', e.end, 'email', now);
+  }
   if (days) for (const channel of ['email', 'whatsapp']) queue(e.sid, 'remind_' + days, e.end, channel, now);
   if (e.canceling && !e.canRun) {
     const day = Math.floor((+new Date(now) - Date.parse(e.cancelEffectiveAt)) / DAY),
@@ -75,7 +81,7 @@ function stillRelevant(row, e, now) {
 const clockFor = (value) => (typeof value === 'function' ? value : () => value ?? Date.now());
 function deliveryText(kind, e) {
   if (kind === 'receipt') return 'Your confirmed payment receipt is attached.';
-  if (kind.startsWith('remind_')) return 'Your assistant term ends on ' + e.end.slice(0, 10) + ' UTC.';
+  if (kind.startsWith('remind_')) return termNotice(kind, e.end, e.pausedReply);
   if (kind.startsWith('export_') || kind === 'pending_deletion')
     return (
       'Your canceled term ended. Export your data before permanent deletion on ' +
@@ -83,8 +89,8 @@ function deliveryText(kind, e) {
       ' UTC.'
     );
   if (kind === 'grace')
-    return 'Your paid term ended. The assistant is in grace until ' + e.until.slice(0, 10) + ' UTC.';
-  if (['paused', 'canceled'].includes(kind)) return 'Your assistant is paused. Nothing was deleted.';
+    return 'Your paid term ended. The assistant is in grace until ' + e.until.slice(0, 10) + ' UTC. ' + pausedBehaviour(e.pausedReply);
+  if (['paused', 'canceled'].includes(kind)) return termNotice('paused', e.end, e.pausedReply);
   if (kind.startsWith('limit_'))
     return 'Your assistant reached a plan limit. Review usage or choose another plan.';
   if (kind === 'reversed')
@@ -102,7 +108,7 @@ export async function deliverBilling(time = null, send = sendMail) {
   );
   for (const row of rows) {
     const now = clock();
-    const claimed = get('SELECT state,lease FROM b_delivery WHERE id=?', [row.id]);
+    const claimed = get('SELECT state,lease,attempts FROM b_delivery WHERE id=?', [row.id]);
     if (!claimed || !['queued', 'sending'].includes(claimed.state) || claimed.lease > at) continue;
     const e = entitlementsFor(row.slug, now);
     if (!e) continue;
@@ -122,7 +128,7 @@ export async function deliverBilling(time = null, send = sendMail) {
     const text = deliveryText(row.kind, e);
     const lease = stamp(+new Date(now) + 10 * 60000);
     transaction(() => {
-      run("UPDATE b_delivery SET state='sending',lease=? WHERE id=?", [lease, row.id]);
+      run("UPDATE b_delivery SET state='sending',lease=?,attempts=attempts+1 WHERE id=?", [lease, row.id]);
       if (row.state === 'queued' && row.channel !== 'operator')
         notify({
           accountId: account.id,
@@ -152,21 +158,27 @@ export async function deliverBilling(time = null, send = sendMail) {
         continue;
       }
       const key = createHash('sha256').update(row.id).digest('hex');
-      if (
-        (
-          await send({
-            to,
-            subject: 'Assistant billing update',
-            text: text + '\n' + url,
-            attachments,
-            idempotencyKey: key,
-            billingSid: e.sid,
-          })
-        ).ok
-      )
-        run("UPDATE b_delivery SET state='sent',lease=NULL WHERE id=?", [row.id]);
+      const result = await send({
+        to,
+        subject: 'Assistant billing update',
+        text: text + '\n' + url,
+        attachments,
+        idempotencyKey: key,
+        billingSid: e.sid,
+      });
+      if (!result?.ok) throw Error('delivery_unavailable');
+      run("UPDATE b_delivery SET state='sent',lease=NULL WHERE id=? AND lease=?", [row.id, lease]);
     } catch {
-      /* retry after the lease; never log provider/proof contents */
+      // A lease recovers a crashed sender; a known failure gets exponential backoff.
+      // Keep the intent and its idempotency key across restarts, even after the cap.
+      const delay = Math.min(24 * 3600000, 600000 * 2 ** Math.min(8, claimed.attempts));
+      transaction(() =>
+        run("UPDATE b_delivery SET lease=? WHERE id=? AND state='sending' AND lease=?", [
+          stamp(+new Date(clock()) + delay),
+          row.id,
+          lease,
+        ])
+      );
     }
   }
   flush();

@@ -145,8 +145,14 @@ export async function boot({ handleRoute = null } = {}) {
     if (lock.recovered) console.warn('🔒 A stale session lock was taken over (the previous process is gone)');
     const release = () => releaseSessionLock();
     process.on('exit', release);
-    process.on('SIGINT', () => { release(); process.exit(0); });
-    process.on('SIGTERM', () => { release(); process.exit(0); });
+    process.on('SIGINT', () => {
+      release();
+      process.exit(0);
+    });
+    process.on('SIGTERM', () => {
+      release();
+      process.exit(0);
+    });
   }
 
   await initDB();
@@ -173,7 +179,9 @@ export async function boot({ handleRoute = null } = {}) {
   }
   if (!sttEnabled()) console.warn('⚠️  GROQ_API_KEY missing — voice notes cannot be transcribed.');
   if (!hasFfmpeg()) {
-    console.warn('⚠️  ffmpeg not found — voice replies will be sent as audio files, not voice notes.');
+    console.warn(
+      '⚠️  ffmpeg not found — inbound speech/video will not be uploaded; voice replies may fall back to audio files.'
+    );
   }
 
   if (config.dryRun) {
@@ -197,6 +205,16 @@ export async function boot({ handleRoute = null } = {}) {
     return;
   }
 
+  // Managed keys only exist in the launched worker; check its effective model
+  // selections here. Never delay pairing/serving on a catalog outage.
+  if (process.env.TENANT_WORKER_MODE === 'live') {
+    import('./services/modelCatalog.js')
+      .then(async ({ verifyModels, modelWarnings }) => {
+        for (const check of await verifyModels())
+          if (check.state !== 'no_key') for (const warning of modelWarnings(check)) console.warn(warning);
+      })
+      .catch(() => console.warn('Provider model catalog could not be verified.'));
+  }
   if (billedWorker()) {
     protectTransport(transport);
     const timer = setInterval(() => deliverOwnerNotices(transport).catch(() => {}), 30000);

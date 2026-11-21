@@ -80,6 +80,16 @@ export function keySecretProblem(secret = keySecret()) {
   return null;
 }
 
+// Generated as 24 random bytes (32 Base64URL characters). This is not the
+// install-wide meter key. Report only a category; never a prefix or digest.
+export function tenantTokenProblem(token) {
+  if (!token) return 'tenant_token_missing';
+  if (keySecretProblem(token) || /^(?:demo|fixture|changeme|replace|sample)/i.test(token) ||
+      /^(.{1,12})\1+$/.test(token) || [keySecret(), process.env.DASHBOARD_TOKEN, process.env.PLATFORM_OPERATOR_TOKEN].includes(token))
+    return 'tenant_token_weak';
+  return null;
+}
+
 let derived = null;
 let derivedFrom = null;
 function deriveKey(secret) {

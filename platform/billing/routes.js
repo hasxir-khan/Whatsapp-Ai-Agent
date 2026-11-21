@@ -1,5 +1,4 @@
 import { asActor } from './audit.js';
-import { createHmac } from 'node:crypto';
 import { billingEnabled } from '../env.js';
 import { readSession } from '../session.js';
 import { sendHtml, sendJson, readJsonBody, clientIp, PLATFORM_HEADERS } from '../http.js';
@@ -8,7 +7,7 @@ import { tenantForAccount, destroyTenant } from '../provisioning.js';
 import { getAccount, exportTokenValid, consentStatus } from '../accounts.js';
 import { flush } from '../db.js';
 import { withWorker } from '../keys.js';
-import { operatorAuthorised } from '../reportRoutes.js';
+import { operatorAuthorised, operatorSession } from '../operatorAuth.js';
 import { page } from '../views.js';
 import { ManualProvider, invoice, reviewPayment, priceUpgrade, documentPDF, uuid } from './payments.js';
 import { readProof, recheck, uploadProof } from './proofs.js';
@@ -17,12 +16,8 @@ import { publishPlan, configure } from './catalog.js';
 import { entitlementsFor, changeSubscription, subscription } from './subscriptions.js';
 import { bootstrapBilling, syncWorker } from './jobs.js';
 import { operations, customerView } from './overview.js';
-import { BillingError, need, stamp } from './rules.js';
+import { BillingError, need } from './rules.js';
 const manual = new ManualProvider();
-const token = () =>
-  createHmac('sha256', process.env.PLATFORM_OPERATOR_TOKEN)
-    .update('billing-mutation:' + stamp(Date.now()).slice(0, 10))
-    .digest('hex');
 function shell(res, op, slug = '') {
   return sendHtml(
     res,
@@ -143,8 +138,10 @@ export async function customerRoute(req, res, { slug, rest, html }) {
 export async function billingOperator(req, res, url) {
   try {
     need(billingEnabled(), 'not_found', 404);
-    if (!operatorAuthorised(req, res)) return;
+    const session = operatorAuthorised(req, res);
+    if (!session) return;
     rate('op:' + clientIp(req), 120);
+    const checkSession = () => need(operatorSession(req) === session, 'operator_auth_required', 401);
     bootstrapBilling();
     const rest = url.pathname.replace(/^\/(?:api\/)?platform\/operator\/billing/, '');
     if (req.method === 'GET') {
@@ -156,7 +153,7 @@ export async function billingOperator(req, res, url) {
                 Date.now(),
                 Number(url.searchParams.get('page') || 1)
               ),
-              csrf: token(),
+              csrf: session.csrf,
             })
           : shell(res, true);
       const m = /^\/([a-z0-9-]{2,40})\/proofs\/([a-f\d-]{36})$/.exec(rest);
@@ -164,8 +161,9 @@ export async function billingOperator(req, res, url) {
       return sendJson(res, 200, readProof(m[1], m[2]));
     }
     need(req.method === 'POST' && url.pathname.startsWith('/api/'), 'method_not_allowed', 405);
-    need(safeEqual(req.headers['x-operator-csrf'] || '', token()), 'csrf', 403);
+    need(safeEqual(req.headers['x-operator-csrf'] || '', session.csrf), 'csrf', 403);
     const data = await body(req);
+    checkSession();
     if (rest === '/plans')
       return sendJson(
         res,
@@ -187,6 +185,7 @@ export async function billingOperator(req, res, url) {
     need(kind === 'subscriptions' ? !id : uuid(id), 'not_found', 404);
     const result = await asActor('operator', null, () =>
       withWorker(slug, async () => {
+        checkSession();
         need(subscription(slug), 'not_found', 404);
         let r;
         if (kind === 'subscriptions' && ['comp', 'extend', 'change'].includes(act))

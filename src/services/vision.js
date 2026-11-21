@@ -3,7 +3,7 @@ import { mediaUsage } from './mediaUsage.js';
 // Image + video understanding on a $0 budget.
 //
 // Provider chain (first one with a key wins, automatically):
-//   1. Google Gemini free tier  — images AND native video understanding
+//   1. Google Gemini free tier — images and extracted frames
 //   2. OpenRouter free vision models — images (video via extracted frames)
 //   3. Groq — only if a vision model is actually available on the account
 // If no provider is configured the caller gets null and answers honestly
@@ -16,7 +16,7 @@ import { config } from '../config/env.js';
 import { bumpUsage, logEvent } from '../utils/db.js';
 import { GEMINI_BASE, geminiHeaders, isKeyError, explainGeminiError } from '../utils/gemini.js';
 
-const sticky = { image: null, video: null };
+const sticky = { image: null };
 
 export function visionProviders() {
   const wanted = config.vision.providers;
@@ -34,7 +34,7 @@ export function visionEnabled() {
 }
 
 export function videoNativeEnabled() {
-  return visionProviders().includes('gemini');
+  return false; // videos are sampled locally, never uploaded
 }
 
 const DATA_URL = (buffer, mimetype) => `data:${mimetype || 'image/jpeg'};base64,${buffer.toString('base64')}`;
@@ -87,73 +87,6 @@ async function geminiGenerate({ model, parts, system, temperature = 0.4, maxToke
 }
 
 /** Upload a large file to Gemini's Files API and return its URI. */
-async function geminiUpload(buffer, mimetype, displayName = 'whatsapp-media') {
-  const startRes = await fetch(`${GEMINI_BASE.replace('/v1beta', '')}/upload/v1beta/files`, {
-    method: 'POST',
-    headers: geminiHeaders({
-      'X-Goog-Upload-Protocol': 'resumable',
-      'X-Goog-Upload-Command': 'start',
-      'X-Goog-Upload-Header-Content-Length': String(buffer.length),
-      'X-Goog-Upload-Header-Content-Type': mimetype,
-      'Content-Type': 'application/json',
-    }),
-    body: JSON.stringify({ file: { display_name: displayName } }),
-    signal: AbortSignal.timeout(30000),
-  });
-
-  const uploadUrl = startRes.headers.get('x-goog-upload-url');
-  if (!startRes.ok || !uploadUrl) throw new Error(`file upload start failed (${startRes.status})`);
-
-  const uploadRes = await fetch(uploadUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Length': String(buffer.length),
-      'X-Goog-Upload-Offset': '0',
-      'X-Goog-Upload-Command': 'upload, finalize',
-    },
-    body: buffer,
-    signal: AbortSignal.timeout(180000),
-  });
-
-  const text = await uploadRes.text();
-  if (!uploadRes.ok) throw new Error(`file upload failed (${uploadRes.status}): ${text.slice(0, 200)}`);
-
-  const data = JSON.parse(text);
-  const file = data.file || {};
-  if (!file.name) throw new Error('file upload: no file name');
-
-  // Wait for processing (videos need transcoding)
-  let state = file.state;
-  for (let i = 0; i < 30 && state !== 'ACTIVE'; i++) {
-    if (state === 'FAILED') throw new Error('gemini file processing failed');
-    await new Promise((r) => setTimeout(r, 2000));
-    const check = await fetch(`${GEMINI_BASE}/${file.name}`, {
-      headers: geminiHeaders(),
-      signal: AbortSignal.timeout(20000),
-    });
-    const info = await check.json();
-    state = info.state || info.file?.state;
-    if (state === 'ACTIVE') {
-      return { uri: info.uri || info.file?.uri || file.uri, name: file.name, mimeType: file.mimeType || mimetype };
-    }
-  }
-
-  if (state !== 'ACTIVE') throw new Error('gemini file processing timed out');
-  return { uri: file.uri, name: file.name, mimeType: file.mimeType || mimetype };
-}
-
-async function geminiDeleteFile(name) {
-  try {
-    await fetch(`${GEMINI_BASE}/${name}`, {
-      method: 'DELETE',
-      headers: geminiHeaders(),
-      signal: AbortSignal.timeout(10000),
-    });
-  } catch {
-    /* ignore */
-  }
-}
-
 async function withGeminiModels(kind, fn) {
   const models = config.vision.geminiModels;
   const preferred = sticky[kind]?.model;
@@ -304,18 +237,6 @@ Describe the video for the assistant:
 Be factual: 4–8 short lines. No preamble.`;
 }
 
-function videoPrompt({ caption, context }) {
-  return `A client sent this video on WhatsApp.${caption ? ` Their caption: "${caption}".` : ''}${context ? `\nKnown context about this client/project: ${context}` : ''}
-
-Watch the whole video and describe it for the assistant:
-1. What happens, in order (scenes, actions, screen recording steps).
-2. What is shown on screen and any text/numbers that appear.
-3. Any speech — summarise what is said.
-4. What the developer should notice or reply to.
-
-Be factual: 4–10 short lines. No preamble.`;
-}
-
 // ── public API ──────────────────────────────────────────────
 /**
  * Understand an image.
@@ -353,49 +274,7 @@ export async function analyzeImage({ buffer, mimetype = 'image/jpeg', caption = 
 }
 
 /**
- * Understand a video natively (Gemini), falling back to frames handled by the caller.
- * @returns {Promise<{description:string, provider:string, model:string}|null>}
- */
-export async function analyzeVideo({ buffer, mimetype = 'video/mp4', caption = '', context = '' }) {
-  if (!buffer?.length) return null;
-  if (!visionProviders().includes('gemini')) return null;
-
-  bumpUsage('vision_calls', 1);
-
-  const INLINE_LIMIT = 15 * 1024 * 1024;
-  let uploaded = null;
-
-  try {
-    let parts;
-
-    if (buffer.length <= INLINE_LIMIT) {
-      parts = [
-        { inline_data: { mime_type: mimetype, data: buffer.toString('base64') } },
-        { text: videoPrompt({ caption, context }) },
-      ];
-    } else {
-      uploaded = await geminiUpload(buffer, mimetype, 'whatsapp-video');
-      parts = [
-        { file_data: { mime_type: uploaded.mimeType || mimetype, file_uri: uploaded.uri } },
-        { text: videoPrompt({ caption, context }) },
-      ];
-    }
-
-    const out = await withGeminiModels('video', (model) =>
-      geminiGenerate({ model, system: VISION_SYSTEM, parts, temperature: 0.3, maxTokens: 1100 })
-    );
-    if (out) return { description: out, provider: 'gemini', model: sticky.video?.model };
-    return null;
-  } catch (err) {
-    logEvent('video_native_error', null, err.message);
-    return null;
-  } finally {
-    if (uploaded?.name) await geminiDeleteFile(uploaded.name);
-  }
-}
-
-/**
- * Understand a set of extracted frames (used when native video isn't available).
+ * Understand locally extracted frames; no video container is sent.
  * @param {Array<{path:string, second:number}>} frames
  */
 export async function analyzeFrames({ frames = [], caption = '', context = '', gate }) {
@@ -443,7 +322,7 @@ export function visionStatus() {
 }
 
 export default {
-  analyzeImage, analyzeVideo, analyzeFrames, visionEnabled, videoNativeEnabled,
+  analyzeImage, analyzeFrames, visionEnabled, videoNativeEnabled,
   visionProviders, visionStatus,
 };
 

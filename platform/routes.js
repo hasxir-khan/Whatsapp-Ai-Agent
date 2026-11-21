@@ -12,9 +12,11 @@
 // Every refusal is the same shape, and none of them leak whether an account or
 // tenant exists.
 
+import { operatorLogin } from './operatorAuth.js';
 import { reportRoute, operatorRoute } from './reportRoutes.js';
 import { customerRoute, billingOperator } from './billing/routes.js';
 import { startBilling, bootstrapBilling } from './billing/jobs.js';
+import { billingBanner } from './billing/leases.js';
 import { warnLimit, entitlementsFor } from './billing/subscriptions.js';
 import { catalog } from './billing/catalog.js';
 import { billingEnabled, dashboardEnabled } from './env.js';
@@ -164,6 +166,11 @@ export async function handlePlatformRoute(req, res, url) {
   if (billingEnabled()) {
     bootstrapBilling();
     startBilling();
+  }
+  if (url.pathname === '/api/platform/operator/login') {
+    if (dashboardEnabled() || billingEnabled()) await operatorLogin(req, res);
+    else sendJson(res, 404, { error: 'not_found' });
+    return true;
   }
   if (opsBilling) {
     await billingOperator(req, res, url);
@@ -461,7 +468,7 @@ export async function handlePlatformRoute(req, res, url) {
       return (
         sendJson(res, 200, {
           ...state,
-          ...(billingEnabled() ? { billing: true } : {}),
+          ...(billingEnabled() ? { billing: true, billingBanner: billingBanner(entitlementsFor(slug)) } : {}),
           reports: dashboardEnabled(),
           ...onboardingState(slug),
           usage: usageSummary(slug),

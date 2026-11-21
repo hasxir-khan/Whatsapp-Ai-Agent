@@ -3,7 +3,7 @@ import { all, get, run, billingTransaction as transaction } from '../db.js';
 import { recordAudit } from './audit.js';
 import { latest, version, settings } from './catalog.js';
 import { entitlementsFor, subscription, addEvent, recordState, queue, opsReasons } from './subscriptions.js';
-import { stamp, need, minor, totals, bounded, choice, money } from './rules.js';
+import { stamp, need, minor, totals, bounded, choice, adjustmentExplanation, money } from './rules.js';
 import { REASON_CODES, REASON_MESSAGES } from '../../src/services/paymentReview.js';
 import { renderInvoicePDF } from '../../src/services/invoice.js';
 
@@ -97,7 +97,7 @@ export function priceUpgrade(slug, id, input, now = Date.now()) {
       sequence('INV', now),
       id,
     ]);
-    recordAudit({ action: 'billing_upgrade_priced', tenant: slug });
+    recordAudit({ action: 'billing_upgrade_priced', tenant: slug, detail: { object: id, reason: 'operator_priced_upgrade_difference', difference: price } });
     return invoice(slug, id);
   });
 }
@@ -137,7 +137,7 @@ function confirm(slug, p, input, now) {
   }
   queue(e.sid, 'receipt', p.id, 'email', now);
   recordState(slug, 'payment_confirmed', now);
-  recordAudit({ action: 'billing_payment_confirmed', tenant: slug, detail: { object: p.id } });
+  recordAudit({ action: 'billing_payment_confirmed', tenant: slug, detail: { object: p.id, reason: p.provider === 'manual' ? 'operator_confirmed_funds_received' : 'provider_confirmed_funds_received', amount: input.amount, currency: i.currency } });
   return paymentCard(slug, p.id);
 }
 export function reviewPayment(slug, id, action, input = {}, now = Date.now()) {
@@ -146,8 +146,10 @@ export function reviewPayment(slug, id, action, input = {}, now = Date.now()) {
     if (action === 'accept') return confirm(slug, p, input, now);
     const i = invoice(slug, p.invoice);
     const reason = input.reason;
+    let explanation;
     if (action === 'reverse') {
       choice(reason, opsReasons, 'reason_required');
+      explanation = adjustmentExplanation(input.explanation);
       if (p.state === 'reversed') return p;
       need(p.state === 'accepted', 'not_confirmed', 409);
       run('INSERT INTO b_reversal VALUES(?,?,?)', [id, stamp(now), reason]);
@@ -187,7 +189,7 @@ export function reviewPayment(slug, id, action, input = {}, now = Date.now()) {
       ]);
       queue(i.sid, action, id, 'email', now);
     }
-    recordAudit({ action: 'billing_payment_' + action, tenant: slug, detail: { object: id, reason } });
+    recordAudit({ action: 'billing_payment_' + action, tenant: slug, detail: { object: id, reason, ...(explanation ? { explanation } : {}) } });
     return paymentCard(slug, id);
   });
 }

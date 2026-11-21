@@ -16,6 +16,8 @@ Object.assign(process.env, {
   PLATFORM_SECRET: crypto.randomUUID(),
   PLATFORM_KEY_SECRET: crypto.randomUUID(),
   PLATFORM_OPERATOR_TOKEN: crypto.randomUUID(),
+  PLATFORM_OPERATOR_EMAIL: 'operator@example.invalid',
+  PLATFORM_MAILER: 'file',
   PLATFORM_TENANT_TOKEN: crypto.randomUUID(),
   PLATFORM_DIR: path.join(root, 'platform'),
   TENANTS_DIR: path.join(root, 'tenants'),
@@ -222,4 +224,14 @@ export async function serve() {
   const http = createPlatformServer();
   await new Promise((r) => http.listen(0, '127.0.0.1', r));
   return { http, origin: 'http://127.0.0.1:' + http.address().port };
+}
+
+export async function operatorHeaders(origin) {
+  const r = await fetch(origin + '/api/platform/operator/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-operator-login': '1' },
+    body: JSON.stringify({ credential: process.env.PLATFORM_OPERATOR_TOKEN }),
+  });
+  if (r.status !== 200) throw Error(`fixture login failed: ${r.status}`);
+  return { cookie: r.headers.get('set-cookie').split(';')[0] };
 }

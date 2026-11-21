@@ -309,6 +309,7 @@ import { tenantControls } from './controls.js';
       card.appendChild(el('div', { class: 'row' }, [retry]));
     }
 
+    if (d.billingBanner) card.appendChild(el('p', { class: 'notice', role: 'status', text: d.billingBanner }));
     if (d.billing)
       card.appendChild(
         el('p', {}, [el('a', { href: '/platform/billing/' + d.tenant.slug, text: 'Plans and billing →' })])

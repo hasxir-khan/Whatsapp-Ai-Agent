@@ -11,6 +11,7 @@ import path from 'node:path';
 import { evalConfigDir, ownerNumber, defaultCustomer, profilePath } from './evalEnv.js';
 import { allowedNumbers } from './fixtures.js';
 import { config } from '../config/env.js';
+import { hasFfmpeg } from '../services/ffmpeg.js';
 
 const TEMPLATE_DIR = new URL('../../config/templates/', import.meta.url);
 
@@ -284,14 +285,13 @@ function makeTransport({ db, number, now }) {
       reactions.push({ jid: to, key, emoji, at: now });
       return { key: { id: `react-${reactions.length}` } };
     },
-    // The next media download: a document's text when a turn sent a file, the
-    // placeholder audio otherwise.
+    // Voice and document turns set the exact download before dispatch.
     nextMedia: null,
     async getMedia() {
       const media = transport.nextMedia;
       transport.nextMedia = null;
       if (media) return media;
-      return { buffer: Buffer.from('eval-audio-bytes'), mimetype: 'audio/ogg' };
+      throw Error('No recorded media for this turn');
     },
     can: () => true,
     windowOpen: () => true,
@@ -505,21 +505,31 @@ export async function runScenario(scenario, { mode = 'deterministic', model, non
     const steps = Array.isArray(turn.model) ? turn.model : [];
     if (steps.length) model.beginTurn(steps);
 
+    let incomingTurn = turn;
     let restoreFetch = null;
+    if (turn.image) transport.nextMedia = { buffer: fs.readFileSync(new URL('../../test/fixtures/media/reference.jpg', import.meta.url)), mimetype: 'image/jpeg' };
+    if (turn.voice) {
+      const file = {ur: 'clear-urdu', 'roman-ur': 'spoken-roman-urdu'}[scenario.language] || 'english';
+      transport.nextMedia = { buffer: fs.readFileSync(new URL(`../../test/fixtures/media/${file}.ogg`, import.meta.url)), mimetype: 'audio/ogg' };
+    }
     if (turn.voice && mode === 'deterministic') {
-      restoreFetch = closure.installTranscriptStub(turn.voiceTranscript || 'Salam, table book karni hai');
+      const transcript = turn.voiceTranscript || 'Salam, table book karni hai';
+      if (hasFfmpeg()) restoreFetch = closure.installTranscriptStub(transcript);
+      // Conversation-only replay on hosts without a decoder. Do not add a
+      // production STT bypass for a test; the media suite covers refusal.
+      else incomingTurn = { ...turn, voice: false, user: transcript };
     }
 
     try {
       if (turn.user !== undefined) {
         if (turn.document) {
           // The download the document branch performs must return the file's
-          // text, not the placeholder audio.
+          // text, not fixture audio.
           transport.nextMedia = { buffer: Buffer.from(String(turn.document.text || '')), mimetype: 'text/plain' };
         }
         // The pinned clock goes in with the message: "tomorrow at 11" must mean
         // the same date on every run, not whatever day the suite happens to run.
-        await handleIncoming(transport, messageFor({ scenario, turn, number, index, nonce, tag }), { now: fixedDate(turn) });
+        await handleIncoming(transport, messageFor({ scenario, turn: incomingTurn, number, index, nonce, tag }), { now: fixedDate(turn) });
       } else if (turn.owner !== undefined) {
         // The scenario's clock, not the wall clock: an owner command that
         // messages a customer must not change its answer with the hour the eval

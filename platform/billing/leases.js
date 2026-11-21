@@ -1,3 +1,4 @@
+import { termNotice, pausedBehaviour } from '../../src/services/billingNotices.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -11,18 +12,28 @@ export function reminderDays(e, now) {
   const left = Math.ceil((Date.parse(e.end) - Number(new Date(now))) / DAY);
   return [1, 3, 7].find((n) => left > 0 && left <= n) || null;
 }
+// Render from the current term, not the mail outbox or a potentially offline worker.
+export function billingBanner(e, now = Date.now()) {
+  if (!e) return null;
+  if (!e.canRun) return termNotice('paused', e.end, e.pausedReply);
+  if (e.state === 'grace') return `Grace ends on ${e.until.slice(0, 10)} UTC. ${pausedBehaviour(e.pausedReply)}`;
+  const days = reminderDays(e, now);
+  return days ? termNotice('remind_' + days, e.end, e.pausedReply) : null;
+}
 // Fail closed on a missing tenant mount (do not create a replacement tenant).
 export function publishLease(slug, now = Date.now()) {
   const e = entitlementsFor(slug, now);
   if (!e) return false;
   const days = reminderDays(e, now),
     dir = path.join(tenantDir(slug), 'data');
-  const notices = days
-    ? all("SELECT id FROM b_delivery WHERE sid=? AND channel='whatsapp' AND kind=? AND object=?", [
+  const kind = !e.canRun ? 'paused' : days ? 'remind_' + days : null;
+  const notices = kind
+    ? all("SELECT id FROM b_delivery WHERE sid=? AND channel='whatsapp' AND kind=? AND object=? AND at>=?", [
         e.sid,
-        'remind_' + days,
+        kind,
         e.end,
-      ]).map((r) => ({ days, end: e.end, id: createHash('sha256').update(r.id).digest('hex') }))
+        stamp(+new Date(now) - 30 * DAY),
+      ]).map((r) => ({ kind, days, end: e.end, id: createHash('sha256').update(r.id).digest('hex') }))
     : [];
   const file = path.join(dir, 'billing-lease.json');
   const lease = {

@@ -152,11 +152,11 @@ try {
     0,
   );
   assert.equal((await sp.goto(base + 'payments')).status(), 403);
-  const ops = await profile(null, {
-      httpCredentials: { username: 'operator', password: process.env.PLATFORM_OPERATOR_TOKEN },
-    }),
+  const ops = await profile(null),
     op = await ops.newPage();
   await op.goto(origin + '/platform/operator');
+  await op.getByLabel('Operator credential').fill(process.env.PLATFORM_OPERATOR_TOKEN);
+  await op.getByRole('button', {name: 'Sign in'}).click();
   await op.getByRole('heading', { name: 'Fleet health', level: 1 }).waitFor();
   console.log('phone OK: staff navigation, direct denial, separate operator login');
 } finally {

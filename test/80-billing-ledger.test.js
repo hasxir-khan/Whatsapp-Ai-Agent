@@ -121,7 +121,7 @@ test('partial confirmation, double click, reversal and re-grant do not duplicate
   assert.equal(get("SELECT count(*) n FROM b_delivery WHERE sid=? AND kind='receipt'", [t.s.sid]).n, 2);
   assert.throws(() => pay.reviewPayment(t.slug, p.id, 'reverse', {}, at), /reason_required/);
   for (let n = 0; n < 2; n++)
-    pay.reviewPayment(t.slug, p.id, 'reverse', { reason: 'bank_reversal' }, at + DAY);
+    pay.reviewPayment(t.slug, p.id, 'reverse', { reason: 'bank_reversal', explanation: 'Bank returned the transfer.' }, at + DAY);
   assert.equal(subs.entitlementsFor(t.slug, at + DAY).state, 'trialing');
   assert.equal(pay.invoice(t.slug, i.id).due, 4000);
   const p3 = submit(t, i, at + DAY);
@@ -142,7 +142,7 @@ test('reversing a previous stacked grant replays later terms rather than subtrac
   accept(t, p, i, i.due, at);
   const j = buy(t, v, 2, at + 5 * DAY);
   accept(t, submit(t, j, at + 5 * DAY), j, j.due, at + 5 * DAY);
-  pay.reviewPayment(t.slug, p.id, 'reverse', { reason: 'support_correction' }, at + 6 * DAY);
+  pay.reviewPayment(t.slug, p.id, 'reverse', { reason: 'support_correction', explanation: 'Duplicate reconciliation entry.' }, at + 6 * DAY);
   assert.equal(subs.entitlementsFor(t.slug, at + 6 * DAY).end, monthsAfter(at + 5 * DAY, 2));
 });
 test('numbering per year by document kind; unpaid and rejected do not add revenue; refunds are records only', () => {

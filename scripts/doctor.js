@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { config, describeConfig, teamMembers } from '../src/config/env.js';
-import { GEMINI_BASE, geminiHeadersWith, authHeadersFor, isKeyError, explainGeminiError, maskKey, keyFormat } from '../src/utils/gemini.js';
+import { GEMINI_BASE, authHeadersFor, isKeyError } from '../src/utils/gemini.js';
 import { validateProfile, FEATURE_KEYS, effectiveCatalog, business, featureOn, profile as readProfile } from '../src/services/profile.js';
 import { listTemplates } from '../src/services/templates.js';
 
@@ -329,175 +329,58 @@ async function checkBusiness() {
   }
 }
 
-async function checkGroq() {
-  section('Groq (chat + speech-to-text)');
-  if (!config.keys.groq) {
-    warn('GROQ_API_KEY not set');
-    notes.push('Get a free key at https://console.groq.com/keys — it powers chat and voice-note transcription.');
-    return;
-  }
-  ok('Key present');
-  try {
-    const res = await timedFetch('https://api.groq.com/openai/v1/models', {
-      headers: { Authorization: `Bearer ${config.keys.groq}` },
-    });
-    if (res.status === 401) {
-      bad('Key rejected (401)');
-      problems.push('Your GROQ_API_KEY is invalid.');
-      return;
-    }
-    const data = await res.json();
-    const ids = (data.data || []).map((m) => m.id);
-    ok(`${ids.length} models available`);
-    for (const model of config.llm.groqModels) {
-      info(`${ids.includes(model) ? '✅' : '❌'} chat model ${model}`);
-    }
-    for (const model of [config.stt.model, config.stt.fallbackModel]) {
-      info(`${ids.includes(model) ? '✅' : '❌'} speech model ${model}`);
-    }
-    if (!ids.includes(config.stt.model)) notes.push(`Whisper model ${config.stt.model} not listed — set WHISPER_MODEL to one that is.`);
-    if (!ids.some((id) => config.llm.groqModels.includes(id))) {
-      notes.push('None of your GROQ_MODELS exist any more — run `node -e` to list models and update .env.');
-    }
-    const tts = ids.filter((id) => /tts|orpheus/i.test(id));
-    info(tts.length ? `TTS models: ${tts.join(', ')}` : 'no TTS models on this account (Edge voice is used instead)');
-  } catch (err) {
-    warn(`Could not reach Groq: ${err.message}`);
-    notes.push('If you are offline, the bot still connects to WhatsApp but cannot answer.');
+async function checkModels(providers, probeGemini) {
+  section('Provider model lists');
+  const {verifyModels, modelWarnings} = await import('../src/services/modelCatalog.js');
+  for (const check of await verifyModels({providers})) {
+    if ([401,403].includes(check.status)) problems.push(`${check.provider} rejected the model-list request; check the key and permissions.`);
+    const warnings = modelWarnings(check);
+    if (!warnings.length) ok(`${check.provider} slot ${check.slot}: all configured models are listed`);
+    for (const m of warnings) warn(m);
+    // Keep the pre-existing inference diagnostic in full/Gemini doctor; the
+    // startup verifier and `doctor models` only use provider list endpoints.
+    if (probeGemini && check.provider === 'gemini' && check.slot === 1 && check.state === 'listed')
+      await checkGeminiGeneration(check);
   }
 }
 
-async function checkGemini() {
-  section('Google Gemini (images + video)');
-  if (!config.keys.gemini) {
-    warn('GEMINI_API_KEY not set — images/videos will not be understood');
-    notes.push('Free key: https://aistudio.google.com/api-keys (needed for "see my video").');
-    return;
-  }
-
-  const format = keyFormat(config.keys.gemini);
-  ok(`Key present: ${maskKey(config.keys.gemini)} (${format === 'current' ? 'AQ. — current format' : format === 'legacy' ? 'AIza — legacy format, still valid' : 'unrecognised format'})`);
-  if (format === 'unknown') {
-    notes.push('Gemini keys start with "AQ." (current) or "AIza" (legacy). Yours looks truncated — re-copy the whole key.');
-  }
-
-  // 1. Is the key accepted at all? Try the configured auth style, then the other.
-  const styles = config.geminiAuthStyle === 'bearer' ? ['bearer', 'key'] : ['key', 'bearer'];
-  let workingStyle = null;
-  let lastFailure = null;
-
+async function checkGeminiGeneration({ unknown, alternateStyle }) {
+  const chain = [...new Set([...config.vision.geminiModels, ...config.llm.geminiModels])].filter(
+    (m) => !unknown.includes(m)
+  );
   try {
-    for (const style of styles) {
-      const res = await timedFetch(`${GEMINI_BASE}/models?pageSize=1`, { headers: geminiHeadersWith(style) });
-      const body = await res.text();
-      if (res.ok) {
-        workingStyle = style;
-        break;
-      }
-      lastFailure = { status: res.status, body };
-      // Only an auth failure is worth retrying with another auth style.
-      if (!isKeyError(res.status, body)) break;
-    }
-
-    if (!workingStyle) {
-      const { status, body } = lastFailure || { status: 0, body: '' };
-      bad(explainGeminiError(status, body));
-      if (isKeyError(status, body)) {
-        problems.push('GEMINI_API_KEY was rejected by Google — replace it in .env.');
-        notes.push(
-          'The key was refused, not the model: it may be revoked, deleted, restricted to other APIs, or from a project without the Gemini API enabled. Mint a new one at https://aistudio.google.com/api-keys (they start with "AQ.").'
-        );
-      }
-      return;
-    }
-
-    ok(`Key accepted by Google (${workingStyle === 'key' ? 'x-goog-api-key' : 'Authorization: Bearer'} auth)`);
-    if (workingStyle !== config.geminiAuthStyle) {
-      notes.push(`This key needs a different auth style. Add \x1b[1mGEMINI_AUTH_STYLE=${workingStyle}\x1b[0m to .env`);
-    }
-
-    const data = JSON.parse(await (await timedFetch(`${GEMINI_BASE}/models?pageSize=200`, { headers: geminiHeadersWith(workingStyle) })).text());
-    const names = (data.models || [])
-      .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
-      .map((m) => m.name.replace('models/', ''));
-    if (names.length) info(`${names.length} models on this key, e.g. ${names.slice(0, 4).join(', ')}`);
-
-    // 2. Can we actually generate with the models we plan to use?
-    const chain = [...new Set([...config.vision.geminiModels, ...config.llm.geminiModels])];
-    info(`model chain: ${chain.join(' → ')}`);
-
-    let working = null;
     for (const model of chain.slice(0, 4)) {
-      const modelRes = await timedFetch(
-        `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: 'POST',
-          headers: geminiHeadersWith(workingStyle, { 'Content-Type': 'application/json' }),
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: 'reply with the single word: ok' }] }],
-            generationConfig: { maxOutputTokens: 5, temperature: 0 },
-          }),
+      const res = await fetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST',
+        redirect: 'error',
+        signal: AbortSignal.timeout(20000),
+        headers: {
+          ...authHeadersFor(config.keys.gemini, alternateStyle || config.geminiAuthStyle),
+          'Content-Type': 'application/json',
         },
-        20000
-      );
-      const modelBody = await modelRes.text();
-
-      if (modelRes.ok) {
-        ok(`${model} works`);
-        working = working || model;
-        try {
-          const j = JSON.parse(modelBody);
-          const answer = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text).join('').trim();
-          if (answer) info(`it answered: "${answer.slice(0, 40)}"`);
-        } catch {
-          /* the answer text is a bonus, not a requirement */
-        }
-        break;
-      }
-
-      if (isKeyError(modelRes.status, modelBody)) {
-        bad(explainGeminiError(modelRes.status, modelBody));
-        problems.push('GEMINI_API_KEY was rejected by Google — replace it in .env.');
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: 'reply with the single word: ok' }] }],
+          generationConfig: { maxOutputTokens: 5, temperature: 0 },
+        }),
+      });
+      await res.body?.cancel(); // do not echo remote bodies or credential fragments
+      if (res.ok) {
+        ok('Gemini generation probe succeeded.');
         return;
       }
-      if (modelRes.status === 404 || modelRes.status === 400) {
-        info(`❌ ${model} — not available on this key`);
-        continue;
+      if (res.status === 400 || res.status === 404) continue;
+      if (res.status === 429) {
+        warn('Gemini generation is rate limited. Retry after cooldown.');
+        return;
       }
-      if (modelRes.status === 429) {
-        warn(`${model} is rate-limited right now (free tier). It usually still works later.`);
-        break;
-      }
-      bad(`${model} — ${explainGeminiError(modelRes.status, modelBody)}`);
-      break;
+      problems.push(`Gemini generation failed (HTTP ${res.status}); check key permissions and quota.`);
+      return;
     }
-
-    if (!working) {
-      problems.push(
-        `None of your Gemini models responded. Set GEMINI_VISION_MODEL to one from this list and retry: ${names.slice(0, 6).join(', ') || '(none listed)'}`
-      );
-    }
-  } catch (err) {
-    if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|fetch failed|network|timed out/i.test(err.message)) {
-      warn(`Could not reach Gemini from this machine (${err.message.split('\n')[0]})`);
-      notes.push('No internet / firewall on this box — the key cannot be verified offline. Run `npm run doctor` on the machine that runs the bot.');
-    } else {
-      warn(`Gemini check failed: ${err.message.split('\n')[0]}`);
-    }
-  }
-}
-
-async function checkOpenRouter() {
-  if (!config.keys.openrouter) return;
-  section('OpenRouter (vision fallback)');
-  ok('Key present');
-  try {
-    const res = await timedFetch('https://openrouter.ai/api/v1/models', {
-      headers: { Authorization: `Bearer ${config.keys.openrouter}` },
-    });
-    ok(res.ok ? 'reachable' : `returned ${res.status}`);
-  } catch (err) {
-    warn(`Could not reach OpenRouter: ${err.message}`);
+    problems.push(
+      'No configured Gemini chat/vision model responded. Review the model list and generation permissions.'
+    );
+  } catch {
+    warn('Gemini generation probe unavailable; inference not verified.');
   }
 }
 
@@ -533,16 +416,17 @@ async function checkMedia() {
   const { hasFfmpeg, ffmpegPath } = await import('../src/services/ffmpeg.js');
   if (hasFfmpeg()) ok(`ffmpeg: ${ffmpegPath()}`);
   else {
-    warn('ffmpeg not found — voice replies become audio files; video frames unavailable');
+    warn('ffmpeg not found — inbound audio and video are refused; voice replies may become audio files');
     notes.push('Install ffmpeg (apt install ffmpeg) or `npm i ffmpeg-static` for real voice notes and frame extraction.');
   }
 
-  const { visionEnabled, visionProviders, videoNativeEnabled } = await import('../src/services/vision.js');
-  if (visionEnabled()) ok(`vision: ${visionProviders().join(', ')}${videoNativeEnabled() ? ' (native video)' : ''}`);
-  else bad('no vision provider — images and video will not be understood');
+  const { visionEnabled, visionProviders } = await import('../src/services/vision.js');
+  if (visionEnabled()) ok(`vision: ${visionProviders().join(', ')} (images and extracted frames)`);
+  else warn('missing vision key — no configured vision provider can read images or video frames');
 
   const { sttEnabled } = await import('../src/services/transcription.js');
-  if (sttEnabled()) ok('voice-note transcription ready');
+  if (sttEnabled() && hasFfmpeg()) ok('voice-note transcription ready');
+  else if (sttEnabled()) warn('voice-note transcription needs ffmpeg to enforce MAX_AUDIO_SECONDS');
   else bad('voice-note transcription unavailable (needs GROQ_API_KEY)');
 
   const { allowedSpeech } = await import('../src/services/voicePolicy.js');
@@ -558,11 +442,10 @@ async function checkMedia() {
     if (!hasFfmpeg()) missing('protected video and capped voice replies require ffmpeg');
     if (featureOn('videoUnderstanding') && !visionEnabled())
       missing('missing vision key — configure a frame vision provider');
-    if (featureOn('voiceLanguagePolicy'))
-      for (const code of allowedSpeech(b)) {
-        if (!config.tts.providers.some((p) => configuredVoice(p, code)))
-          warn(`missing TTS voice for ${code} — text only`);
-      }
+  }
+  for (const code of allowedSpeech(config.owner.profile?.business)) {
+    if (!config.tts.providers.some((p) => configuredVoice(p, code)))
+      warn(`missing TTS voice for ${code} — configure a matching voice or use text only`);
   }
   if (ttsEnabled()) ok(`voice replies: ${config.tts.mode} via ${config.tts.providers.join(', ')}`);
   else warn('voice replies disabled (VOICE_REPLY_MODE=off)');
@@ -1374,13 +1257,23 @@ async function main() {
     if (!check.enabled) info('Platform disabled.');
     else if (!check.errors.length && !check.warnings.length) ok('Configuration and stored key envelopes checked.');
   }
+  if (want('secrets','platform','media')) {
+    const {keySecretProblem, tenantTokenProblem} = await import('../platform/crypto.js');
+    // The master belongs ONLY on the control plane, not in worker environments.
+    const {platformEnabled} = await import('../platform/env.js');
+    if (!process.env.TENANT_WORKER_MODE && (!platformEnabled() || only === 'secrets' || only === 'media') && keySecretProblem())
+      warn('PLATFORM_KEY_SECRET missing or weak — required on the platform host for stored AI keys, not in tenant workers. See Backups and secrets.');
+    if ((only === 'secrets' || process.env.TENANT_WORKER_MODE || process.env.TENANT_DASHBOARD === '1' || process.env.PLATFORM_TENANT_TOKEN) && tenantTokenProblem(process.env.PLATFORM_TENANT_TOKEN))
+      warn('PLATFORM_TENANT_TOKEN missing or weak — required for managed tenant identity. See Backups and secrets.');
+  }
   if (want('runtime')) await checkNode();
   if (want('files')) await checkFiles();
   if (want('identity', 'owner')) await checkOwner();
   if (want('business', 'profile', 'catalog', 'features')) await checkBusiness();
-  if (want('groq')) await checkGroq();
-  if (want('gemini', 'google')) await checkGemini();
-  if (want('openrouter')) await checkOpenRouter();
+  const providers = ['groq', 'gemini', 'openrouter'].filter(
+    (p) => want('models', p) || (p === 'gemini' && want('google'))
+  );
+  if (providers.length) await checkModels(providers, want('gemini', 'google'));
   if (want('team', 'calls')) await checkTeamAndCalls();
   if (want('media', 'ffmpeg', 'vision')) await checkMedia();
   if (want('memory', 'db', 'database')) await checkMemory();

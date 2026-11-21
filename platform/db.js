@@ -100,7 +100,12 @@ export async function initPlatformDb({ file: target = platformDbFile() } = {}) {
       db.run("UPDATE tenants SET status = 'provisioned' WHERE status = 'active' AND test_chat_at IS NULL");
       db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     }
+    db.run(
+      'CREATE TABLE IF NOT EXISTS operator_guard(id INTEGER PRIMARY KEY,since INTEGER,failures INTEGER,locked_until INTEGER,last_step INTEGER)'
+    );
     for (const statement of billingSchema) db.run(statement);
+    if (!all('PRAGMA table_info(b_delivery)').some((c) => c.name === 'attempts'))
+      db.run('ALTER TABLE b_delivery ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
     compact = migrateReports(db);
     const installSalt = migrateNumbers(db);
     compact = migrateMeterIdentities(db, installSalt) || compact;
