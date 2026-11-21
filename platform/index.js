@@ -1,3 +1,4 @@
+import { startBilling, stopBilling } from './billing/jobs.js';
 // platform/index.js
 // The control plane, as a layer and as an app.
 //
@@ -37,10 +38,12 @@ export async function initPlatform() {
   seedPlans();
   attachUsageSink();
   startReportImporter();
+  startBilling();
   return { ok: true, enabled: true, dir: platformDir(), secretSet: !!platformSecret() };
 }
 
 export function shutdownPlatform() {
+  stopBilling();
   stopReportImporter();
   detachUsageSink();
   flush();

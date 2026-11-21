@@ -309,6 +309,10 @@ import { tenantControls } from './controls.js';
       card.appendChild(el('div', { class: 'row' }, [retry]));
     }
 
+    if (d.billing)
+      card.appendChild(
+        el('p', {}, [el('a', { href: '/platform/billing/' + d.tenant.slug, text: 'Plans and billing →' })])
+      );
     if (d.reports)
       card.appendChild(
         el('p', {}, [
@@ -721,6 +725,10 @@ import { tenantControls } from './controls.js';
   }
 
   function planPanel(d) {
+    if (d.billing)
+      return el('p', {}, [
+        el('a', { href: '/platform/billing/' + d.tenant.slug, text: 'View subscription, usage and payments' }),
+      ]);
     var box = el('div', {});
     box.appendChild(el('p', { class: 'muted', text: 'Plans set limits. There is no payment in this product yet — an admin assigns a plan by hand.' }));
     var list = el('div', { class: 'tenant-list' });

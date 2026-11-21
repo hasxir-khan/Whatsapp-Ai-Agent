@@ -204,3 +204,12 @@ export async function clipAudio(file, dir, { seconds }) {
   const peak = /max_volume:\s*(-?[\d.]+) dB/.exec(stderr);
   return peak && Number(peak[1]) < -55 ? null : out;
 }
+
+// Count actual audio packet time, not the duration claimed by a WhatsApp sender.
+export async function billableAudioSeconds(file) {
+  if (!hasFfmpeg()) return null;
+  try { const {stdout} = await run(['-nostdin','-v','error','-progress','pipe:1','-protocol_whitelist','file,pipe','-format_whitelist','ogg,mp3,mov,matroska,webm,wav,flac,aac','-i',file,'-map','0:a:0','-c','copy','-t','601','-f','null','-'],{timeout:8000});
+    const us = [...stdout.matchAll(/^out_time_us=(\d+)$/gm)].reduce((n,m)=>Math.max(n,Number(m[1])),0);
+    return us>0 && us<=600e6 ? Math.ceil(us/1e6) : null;
+  } catch {return null;}
+}

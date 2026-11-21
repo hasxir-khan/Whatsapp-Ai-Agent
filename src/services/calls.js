@@ -1,3 +1,5 @@
+import {workerAccess} from './billingLease.js';
+import {admit} from './billingMeter.js';
 // src/services/calls.js
 // Missed-call rescue.
 //
@@ -149,10 +151,10 @@ async function composeMessage(number, { langInfo, tone }) {
 }
 
 // ── main logic ─────────────────────────────────────────────
-export function registerCalls(sock) {
+export function registerCalls(sock, sender = sock) {
   try {
     sock.ev.on('call', (calls) => {
-      handleCallEvents(sock, calls).catch((err) => console.error('Call handler:', err.message));
+      handleCallEvents(sender, calls).catch((err) => console.error('Call handler:', err.message));
     });
   } catch (err) {
     console.error('Could not subscribe to call events:', err.message);
@@ -165,6 +167,7 @@ export function registerCalls(sock) {
  * @param {Array<{id:string, chatId:string, from:string, status:string, isVideo:boolean}>} calls
  */
 export async function handleCallEvents(sock, calls = []) {
+  if (workerAccess()?.canRun === false) return;
   for (const call of calls) {
     try {
       await handleOne(sock, call);
@@ -267,6 +270,7 @@ async function handleOne(sock, call) {
  */
 export async function handleMissedCall(sock, number, { id = null, video = false, reason = 'no_answer', missAt = null } = {}) {
   if (db.getSetting('bot_enabled', true) !== true) return { sent: false };
+  if (!admit('chat', 1, number)) return { sent: false, reason: 'assistant_limit' };
   const contactNow = db.getContact(number);
   if (contactNow?.is_blocked) return { sent: false };
   // The owner is handling this chat, or the customer opted out: the apology is

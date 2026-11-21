@@ -1,3 +1,4 @@
+import {billingLimit} from './billingLease.js';
 /**
  * Who may answer an owner decision — and in what order they are asked.
  *
@@ -79,7 +80,8 @@ export function decisionSettings(profileObj = config.owner?.profile || {}) {
   const team = isObject(raw.team) ? raw.team : {};
   const members = (Array.isArray(team.members) ? team.members : [])
     .map((m) => normalizeMember(m))
-    .filter((m) => m.number);
+    .filter((m) => m.number)
+    .slice(0, billingLimit('team_members', undefined));
 
   const reminders = (Array.isArray(raw.reminderMinutes) ? raw.reminderMinutes : DEFAULT_REMINDER_MINUTES)
     .map((n) => Math.round(Number(n)))
@@ -153,7 +155,7 @@ export function teamLimit() {
     Number(config.limits?.teamMembers) ||
     Number(process.env.TEAM_MAX_MEMBERS) ||
     DEFAULT_TEAM_LIMIT;
-  return Math.max(1, Math.round(raw));
+  return billingLimit('team_members', Math.max(1, Math.round(raw)));
 }
 
 /** The owner, then the members — one list the commands can print. */

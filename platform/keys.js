@@ -1,3 +1,6 @@
+import {publishLease} from './billing/leases.js';
+import {billingEnabled} from './env.js';
+import {entitlementsFor} from './billing/subscriptions.js';
 import { dashboardEnabled } from './env.js';
 import { retention, alias } from '../src/services/reportContract.js';
 import { planForTenant } from './plans.js';
@@ -429,17 +432,34 @@ export async function stopKeyWorker(slug) {
 /** Called under withWorker: replacing the child is what drops its old env. */
 export async function deliverKeysAtStart(slug, { start = false, linkOnly = false, pairingNumber = '' } = {}) {
   const t = get('SELECT status, trial_ends_at FROM tenants WHERE slug = ?', [slug]);
-  if (!t || (linkOnly && !['provisioned','active'].includes(t.status)) || Date.parse(t.trial_ends_at) <= Date.now()) return { ok: false, error: 'not_ready' };
+  if (
+    !t ||
+    (linkOnly && !['provisioned', 'active'].includes(t.status)) ||
+    (billingEnabled() ? !entitlementsFor(slug)?.canRun : Date.parse(t.trial_ends_at) <= Date.now())
+  )
+    return { ok: false, error: 'not_ready' };
+  if (billingEnabled() && !publishLease(slug)) return { ok: false, error: 'billing_lease_unavailable' };
   const built = linkOnly ? { ok: true, env: emptyKeyEnv(), delivered: 0 } : deliveryEnv(slug);
   if (!built.ok) return built;
   const fn = start ? keyHooks.startTenant || adminHooks.start : keyHooks.restartTenant || adminHooks.restart;
   try {
-    const res = await fn(slug, { isolated: true, extraEnv: { ...built.env, PAIRING_NUMBER: pairingNumber,
-      TENANT_VIDEOS_MONTH: String(planForTenant(slug)?.plan?.limits?.videos_month || 0),
-      TENANT_METER_KEY: linkOnly ? '' : meterKeyForTenant(slug).toString('hex'),
-      TENANT_DASHBOARD: dashboardEnabled() && !linkOnly ? '1' : '0', TENANT_REPORT_DAYS: String(retention(planForTenant(slug)?.plan)),
-      TENANT_WORKER_MODE: linkOnly ? 'link' : 'live' } });
+    if (billingEnabled() && start && tenantRunning(slug) && !get('SELECT wired FROM b_sub WHERE slug=?', [slug])?.wired)
+      await stopKeyWorker(slug);
+    const res = await fn(slug, {
+      isolated: true,
+      extraEnv: {
+        ...built.env,
+        ...(billingEnabled() ? { TENANT_BILLING: '1' } : {}),
+        PAIRING_NUMBER: pairingNumber,
+        TENANT_VIDEOS_MONTH: String(planForTenant(slug)?.plan?.limits?.videos_month || 0),
+        TENANT_METER_KEY: linkOnly ? '' : meterKeyForTenant(slug).toString('hex'),
+        TENANT_DASHBOARD: dashboardEnabled() && !linkOnly ? '1' : '0',
+        TENANT_REPORT_DAYS: String(retention(planForTenant(slug)?.plan)),
+        TENANT_WORKER_MODE: linkOnly ? 'link' : 'live',
+      },
+    });
     if (res?.ok === false) throw new Error();
+    run('UPDATE b_sub SET wired=? WHERE slug=?', [billingEnabled() ? 1 : 0, slug]);
     return { ok: true, delivered: built.delivered };
   } catch {
     return { ok: false, error: 'worker_start_failed' };

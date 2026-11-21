@@ -13,7 +13,11 @@
 // tenant exists.
 
 import { reportRoute, operatorRoute } from './reportRoutes.js';
-import { dashboardEnabled } from './env.js';
+import { customerRoute, billingOperator } from './billing/routes.js';
+import { startBilling, bootstrapBilling } from './billing/jobs.js';
+import { warnLimit, entitlementsFor } from './billing/subscriptions.js';
+import { catalog } from './billing/catalog.js';
+import { billingEnabled, dashboardEnabled } from './env.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -124,11 +128,21 @@ export async function handlePlatformRoute(req, res, url) {
   if (!isPlatformPath(url?.pathname)) return false;
   if (!platformEnabled()) return false; // not ours: the server answers 404
 
+  const billingPage = /^\/platform\/billing\/([a-z0-9-]{2,40})$/.exec(url.pathname);
+  const opsBilling = /^\/(?:api\/)?platform\/operator\/billing(?:\/|$)/.test(url.pathname);
+  if (
+    (billingPage ||
+      opsBilling ||
+      /^\/platform\/billing(?:[.-]|$)/.test(url.pathname) ||
+      /^\/api\/platform\/tenants\/[^/]+\/billing(?:\/|$)/.test(url.pathname)) &&
+    !billingEnabled()
+  )
+    return (sendJson(res, 404, { error: 'not_found' }), true);
   const html = /^\/platform\/reports\/([a-z0-9-]{2,40})\/([a-z]+)$/.exec(url.pathname);
   const operator = ['/platform/operator', '/api/platform/operator'].includes(url.pathname);
   if ((html || operator || /\/reports(?:\/|\.(?:js|css)$)/.test(url.pathname)) && !dashboardEnabled())
     return (sendJson(res, 404, { error: 'not_found' }), true);
-  const pathname = html ? `/api/platform/tenants/${html[1]}/reports/${html[2]}` : url.pathname;
+  const pathname = billingPage ? `/api/platform/tenants/${billingPage[1]}/billing` : html ? `/api/platform/tenants/${html[1]}/reports/${html[2]}` : url.pathname;
   const isApi = pathname.startsWith('/api/platform');
   const method = String(req.method || 'GET').toUpperCase();
   const ip = clientIp(req);
@@ -147,6 +161,14 @@ export async function handlePlatformRoute(req, res, url) {
   await ensurePlatformDb();
   seedPlans();
 
+  if (billingEnabled()) {
+    bootstrapBilling();
+    startBilling();
+  }
+  if (opsBilling) {
+    await billingOperator(req, res, url);
+    return true;
+  }
   if (operator) {
     operatorRoute(req, res, url);
     return true;
@@ -175,7 +197,7 @@ export async function handlePlatformRoute(req, res, url) {
     }
     if (pathname.startsWith('/platform/') && TYPES[path.extname(pathname)]) {
       const name = path.basename(pathname);
-      if (['app.js', 'controls.js', 'app.css', 'auth.js','reports.js','reports.css'].includes(name)) return serveStatic(res, path.join(PUBLIC, name)), true;
+      if (['app.js', 'controls.js', 'app.css', 'auth.js','reports.js','reports.css',...(billingEnabled()?['billing.js','billing.css','billing-money.js']:[])].includes(name)) return serveStatic(res, path.join(PUBLIC, name)), true;
     }
     return sendHtml(res, 404, views.notFoundPage()), true;
   }
@@ -244,7 +266,7 @@ export async function handlePlatformRoute(req, res, url) {
 
   // Everything below needs a session.
   const who = session.readSession(req);
-  if (!who.ok) return unauthenticated(res, !html), true;
+  if (!who.ok) return unauthenticated(res, !html&&!billingPage), true;
   const account = getAccount(who.accountId);
   if (!account || account.status !== 'active') {
     return sendJson(res, 401, { error: 'unauthorised' }, { 'Set-Cookie': session.clearCookies() }), true;
@@ -266,20 +288,32 @@ export async function handlePlatformRoute(req, res, url) {
 
   // ── account-level routes ─────────────────────────────────
   if (pathname === '/api/platform/me' && method === 'GET') {
-    return sendJson(res, 200, {
-      account: accountPayload(account),
-      tenants: tenantsForAccount(account.id).map(tenantPayload),
-      plans: listPlans().map((p) => ({ id: p.id, name: p.name, limits: p.limits })),
-      templates: (await import('../src/services/templates.js')).listTemplates(),
-      notifications: notificationsFor(account.id),
-      consent: accounts.consentStatus(account),
-    }), true;
+    return (
+      sendJson(res, 200, {
+        account: accountPayload(account),
+        tenants: tenantsForAccount(account.id).map(tenantPayload),
+        plans: (billingEnabled()
+          ? catalog().map((p) => ({ ...p, id: p.plan, trial_days: p.trialDays }))
+          : listPlans()
+        ).map((p) => ({ id: p.id, name: p.name, limits: p.limits })),
+        templates: (await import('../src/services/templates.js')).listTemplates(),
+        notifications: notificationsFor(account.id),
+        consent: accounts.consentStatus(account),
+      }),
+      true
+    );
   }
 
   if (pathname === '/api/platform/plans' && method === 'GET') {
-    return sendJson(res, 200, {
-      plans: listPlans().map((p) => ({ id: p.id, name: p.name, limits: p.limits, features: p.features, trial_days: p.trial_days })),
-    }), true;
+    return (
+      sendJson(res, 200, {
+        plans: (billingEnabled()
+          ? catalog().map((p) => ({ ...p, id: p.plan, trial_days: p.trialDays }))
+          : listPlans()
+        ).map((p) => ({ id: p.id, name: p.name, limits: p.limits, features: p.features, trial_days: p.trial_days })),
+      }),
+      true
+    );
   }
 
   if (pathname === '/api/platform/logout' && method === 'POST') {
@@ -289,7 +323,7 @@ export async function handlePlatformRoute(req, res, url) {
   }
 
   if (pathname === '/api/platform/account/export' && method === 'POST') {
-    if (dashboardEnabled() && (!who.csrf || !safeEqual(req.headers['x-platform-csrf'] || '', who.csrf)))
+    if ((dashboardEnabled()||billingEnabled()) && (!who.csrf || !safeEqual(req.headers['x-platform-csrf'] || '', who.csrf)))
       return (sendJson(res, 403, { error: 'csrf' }), true);
     if (!rateLimit(`account-export:${account.id}`, { max: 4, windowMs: 3600000 }).ok)
       return (sendJson(res, 429, { error: 'export_limit' }), true);
@@ -302,6 +336,8 @@ export async function handlePlatformRoute(req, res, url) {
   if (pathname === '/api/platform/account/delete' && method === 'POST') {
     const body = await readJsonBody(req);
     if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+    if (billingEnabled() && (!who.csrf || !safeEqual(req.headers['x-platform-csrf'] || '', who.csrf)))
+      return (sendJson(res, 403, { error: 'csrf' }), true);
     if (body.body.confirm !== 'DELETE') {
       return sendJson(res, 400, { error: 'confirm_required', message: 'Send {"confirm":"DELETE"} to delete.' }), true;
     }
@@ -342,7 +378,7 @@ export async function handlePlatformRoute(req, res, url) {
     // How many numbers this account may run is a plan limit, checked before a
     // folder is created rather than after.
     const existing = tenantsForAccount(account.id);
-    if (existing.length) {
+    if (!billingEnabled() && existing.length) {
       const plan = planForTenant(existing[0].slug)?.plan;
       const limit = Number(plan?.limits?.numbers) || 1;
       if (existing.length >= limit) {
@@ -366,11 +402,13 @@ export async function handlePlatformRoute(req, res, url) {
       hours,
       ip,
     });
-    if (!result.ok) return sendJson(res, result.error === 'number_in_use' ? 409 : 400, result), true;
+    if (!result.ok) return sendJson(res, result.status || (result.error === 'number_in_use' ? 409 : 400), result), true;
 
     // The trial is claimed only once there is an assistant to trial, so a failed
     // setup does not burn the number's free days.
-    const trial = claimTrial({ accountId: account.id, number });
+    const trial = billingEnabled()
+      ? { trialing: entitlementsFor(result.slug)?.state === 'trialing' }
+      : claimTrial({ accountId: account.id, number });
     if (!trial.trialing && trial.reason === 'number_already_trialed') {
       // No second free trial on the same number: plan limits, no trial window.
       run('UPDATE tenants SET trial_ends_at = NULL WHERE slug = ?', [result.slug]);
@@ -394,6 +432,10 @@ export async function handlePlatformRoute(req, res, url) {
     const membership = tenantForAccount(account.id, slug);
     if (!membership) return sendJson(res, 404, { error: 'not_found' }), true;
     const owner = membership.member_role === 'owner';
+    if (rest === '/billing' || rest.startsWith('/billing/')) {
+      await customerRoute(req, res, { slug, rest, html: billingPage });
+      return true;
+    }
     if (rest.startsWith('/reports/')) {
       await reportRoute(req, res, url, { slug, rest, owner, html, accountId: account.id, who, ip });
       return true;
@@ -419,10 +461,14 @@ export async function handlePlatformRoute(req, res, url) {
       return (
         sendJson(res, 200, {
           ...state,
+          ...(billingEnabled() ? { billing: true } : {}),
           reports: dashboardEnabled(),
           ...onboardingState(slug),
           usage: usageSummary(slug),
-          plans: listPlans().map((p) => ({ id: p.id, name: p.name, limits: p.limits })),
+          plans: (billingEnabled()
+            ? catalog().map((p) => ({ ...p, id: p.plan, trial_days: p.trialDays }))
+            : listPlans()
+          ).map((p) => ({ id: p.id, name: p.name, limits: p.limits })),
           entitlements: { plan: planForTenant(slug)?.plan },
         }),
         true
@@ -684,6 +730,7 @@ export async function handlePlatformRoute(req, res, url) {
     }
 
     if (rest === '/plan' && method === 'POST') {
+      if (billingEnabled()) return (sendJson(res, 403, { error: 'billing_operator_required' }), true);
       if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
       if (account.role !== 'admin') {
         return sendJson(res, 403, {
@@ -701,6 +748,11 @@ export async function handlePlatformRoute(req, res, url) {
       if (!owner) return sendJson(res, 403, { error: 'owner_only' }), true;
       const body = await readJsonBody(req);
       if (!body.ok) return sendJson(res, body.status || 400, { error: body.error }), true;
+      if (
+        billingEnabled() &&
+        (!session.readSession(req).ok || tenantForAccount(account.id, slug)?.member_role !== 'owner')
+      )
+        return (sendJson(res, 403, { error: 'owner_only' }), true);
       const target = accounts.findByEmail(body.body.email);
       const role = body.body.role === 'owner' ? 'owner' : 'staff';
       if (!target || target.status !== 'active') {
@@ -713,6 +765,14 @@ export async function handlePlatformRoute(req, res, url) {
       // a UNIQUE-constraint 500; and there was no way to change a role at all.
       // One row per person, written once and updated after that.
       const existingMember = get('SELECT role FROM memberships WHERE account_id = ? AND slug = ?', [target.id, slug]);
+      if (billingEnabled() && !existingMember) {
+        const e = entitlementsFor(slug),
+          used = get('SELECT count(*) n FROM memberships WHERE slug=?', [slug]).n - 1;
+        if (!e?.canRun || used >= e.limits.team_members) {
+          warnLimit(slug, 'team_members');
+          return (sendJson(res, 409, { error: 'team_plan_limit' }), true);
+        }
+      }
       const before = existingMember?.role || null;
       if (before === role) {
         return sendJson(res, 200, { ok: true, role, changed: false }), true;

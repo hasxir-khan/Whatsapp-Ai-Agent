@@ -1,3 +1,5 @@
+import {billedWorker} from './billingLease.js';
+import {admit} from './billingMeter.js';
 import { mediaUsage } from './mediaUsage.js';
 // src/services/tts.js
 // Voice replies ("send me a voice note") for $0.
@@ -192,6 +194,7 @@ export function speechTextFor(text, { maxSeconds = config.tts.maxSeconds, langIn
 export async function buildVoiceNote(text, options = {}) {
   const { policy } = options;
   const cap = Math.max(1, config.tts.maxSeconds);
+  if (billedWorker() && (!hasFfmpeg() || !admit('voice', Math.ceil(cap)))) return null;
   if (policy && !hasFfmpeg()) return null; // cannot enforce a hard playback cap
   const audio = await synthesize(text, options);
   if (!audio) return null;
@@ -201,7 +204,7 @@ export async function buildVoiceNote(text, options = {}) {
     const output = tempFile('ogg', 'tts');
     try {
       fs.writeFileSync(input, audio.buffer, { mode: 0o600 });
-      await toOggOpus(input, output, { maxSeconds: policy ? cap : null });
+      await toOggOpus(input, output, { maxSeconds: policy || billedWorker() ? cap : null });
       if (fs.existsSync(output)) {
         const buffer = fs.readFileSync(output);
         return {
@@ -222,7 +225,7 @@ export async function buildVoiceNote(text, options = {}) {
     }
   }
 
-  if (policy) return null;
+  if (policy || billedWorker()) return null;
   // No ffmpeg: send as a playable audio file (WhatsApp shows a player, not PTT)
   return {
     provider: audio.provider,

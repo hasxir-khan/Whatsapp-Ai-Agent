@@ -1,3 +1,4 @@
+import {billingLimit} from './billingLease.js';
 // Runs inside ONE tenant's worker. Materialise sufficient statistics, not a
 // mirror of its DB. Raw text used to categorise questions never leaves here.
 import { MEDIA_COUNTERS } from './mediaLimits.js';
@@ -297,7 +298,7 @@ export function tenantDay(
 export async function publishReports({
   dir = config.paths.data,
   now = new Date(),
-  days = Number(process.env.TENANT_REPORT_DAYS) || 31,
+  days = billingLimit('dashboard_days', Number(process.env.TENANT_REPORT_DAYS) || 31),
   secret = process.env.PLATFORM_TENANT_TOKEN,
   zone = zoneName(business()?.timezone || config.timezone),
 } = {}) {

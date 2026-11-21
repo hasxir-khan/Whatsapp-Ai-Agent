@@ -1,3 +1,4 @@
+import {workerAccess} from './billingLease.js';
 // src/services/profile.js
 // One universal business profile, readable and writable at runtime.
 //
@@ -183,6 +184,9 @@ export const FEATURE_DEFAULT_ON = new Set(['growthApproval']);
 export function featureOn(name) {
   const f = features();
   const key = FEATURE_ALIASES[name] || name;
+  const lease = workerAccess();
+  // Safety/consent switches are not paid features, including when paused.
+  if (lease && !['privacyTools','growthApproval','injectionGuard'].includes(key) && (!lease.canRun || !lease.features.includes(key))) return false;
   if (f[key] === true) return true;
   // A tenant may still have only the old key set.
   if (f[name] === true) return true;

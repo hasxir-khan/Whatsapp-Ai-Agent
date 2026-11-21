@@ -1,3 +1,4 @@
+import {billingLimit} from './billingLease.js';
 // src/services/agents.js
 // Custom multi-agent assistants (Phase 6, part 1).
 //
@@ -41,7 +42,7 @@ const arr = (v) => (Array.isArray(v) ? v : typeof v === 'string' ? v.split(',').
 /** Raw agents[] from the profile, tolerant of a missing section. */
 export function agentsRaw() {
   const list = profile()?.agents;
-  return Array.isArray(list) ? list : [];
+  return Array.isArray(list) ? list.slice(0, billingLimit('agents', list.length)) : [];
 }
 
 /**

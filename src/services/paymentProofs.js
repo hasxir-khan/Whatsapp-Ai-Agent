@@ -221,12 +221,12 @@ function parseDateMatch(m) {
  * unknown — "unknown" is not a soft fail, it is an honest "we could not read
  * this", and the risk level treats the two differently.
  */
-export function runChecks({ extracted = {}, order = null, proofs = [], now = new Date(), settings = null } = {}) {
+export function runChecks({ extracted = {}, order = null, proofs = [], now = new Date(), settings = null, context = null } = {}) {
   const s = settings || decisionSettings();
   const checks = [];
   const push = (id, label, status, detail) => checks.push({ id, label, status, detail });
 
-  const profileBusiness = config.owner?.profile?.business || {};
+  const profileBusiness = context?.business ?? config.owner?.profile?.business ?? {};
   const currency = order?.currency || profileBusiness.currency || 'PKR';
   const due = order ? Math.max(0, (Number(order.total) || 0) - (Number(order.paid_amount) || 0)) : null;
 
@@ -301,10 +301,10 @@ export function runChecks({ extracted = {}, order = null, proofs = [], now = new
   }
 
   // submission rate: five proofs a customer a day is plenty
-  const today = all(
+  const today = context?.submitted ?? (all(
     "SELECT COUNT(*) AS n FROM payment_proofs WHERE contact = ? AND created_at >= ?",
     [String(order?.chat || '').split('@')[0].replace(/\D/g, '') || null, iso(new Date(new Date(now).getTime() - 24 * 3600_000))]
-  )[0]?.n || 0;
+  )[0]?.n || 0);
   if (Number(today) >= s.maxProofsPerDay) {
     push('rate', 'Not too many proofs today', 'fail', `${today} proofs in the last 24 hours (limit ${s.maxProofsPerDay}).`);
   } else {

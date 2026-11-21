@@ -6,6 +6,7 @@
 // and the core schema has a Postgres DDL variant. There is no Postgres driver,
 // connection pool or port of the SQLite-specific report queries in this adapter.
 
+import { billingSchema } from './billing/schema.js';
 import { draftMetadata } from './draftMetadata.js';
 import { writeTenantUndo } from '../src/services/adminPanel.js';
 import { migrateNumbers } from './numberIdentity.js';
@@ -99,6 +100,7 @@ export async function initPlatformDb({ file: target = platformDbFile() } = {}) {
       db.run("UPDATE tenants SET status = 'provisioned' WHERE status = 'active' AND test_chat_at IS NULL");
       db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     }
+    for (const statement of billingSchema) db.run(statement);
     compact = migrateReports(db);
     const installSalt = migrateNumbers(db);
     compact = migrateMeterIdentities(db, installSalt) || compact;
@@ -163,13 +165,21 @@ export async function ensurePlatformDb() {
   return initPlatformDb();
 }
 
-function save(force = false) {
+function save(force = false, durable = false) {
   if (!db || !file) return false;
   try {
     const bytes = Buffer.from(db.export());
     // sql.js reopens its connection on export, resetting connection pragmas.
     db.run('PRAGMA secure_delete=ON');
     fs.writeFileSync(file + '.tmp', bytes, { mode: 0o600 });
+    if (durable) {
+      const fd = fs.openSync(file + '.tmp', 'r');
+      try {
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
     fs.renameSync(file + '.tmp', file);
     try {
       fs.chmodSync(file, 0o600);
@@ -230,13 +240,14 @@ export function lastId() {
  * One transaction helper. sql.js is synchronous, so a thrown error rolls the
  * whole unit back and the caller decides what to tell the user.
  */
-export function transaction(fn) {
+export function transaction(fn, { durable = false } = {}) {
   const database = ensure();
   database.run('BEGIN');
   try {
     const result = fn();
     database.run('COMMIT');
-    save();
+    const saved = save(false, durable);
+    if (durable && !saved) throw new Error('billing_storage_unavailable');
     return result;
   } catch (err) {
     try {
@@ -247,6 +258,10 @@ export function transaction(fn) {
     throw err;
   }
 }
+
+// A failed flush must not acknowledge money or dispatch its outbox. The in-memory
+// command is still idempotent; retry after restoring the volume.
+export const billingTransaction = fn => transaction(fn,{durable:true});
 
 export default {
   initPlatformDb,

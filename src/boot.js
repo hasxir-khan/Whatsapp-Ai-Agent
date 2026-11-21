@@ -33,6 +33,8 @@ import { startReviewLoop } from './services/reviewAgent.js';
 import { startReactivationLoop } from './services/reactivationAgent.js';
 import { startContentLoop } from './services/contentAgent.js';
 import { startOrderLoop, orderTrackingEnabled } from './services/orders.js';
+import { billedWorker } from './services/billingLease.js';
+import { protectTransport, deliverOwnerNotices } from './services/billingMeter.js';
 import { createTransport } from './transport/index.js';
 import { describeCapabilities } from './transport/base.js';
 
@@ -195,6 +197,11 @@ export async function boot({ handleRoute = null } = {}) {
     return;
   }
 
+  if (billedWorker()) {
+    protectTransport(transport);
+    const timer = setInterval(() => deliverOwnerNotices(transport).catch(() => {}), 30000);
+    timer.unref?.();
+  }
   // Register before connecting: a webhook can arrive the instant we are live.
   transport.onMessage(async (incoming) => {
     bumpStat('received');

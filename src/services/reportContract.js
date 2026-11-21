@@ -5,7 +5,7 @@ export const REPORT_VERSION = 1;
 export const DEFAULT_RETENTION = { free: 31, starter: 60, growth: 90 };
 export function retention(plan) {
   return Math.max(
-    31,
+    plan?.version ? 1 : 31,
     Math.min(90, Math.trunc(Number(plan?.limits?.dashboard_days) || DEFAULT_RETENTION[plan?.id] || 31)),
   );
 }

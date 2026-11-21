@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import { STALE_MINUTES, staleBefore } from './reportFreshness.js';
 import { readSnapshot } from './db.js';
-import { platformDbFile, platformEnabled, dashboardEnabled, platformSecret, secureOrigin, transportProblem } from './env.js';
+import { platformDbFile, billingEnabled, platformEnabled, dashboardEnabled, platformSecret, secureOrigin, transportProblem } from './env.js';
 import { keySecretProblem, decryptValue } from './crypto.js';
 import { activeMailer } from './mailer.js';
 
@@ -22,6 +22,30 @@ export function diagnostics(rows) {
   if (mail === 'invalid' || (mail === 'http' && (!process.env.PLATFORM_MAIL_TOKEN || !process.env.PLATFORM_MAIL_FROM || !/^https:\/\//i.test(process.env.PLATFORM_MAIL_URL || 'https://api.resend.com')))) errors.push('mailer_misconfigured');
   if (/^(1|true|on|yes)$/i.test(process.env.PLATFORM_DEV_SHOW_CODES || '')) warnings.push('dev_show_codes_set');
   if (process.env.LLM_KEY_SOURCE === 'platform') errors.push('platform_keys_unavailable');
+  if (billingEnabled()) {
+    if (!mail || mail === 'file' || mail === 'invalid') warnings.push('billing_production_mailer_missing');
+    let methods = [],
+      paid = false;
+    try {
+      if (rows) {
+        methods = JSON.parse(rows('SELECT value FROM b_config WHERE id=1')[0]?.value || '{}').methods || [];
+        paid = rows(
+          "SELECT p.spec FROM b_plan p WHERE plan!='free' AND revision=(SELECT MAX(revision) FROM b_plan v WHERE v.plan=p.plan)"
+        ).some((r) => JSON.parse(r.spec).offered);
+      }
+    } catch {
+      errors.push('billing_schema');
+    }
+    if (!methods.length) warnings.push('billing_instructions_missing');
+    if (!paid) warnings.push('billing_paid_plans_missing');
+    const op = process.env.PLATFORM_OPERATOR_TOKEN;
+    if (
+      !op ||
+      op.length < 32 ||
+      [platformSecret(), process.env.PLATFORM_KEY_SECRET, process.env.ADMIN_TOKEN].includes(op)
+    )
+      errors.push('report_operator_credential');
+  }
   if (dashboardEnabled()) {
     const token = process.env.PLATFORM_OPERATOR_TOKEN;
     if (!token) warnings.push('report_operator_disabled');
@@ -63,9 +87,13 @@ export async function doctorDiagnostics() {
 }
 
 export const remedy = {
+  billing_production_mailer_missing:
+    'Use a production mail adapter with PDF attachments and idempotency before taking payments.',
+  billing_instructions_missing: 'Configure a masked receiver and transfer instructions in Billing operations.',
+  billing_paid_plans_missing: 'Publish an offered plan with currency and prices for its terms.',
+  billing_schema: 'Start the platform writer to initialise the billing tables.',
   report_schema: 'Restart the platform writer to apply the dashboard schema migration.',
-  report_stale:
-    `An active assistant has not published a dashboard snapshot in ${STALE_MINUTES} minutes. Check its live worker, shared tenant data mount and platform importer.`,
+  report_stale: `An active assistant has not published a dashboard snapshot in ${STALE_MINUTES} minutes. Check its live worker, shared tenant data mount and platform importer.`,
   report_operator_disabled: 'Fleet view is disabled. Set a separate strong PLATFORM_OPERATOR_TOKEN only if needed.',
   report_operator_credential: 'Use a random, independent operator credential of at least 32 characters.',
   platform_secret_missing: 'Set PLATFORM_SECRET for session signing.',

@@ -1,3 +1,4 @@
+import { billingLimit, workerAccess } from '../services/billingLease.js';
 // src/core/llm.js
 // One small provider-agnostic LLM client.
 //
@@ -159,14 +160,14 @@ export function tenantSlug() {
  * @returns {{used:number, cap:number, exceeded:boolean}}
  */
 export function tenantBudget(tenant = tenantSlug(), day = todayKey()) {
-  const cap = config.limits.tenantDailyLlmCalls;
+  const cap = billingLimit('llm_calls_day', config.limits.tenantDailyLlmCalls);
   const used = Number(tenantUsage(day, tenant)?.llm_calls || 0);
   return { used, cap, exceeded: cap > 0 && used >= cap, tenant };
 }
 
 export function assertTenantBudget(tenant = tenantSlug()) {
   const budget = tenantBudget(tenant);
-  if (budget.exceeded) {
+  if (workerAccess()?.canRun === false || (workerAccess() && budget.cap === 0) || budget.exceeded) {
     logEvent('tenant_budget_hit', null, { tenant: budget.tenant, used: budget.used, cap: budget.cap });
     throw new QuotaError(`Daily AI budget for "${budget.tenant}" reached (${budget.used}/${budget.cap})`);
   }

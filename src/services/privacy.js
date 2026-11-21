@@ -1,3 +1,4 @@
+import {billingLimit} from './billingLease.js';
 // src/services/privacy.js
 // Privacy tools: get your data out, and get it gone.
 //
@@ -528,6 +529,8 @@ export function privacyAuditTrail(limit = 10) {
 
 export function retentionDays() {
   const days = Number(process.env.PRIVACY_RETENTION_DAYS);
+  const history = billingLimit('history_days', null);
+  if (history) return Math.min(history, days > 0 ? Math.floor(days) : history);
   return Number.isFinite(days) && days > 0 ? Math.floor(days) : 0;
 }
 

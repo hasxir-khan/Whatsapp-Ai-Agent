@@ -21,7 +21,8 @@
 import {retention} from '../src/services/reportContract.js';
 import { run, get, all } from './db.js';
 import { PLAN_SEEDS } from './schema.js';
-import { trialDays } from './env.js';
+import { entitlementsFor } from './billing/subscriptions.js';
+import { billingEnabled, trialDays } from './env.js';
 import { readTenantEnv, writeTenantEnvValue, readTenantProfile, writeTenantProfile } from '../src/services/adminPanel.js';
 import { recordAudit, notify } from './audit.js';
 
@@ -91,6 +92,10 @@ export function defaultPlan() {
 export function planForTenant(slug) {
   const tenant = get('SELECT * FROM tenants WHERE slug = ?', [String(slug)]);
   if (!tenant) return null;
+  if (billingEnabled()) {
+    const e = entitlementsFor(slug);
+    if (e) return { tenant, plan: { ...e, id: e.plan } };
+  }
   return { tenant, plan: getPlan(tenant.plan_id) || defaultPlan() };
 }
 
@@ -100,6 +105,8 @@ export function planForTenant(slug) {
  * settings (keys, tone, catalog) are never rewritten here.
  */
 export function applyEntitlements(slug, planId = null) {
+  if (billingEnabled())
+    return { ok: true, plan: entitlementsFor(slug)?.plan || 'free', changed: { env: [], features: [] } };
   const row = get('SELECT * FROM tenants WHERE slug = ?', [String(slug)]);
   if (!row) return { ok: false, error: 'no_tenant' };
   const plan = getPlan(planId || row.plan_id) || defaultPlan();
@@ -173,6 +180,7 @@ export function applyEntitlements(slug, planId = null) {
 
 /** Assign a plan by hand (admin panel, support, a paid upgrade later). */
 export function assignPlan({ slug, planId, accountId = null, ip = null, now = Date.now(), extendTrial = false }) {
+  if (billingEnabled()) return { ok: false, error: 'billing_operator_required' };
   const plan = getPlan(planId);
   if (!plan) return { ok: false, error: 'unknown_plan', plans: listPlans().map((p) => p.id) };
   const tenant = get('SELECT * FROM tenants WHERE slug = ?', [String(slug)]);
@@ -250,7 +258,7 @@ export function checkEntitlement(slug, what, { used = 0, add = 1 } = {}) {
   };
   const limit = map[what];
   if (limit === undefined) return { ok: false, reason: 'unknown_entitlement', what };
-  if (!limit) return { ok: true, unlimited: true, limit };
+  if (!limit && !billingEnabled()) return { ok: true, unlimited: true, limit };
   const total = Number(used) + Number(add);
   return { ok: total <= limit, limit, used: Number(used), requested: total };
 }
@@ -261,7 +269,7 @@ export function monthlyAllowanceLeft(slug, conversationsThisMonth = null) {
   if (!found) return null;
   if (conversationsThisMonth === null) return null;
   const limit = found.plan.limits[CONVERSATION_LIMIT_KEY] || 0;
-  if (!limit) return { limit: 0, used: conversationsThisMonth, left: null };
+  if (!limit && !billingEnabled()) return { limit: 0, used: conversationsThisMonth, left: null };
   return { limit, used: conversationsThisMonth, left: Math.max(0, limit - conversationsThisMonth) };
 }
 
@@ -297,6 +305,7 @@ async function stopTenantProcess(slug) {
  * paused is skipped, and the row stays for the owner to upgrade.
  */
 export async function expireTrials({ now = Date.now(), stop = null } = {}) {
+  if (billingEnabled()) return { paused: [], checked: 0 };
   const expired = all(
     "SELECT * FROM tenants WHERE trial_ends_at IS NOT NULL AND trial_ends_at <= ? AND status IN ('active','draft','provisioned')",
     [new Date(Number(now)).toISOString()],

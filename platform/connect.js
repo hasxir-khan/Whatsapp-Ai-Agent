@@ -1,3 +1,5 @@
+import {billingEnabled} from './env.js';
+import {entitlementsFor} from './billing/subscriptions.js';
 // platform/connect.js
 // The only part of the platform that touches a live WhatsApp session.
 //
@@ -213,7 +215,7 @@ async function pairLocked(slug, { accountId, number = null, ip = null, now = Dat
     return { ok: false, status: 400, error: 'cloud_transport', message: 'Cloud API numbers do not use a pairing code.' };
   }
 
-  if (!Object.keys(env).length || !['provisioned','active'].includes(tenant.status) || Date.parse(tenant.trial_ends_at) <= Date.now()) {
+  if (!Object.keys(env).length || !['provisioned','active'].includes(tenant.status) || (billingEnabled() ? !entitlementsFor(slug)?.canRun : Date.parse(tenant.trial_ends_at) <= Date.now())) {
     return { ok: false, status: 409, error: 'not_ready', message: 'Finish provisioning and resume the assistant before linking.' };
   }
   const digits = String(number || env.MY_NUMBER || '').replace(/\D/g, '').replace(/^00/,'');

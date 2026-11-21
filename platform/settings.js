@@ -1,3 +1,5 @@
+import {billingEnabled} from './env.js';
+import {catalog} from './billing/catalog.js';
 // platform/settings.js
 // The settings screen, over the config that already exists.
 //
@@ -125,6 +127,7 @@ function entitlement(slug) {
     planId: plan?.id || null,
     planName: plan?.name || null,
     features: new Set(plan?.features || []),
+    limits: plan?.limits || {},
     voiceMinutes: Number(plan?.limits?.voice_minutes || 0),
   };
 }
@@ -136,14 +139,18 @@ function gateFor(setting, ent) {
     return {
       reason: 'plan',
       message: `Voice replies are not on the ${ent.planName || 'Free'} plan. Upgrade to turn them on.`,
-      upgradeTo: 'Starter',
+      upgradeTo: billingEnabled()
+        ? catalog().find((p) => p.limits.voice_minutes > 0)?.name || 'an available plan'
+        : 'Starter',
     };
   }
   if (ent.features.has(setting.requires)) return null;
   return {
     reason: 'plan',
     message: `This setting belongs to the ${setting.requires} feature, which is not on the ${ent.planName || 'Free'} plan.`,
-    upgradeTo: 'Growth',
+    upgradeTo: billingEnabled()
+      ? catalog().find((p) => p.features.includes(setting.requires))?.name || 'an available plan'
+      : 'Growth',
   };
 }
 
@@ -324,6 +331,18 @@ export function applySettings({ slug, accountId = null, patch = {}, ip = null, n
     const gate = gateFor(setting, ent);
     if (gate) return { ok: false, status: 403, error: 'plan_disallowed', field: id, ...gate };
     if (agent && (!next.agents?.[Number(agent[1])] || Number(agent[1]) >= MAX_AGENTS)) { reject('No such agent.'); continue; }
+    if (
+      billingEnabled() &&
+      ((agent && +agent[1] >= ent.limits.agents) ||
+        (setting.type === 'team' && Array.isArray(input) && input.length > ent.limits.team_members))
+    )
+      return {
+        ok: false,
+        status: 409,
+        error: 'plan_limit',
+        field: id,
+        message: 'This change exceeds the plan. Review Billing for available limits.',
+      };
     let { value, error } = coerce(setting, input);
     if (error) { reject(error); continue; }
     if (setting.type === 'fields') validateIntakeFields(value).forEach(reject);

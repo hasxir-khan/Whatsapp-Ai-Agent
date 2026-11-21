@@ -1,3 +1,7 @@
+import { billingEnabled } from './env.js';
+import { initCatalog } from './billing/catalog.js';
+import { accountCapacity, openSubscription, subscription, warnLimit } from './billing/subscriptions.js';
+import { eraseBilling } from './billing/privacy.js';
 // platform/provisioning.js
 // Turning "a customer signed up" into "a working assistant", one recorded step
 // at a time.
@@ -18,7 +22,7 @@
 
 import { numberId } from './numberIdentity.js';
 import crypto from 'node:crypto';
-import { get, all, run, transaction } from './db.js';
+import { get, all, run, transaction, billingTransaction } from './db.js';
 import { recordAudit, notify } from './audit.js';
 import { applyEntitlements, startTrial, defaultPlan } from './plans.js';
 import { validSlug as validateSlug } from '../src/services/validation.js';
@@ -57,13 +61,14 @@ function normaliseNumber(input) {
 
 /** `My Café!` → `my-cafe`; collisions get `-2`, `-3`. */
 export function allocateSlug(name, { taken = [] } = {}) {
-  const base = String(name || '')
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 32) || 'assistant';
+  const base =
+    String(name || '')
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 32) || 'assistant';
   const used = new Set([...taken.map((s) => String(s)), ...all('SELECT slug FROM tenants').map((r) => r.slug)]);
   let candidate = base;
   let n = 2;
@@ -104,7 +109,10 @@ function storeSecret(slug, name, value, now) {
   const existing = get('SELECT value FROM tenant_secrets WHERE slug = ? AND name = ?', [slug, name]);
   if (existing) return null; // never rotate behind the owner's back
   run('INSERT INTO tenant_secrets (slug, name, value, created_at) VALUES (?, ?, ?, ?)', [
-    slug, name, value, new Date(now).toISOString(),
+    slug,
+    name,
+    value,
+    new Date(now).toISOString(),
   ]);
   return value;
 }
@@ -119,7 +127,7 @@ export function tenantsForAccount(accountId, { role = null } = {}) {
     `SELECT t.*, m.role AS member_role FROM tenants t
      JOIN memberships m ON m.slug = t.slug
      WHERE m.account_id = ? ORDER BY t.created_at ASC`,
-    [String(accountId)],
+    [String(accountId)]
   );
   return role ? rows.filter((row) => row.member_role === role) : rows;
 }
@@ -130,7 +138,7 @@ export function tenantForAccount(accountId, slug) {
     `SELECT t.*, m.role AS member_role FROM tenants t
      JOIN memberships m ON m.slug = t.slug
      WHERE m.account_id = ? AND t.slug = ?`,
-    [String(accountId), String(slug)],
+    [String(accountId), String(slug)]
   );
   return row || null;
 }
@@ -163,10 +171,13 @@ export function beginProvisioning({ accountId, slug, name, number, template = nu
     run(
       `INSERT INTO tenants (slug, account_id, name, number, plan_id, status, provision_step, template, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 'provisioning', 0, ?, ?, ?)`,
-      [slug, accountId, name, businessNumberId(number), planId, template, stamp, stamp],
+      [slug, accountId, name, businessNumberId(number), planId, template, stamp, stamp]
     );
     run('INSERT INTO memberships (account_id, slug, role, created_at) VALUES (?, ?, ?, ?)', [
-      accountId, slug, 'owner', stamp,
+      accountId,
+      slug,
+      'owner',
+      stamp,
     ]);
   });
   return { ok: true, tenant: getTenant(slug), created: true };
@@ -213,6 +224,15 @@ export async function provisionTenant({
   }
   if (!validateSlug(slug)) return { ok: false, error: 'bad_slug' };
 
+  if (billingEnabled() && !getTenant(slug)) {
+    initCatalog(now);
+    const cap = accountCapacity(accountId);
+    if (cap.used >= Math.min(cap.tenants, cap.numbers)) {
+      const first = get('SELECT slug FROM tenants WHERE account_id=? ORDER BY created_at LIMIT 1', [accountId]);
+      if (first) warnLimit(first.slug, 'numbers');
+      return { ok: false, error: 'plan_limit', status: 409 };
+    }
+  }
   const begun = beginProvisioning({ accountId, slug, name, number: digits, template, now });
   if (!begun.ok) return begun;
   const tenant = begun.tenant;
@@ -293,9 +313,15 @@ export async function provisionTenant({
       } else if (step === 'finalise') {
         const planRow = getTenant(slug);
         const plan = planRow.plan_id || defaultPlan()?.id || 'free';
-        const trial = startTrial({ slug, accountId, number: digits, now, trialing: true });
+        const trial = billingEnabled()
+          ? { plan: 'free', trialEndsAt: openSubscription(slug, { now }).trial_end }
+          : startTrial({ slug, accountId, number: digits, now, trialing: true });
+        if (billingEnabled()) run('UPDATE tenants SET trial_ends_at=? WHERE slug=?', [trial.trialEndsAt, slug]);
         run('UPDATE tenants SET plan_id = ?, status = ?, provision_error = NULL, updated_at = ? WHERE slug = ?', [
-          trial.plan || plan, 'provisioned', new Date(Number(now)).toISOString(), slug,
+          trial.plan || plan,
+          'provisioned',
+          new Date(Number(now)).toISOString(),
+          slug,
         ]);
         run('UPDATE tenants SET provision_step = ? WHERE slug = ?', [STEPS.length, slug]);
         recordAudit({
@@ -373,10 +399,15 @@ export function mergeWizardIntoProfile(profile, draft = {}) {
       ? b.languages.map((l) => String(l).slice(0, 20)).slice(0, 6)
       : b.languages;
   }
-  if (b.tone) next.tone = { ...(next.tone || {}), ...(typeof b.tone === 'object' ? b.tone : { style: String(b.tone) }) };
+  if (b.tone)
+    next.tone = { ...(next.tone || {}), ...(typeof b.tone === 'object' ? b.tone : { style: String(b.tone) }) };
   if (draft.payment) {
     const old = next.business.payment || {};
-    next.business.payment = { ...old, ...draft.payment, ...(draft.payment.bank ? { bank: { ...old.bank, ...draft.payment.bank } } : {}) };
+    next.business.payment = {
+      ...old,
+      ...draft.payment,
+      ...(draft.payment.bank ? { bank: { ...old.bank, ...draft.payment.bank } } : {}),
+    };
   }
   if (Array.isArray(draft.services)) next.owner = { ...next.owner, services: draft.services.slice(0, 200) };
   if (Array.isArray(draft.catalog)) {
@@ -394,39 +425,46 @@ export function mergeWizardIntoProfile(profile, draft = {}) {
 }
 
 /** Remove a tenant completely (account deletion). Returns what was removed. */
-export async function destroyTenant(slug, { accountId = null, ip = null } = {}) {
+export async function destroyTenant(slug, { accountId = null, ip = null, guard = null } = {}) {
   const { withWorker, stopKeyWorker } = await import('./keys.js');
-  return withWorker(slug, () => removeStoppedTenant(slug, accountId, ip, stopKeyWorker));
+  return withWorker(slug, () => removeStoppedTenant(slug, accountId, ip, stopKeyWorker, guard));
 }
 
-async function removeStoppedTenant(slug, accountId, ip, stop) {
+async function removeStoppedTenant(slug, accountId, ip, stop, guard) {
   const tenant = getTenant(slug);
   if (!tenant) return { ok: false, error: 'no_tenant' };
   if (accountId && tenant.account_id !== accountId) return { ok: false, error: 'not_owner' };
+  if (guard && !guard()) return { ok: false, error: 'export_or_final_state_required' };
   const adminModule = await admin();
   let removedFiles = false;
   try {
     await stop(slug);
+    if (guard && !guard()) return { ok: false, error: 'export_or_final_state_required' };
     adminModule.deleteTenantFromPanel(slug, slug);
     removedFiles = true;
   } catch (err) {
     if (err.message !== 'not_found') return { ok: false, error: 'tenant_cleanup_failed' };
   }
   (await import('./reportStore.js')).eraseReports(slug);
-  run('DELETE FROM tenants WHERE slug = ?', [slug]);
-  run('DELETE FROM memberships WHERE slug = ?', [slug]);
-  run('DELETE FROM wizard_drafts WHERE slug = ?', [slug]);
-  run('DELETE FROM tenant_secrets WHERE slug = ?', [slug]);
-  for (const table of ['tenant_keys','settings_undo','compatibility_runs']) run(`DELETE FROM ${table} WHERE slug = ?`, [slug]);
-  run('DELETE FROM usage_events WHERE tenant = ?', [slug]);
-  recordAudit({
-    action: 'tenant_destroyed',
-    accountId: accountId || tenant.account_id,
-    tenant: slug,
-    detail: { files: removedFiles },
-    ip,
+  const forget = subscription(slug) ? billingTransaction : transaction;
+  return forget(() => {
+    eraseBilling(slug);
+    run('DELETE FROM tenants WHERE slug = ?', [slug]);
+    run('DELETE FROM memberships WHERE slug = ?', [slug]);
+    run('DELETE FROM wizard_drafts WHERE slug = ?', [slug]);
+    run('DELETE FROM tenant_secrets WHERE slug = ?', [slug]);
+    for (const table of ['tenant_keys', 'settings_undo', 'compatibility_runs'])
+      run(`DELETE FROM ${table} WHERE slug = ?`, [slug]);
+    run('DELETE FROM usage_events WHERE tenant = ?', [slug]);
+    recordAudit({
+      action: 'tenant_destroyed',
+      accountId: accountId || tenant.account_id,
+      tenant: slug,
+      detail: { files: removedFiles },
+      ip,
+    });
+    return { ok: true, removedFiles };
   });
-  return { ok: true, removedFiles };
 }
 
 export { STEPS as provisionStepNames };

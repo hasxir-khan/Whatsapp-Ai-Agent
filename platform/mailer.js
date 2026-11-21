@@ -25,8 +25,18 @@ function outboxFile() {
 /** Default transport: append to the outbox. No network, no third party. */
 export const fileMailer = {
   mode: 'file',
-  async send({ to, subject, text }) {
+  async send({ to, subject, text, attachments, idempotencyKey, billingSid }) {
     ensurePlatformDir();
+    if (billingSid && /^[a-f\d-]{36}$/.test(billingSid) && /^[a-f\d]{64}$/.test(idempotencyKey)) {
+      const dir = path.join(platformDir(), 'billing-mail', billingSid);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const file = path.join(dir, idempotencyKey + '.json');
+      if (!fs.existsSync(file)) {
+        fs.writeFileSync(file + '.tmp', JSON.stringify({ to, subject, text, attachments }), { mode: 0o600 });
+        fs.renameSync(file + '.tmp', file);
+      }
+      return { ok: true, mode: 'file' };
+    }
     const line = JSON.stringify({ at: new Date().toISOString(), to, subject, text });
     fs.appendFileSync(outboxFile(), `${line}\n`, { mode: 0o600 });
     return { ok: true, mode: 'file' };
@@ -38,13 +48,22 @@ export const fileMailer = {
  * in logs or responses, and no silent fallback to file on provider errors. */
 export const httpMailer = {
   mode: 'http',
-  async send({ to, subject, text }, fetchImpl = globalThis.fetch) {
+  async send({ to, subject, text, attachments, idempotencyKey }, fetchImpl = globalThis.fetch) {
     const url = new URL(process.env.PLATFORM_MAIL_URL || 'https://api.resend.com/emails');
-    const token = process.env.PLATFORM_MAIL_TOKEN, from = process.env.PLATFORM_MAIL_FROM;
+    const token = process.env.PLATFORM_MAIL_TOKEN,
+      from = process.env.PLATFORM_MAIL_FROM;
     if (url.protocol !== 'https:' || !token || !from) return { ok: false };
-    const response = await fetchImpl(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000),
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ from, to: [to], subject, text }) });
+    const response = await fetchImpl(url, {
+      method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(8000),
+      headers: {
+        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ from, to: [to], subject, text, attachments }),
+    });
     return { ok: response.ok };
   },
 };

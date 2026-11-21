@@ -1,3 +1,4 @@
+import {billingLimit} from '../services/billingLease.js';
 // src/config/env.js
 // Central, validated configuration. Everything is optional — the bot degrades
 // gracefully when a provider or feature is not configured.
@@ -562,6 +563,7 @@ const ROLE_PERMISSIONS = {
 export function teamMembers() {
   const team = config.owner.profile?.owner?.team || [];
   return team
+    .slice(0, billingLimit('team_members', team.length))
     .map((m) => ({ ...m, number: normalizePhone(m.number || '') }))
     .filter((m) => m.number);
 }

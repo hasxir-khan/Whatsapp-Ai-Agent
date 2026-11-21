@@ -1,3 +1,4 @@
+import {billingExport} from './billing/privacy.js';
 import {numberId} from './numberIdentity.js';
 // platform/accounts.js
 // Who a customer of the platform is.
@@ -445,6 +446,8 @@ export function exportAccount(accountId, { now = Date.now() } = {}) {
     ),
     audit: all('SELECT created_at, action, tenant, ok FROM platform_audit WHERE account_id = ?', [accountId]),
   };
+  const billing = tenants.map((t) => billingExport(t.slug, now)).filter(Boolean);
+  if (billing.length) data.billing = billing;
   run('UPDATE accounts SET exported_at = ? WHERE id = ?', [data.exported_at, accountId]);
   return { ok: true, export: data };
 }

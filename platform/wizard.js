@@ -1,3 +1,5 @@
+import {billingEnabled} from './env.js';
+import {entitlementsFor} from './billing/subscriptions.js';
 // platform/wizard.js
 // The setup wizard: eight steps, each one saved, none of them a new validator.
 //
@@ -259,6 +261,8 @@ async function sandboxWhileAuthorised(slug, accountId, { text, now = Date.now() 
 
   if (membership.member_role !== 'owner') return { ok: false, status: 403, error: 'owner_only' };
 
+  if (billingEnabled() && !entitlementsFor(slug, now)?.canRun)
+    return { ok: false, status: 409, error: 'assistant_paused' };
   const { runSandboxChat } = await import('./sandbox.js');
   const result = wizardHooks.sandboxChat ? { ok: true, ...await wizardHooks.sandboxChat(slug, message) } : await runSandboxChat(slug, message, { now });
   if (!result.ok) {
@@ -286,7 +290,7 @@ export function goLive(slug, accountId, { ip = null, resume = false } = {}) {
     const t = tenantForAccount(accountId, slug);
     if (!t) return { ok: false, status: 404, error: 'not_found' };
     if (t.member_role !== 'owner') return { ok: false, status: 403, error: 'owner_only' };
-    if ((t.status === 'paused' && !(resume && t.paused_reason === 'owner')) || Date.parse(t.trial_ends_at) <= Date.now()) return { ok: false, status: 409, error: 'paused' };
+    if ((t.status === 'paused' && !(resume && t.paused_reason === 'owner')) || (billingEnabled() ? !entitlementsFor(slug)?.canRun : Date.parse(t.trial_ends_at) <= Date.now())) return { ok: false, status: 409, error: 'paused' };
     if (resume && t.status !== 'paused') return { ok: false, status: 409, error: 'not_paused' };
     if (!resume && t.status === 'active') return { ok: true, status: 'active', alreadyLive: true };
     if (!['provisioned','paused'].includes(t.status)) return { ok: false, status: 409, error: 'provisioning_incomplete' };

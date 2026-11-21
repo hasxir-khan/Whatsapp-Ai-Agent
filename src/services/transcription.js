@@ -1,3 +1,6 @@
+import {billedWorker} from './billingLease.js';
+import {admit} from './billingMeter.js';
+import {billableAudioSeconds} from './ffmpeg.js';
 import { mediaUsage } from './mediaUsage.js';
 // src/services/transcription.js
 // Speech-to-text with Groq Whisper (free tier).
@@ -34,7 +37,7 @@ export async function transcribe(buffer, { mimetype = 'audio/ogg', language = co
   try {
     if (buffer.length > MAX_BYTES) {
       // Try to shrink it first; if we can't, give up politely.
-      if (!hasFfmpeg()) {
+      if (billedWorker() || !hasFfmpeg()) {
         logEvent('stt_too_large', null, buffer.length);
         return null;
       }
@@ -46,6 +49,10 @@ export async function transcribe(buffer, { mimetype = 'audio/ogg', language = co
       tmp = writeTemp(buffer, extFromMime(mimetype), 'stt');
     }
 
+    if (billedWorker()) {
+      const seconds = await billableAudioSeconds(tmp);
+      if (!seconds || !admit('voice', seconds)) return null;
+    }
     const models = [config.stt.model, config.stt.fallbackModel].filter(Boolean);
 
     for (const model of models) {

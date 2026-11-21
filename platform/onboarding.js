@@ -1,3 +1,5 @@
+import {billingEnabled} from './env.js';
+import {entitlementsFor} from './billing/subscriptions.js';
 // Readiness is derived from the same profile, key store and link state the worker
 // uses. Documents and sandbox turns are attested by the server, not wizard JSON.
 import {dashboardEnabled} from './env.js';
@@ -45,7 +47,7 @@ export function checklist(slug, f = facts(slug)) {
   add('testChat', 'Sandbox chat received a reply', tenant.test_chat_at, 'test', 7, true, tenant.test_chat_at);
   add('team', 'Team and escalations', business.decisions?.team?.members?.length, 'settings', 5, false);
   const missing = items.filter((r) => r.required && !r.ok).map((r) => r.id);
-  const expired = Date.parse(tenant.trial_ends_at) <= Date.now();
+  const expired = (billingEnabled() ? !entitlementsFor(slug)?.canRun : Date.parse(tenant.trial_ends_at) <= Date.now());
   return { ok: true, items, missing, requiredComplete: !missing.length,
     canGoLive: !missing.length && !expired && tenant.status === 'provisioned',
     canResume: !missing.length && !expired && tenant.status === 'paused' && tenant.paused_reason === 'owner',

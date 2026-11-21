@@ -1,3 +1,4 @@
+import { billedWorker, workerAccess } from '../services/billingLease.js';
 // src/transport/baileys.js
 // Baileys, wrapped — not rewritten.
 //
@@ -98,7 +99,7 @@ export function buildSocketOptions({ baileys, version, state, getMessage = store
     generateHighQualityLinkPreview: false,
     emitOwnEvents: false,
     defaultQueryTimeoutMs: 60000,
-    getMessage: (key) => getMessage(key),
+    getMessage: (key) => (workerAccess()?.canRun === false ? undefined : getMessage(key)),
   };
 }
 
@@ -209,12 +210,14 @@ export class BaileysTransport extends Transport {
 
     const sock = baileys.default(buildSocketOptions({ baileys, version, state }));
     this.sock = sock;
+    // Legacy socket callbacks must use the same outbound gate as normal replies.
+    const sender = billedWorker() ? this : sock;
 
     sock.ev.on('creds.update', saveCreds);
 
     // Missed-call rescue: when nobody picks up within CALL_FALLBACK_SECONDS,
     // the assistant starts the conversation in chat instead.
-    if (config.calls.enabled && process.env.TENANT_WORKER_MODE !== 'link') registerCalls(sock);
+    if (config.calls.enabled && process.env.TENANT_WORKER_MODE !== 'link') registerCalls(sock, sender);
 
     // ── pairing code (nicer than a QR on a headless host) ────
     if (!state.creds.registered && config.session.pairingNumber) {
@@ -313,7 +316,7 @@ export class BaileysTransport extends Transport {
           noteDecrypt('absentMessage', { id: msg?.key?.id || null, chat });
           // One bad chat should not cost a re-link of the whole number. This is
           // rate-limited inside; it never throws and never blocks the pipeline.
-          maybeRecoverContact({ sock, chat }).catch(() => {});
+          maybeRecoverContact({ sock: sender, chat }).catch(() => {});
         }
       }
 
@@ -333,7 +336,7 @@ export class BaileysTransport extends Transport {
     sock.ev.on('messages.update', async (updates) => {
       noteStatusUpdate(updates);
       try {
-        await handleDeletedMessage(sock, updates);
+        if (workerAccess()?.canRun !== false) await handleDeletedMessage(sender, updates);
       } catch (err) {
         console.error('Delete handler failed:', err.message);
       }
@@ -350,7 +353,7 @@ export class BaileysTransport extends Transport {
     sock.ev.on('messages.update', (updates) => {
       for (const item of [].concat(updates || [])) {
         if (Number(item?.update?.messageStubType) === 2 && item?.key?.remoteJid) {
-          maybeRecoverContact({ sock, chat: item.key.remoteJid }).catch(() => {});
+          maybeRecoverContact({ sock: sender, chat: item.key.remoteJid }).catch(() => {});
         }
       }
     });

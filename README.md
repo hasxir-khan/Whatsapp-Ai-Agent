@@ -3895,7 +3895,38 @@ gets `number_in_use`, and the files never collide because tenants are addressed
 by slug, always through `tenantDir()` (which refuses anything that could escape
 `tenants/`).
 
-### Plans (no payments)
+## Plans and billing
+
+Manual platform billing is **off by default**. Enable `PLATFORM_ENABLED=1` and
+`PLATFORM_BILLING=1` on the control plane, not on customer bots. This bills for
+an assistant subscription, **not** for orders placed by a shop's WhatsApp
+customers. There is no card entry, processor integration, auto-debit or money
+movement. No paid offers or receiver instructions are invented at startup.
+
+- **Owner:** Open **Plans and billing** on the assistant page. Choose a published
+  plan version and duration, follow the instructions on *that invoice*, include
+  its reference, and submit redacted proof. Until a human confirms receipt in
+  the receiving ledger, a screenshot is not payment. A partial confirmation
+  gives a receipt but does not unlock the term. Receipts are downloadable PDFs.
+  Staff can see status and usage, not change a plan or inspect financial documents.
+- **Operator:** Use `/platform/operator/billing` with the independent operator
+  credential over HTTPS. Publish prices in integer minor units by duration
+  (e.g. 1, 2 or 6 months), configure the trial, masked receiver/payment alias,
+  optional tax and policy text. See the [operator confirmation and rollout
+  guide](docs/manual-billing-operations.md) before enabling this on an existing fleet.
+- **Dates and access:** Terms use UTC calendar months, not 30-day multipliers;
+  the owner sees the business timezone. Renewals stack. Upgrades use an
+  operator-priced difference; downgrades wait until the end. A free trial is
+  once per account **and** number. Expiry alone pauses the bot, never schedules
+  deletion. Cancellation preserves access through the current end and suppresses
+  renewal reminders. Canceling starts a separate export/retention/deletion path.
+- **Operation:** One platform DB writer, one worker per assistant, private
+  durable volumes and a production mail adapter. `npm run doctor` checks for
+  missing paid offers, transfer instructions, operator credential and mailer.
+  Use only synthetic evidence in tests. Default file mail is a local artifact,
+  **not** evidence of delivery. [State machine, verification and limitations](docs/phase-7-part-4.md).
+
+### Legacy plans (billing disabled)
 
 `plans` is a table with `limits` and `features`, seeded with `free`, `starter`
 and `growth`. A plan is applied by writing the values the bot already reads:

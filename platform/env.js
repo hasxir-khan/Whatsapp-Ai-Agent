@@ -18,6 +18,9 @@ export function platformEnabled() {
   return TRUTHY.has(String(process.env.PLATFORM_ENABLED || '').trim().toLowerCase());
 }
 
+export const billingEnabled = () =>
+  platformEnabled() && TRUTHY.has(String(process.env.PLATFORM_BILLING || '').toLowerCase());
+
 export const dashboardEnabled = () =>
   platformEnabled() && TRUTHY.has(String(process.env.PLATFORM_DASHBOARD || '').toLowerCase());
 

@@ -1,3 +1,4 @@
+import {billingLimit} from './billingLease.js';
 // One worker owns a tenant DB. Admission and increment are synchronous (no
 // await between them); reserve provider attempts, not just successful clips.
 import { config } from '../config/env.js';
@@ -36,7 +37,7 @@ export function quotaCode(field, tenant = defaultTenant(), now = new Date(), lim
   const day = dayOf(now),
     month = day.slice(0, 7) + '-01';
   if (mediaTotals(tenant, day, day)[field] >= limits[field + 'Day']) return `${field}_day`;
-  const plan = process.env.TENANT_VIDEOS_MONTH;
+  const plan = billingLimit('videos_month', process.env.TENANT_VIDEOS_MONTH);
   // An unprovisioned managed worker has no proven video entitlement.
   const entitlement =
     plan == null || plan === ''

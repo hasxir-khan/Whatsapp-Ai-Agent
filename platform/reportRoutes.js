@@ -15,21 +15,30 @@ export function operatorConfigured() {
     ![process.env.PLATFORM_SECRET, process.env.PLATFORM_KEY_SECRET, process.env.ADMIN_TOKEN].includes(key)
   );
 }
-export function operatorRoute(req, res, url) {
-  if (!operatorConfigured()) return sendJson(res, 404, { error: 'not_found' });
-  if (req.method !== 'GET') return sendJson(res, 405, { error: 'read_only' });
+export function operatorAuthorised(req, res) {
+  if (!operatorConfigured()) {
+    sendJson(res, 404, { error: 'not_found' });
+    return false;
+  }
   // Separate credential domain: do not even parse the customer's cookies.
   const auth = String(req.headers.authorization || ''),
     token = auth.startsWith('Basic ') ? Buffer.from(auth.slice(6), 'base64').toString() : '';
   if (!safeEqual(token, 'operator:' + process.env.PLATFORM_OPERATOR_TOKEN)) {
     const limit = rateLimit('report-operator:' + clientIp(req), { max: 16, windowMs: 60000 });
-    return sendJson(
+    sendJson(
       res,
       limit.ok ? 401 : 429,
       { error: limit.ok ? 'operator_auth_required' : 'too_many_requests' },
-      limit.ok ? { 'WWW-Authenticate': 'Basic realm="Platform operations", charset="UTF-8"' } : {},
+      limit.ok ? { 'WWW-Authenticate': 'Basic realm="Platform operations", charset="UTF-8"' } : {}
     );
+    return false;
   }
+  return true;
+}
+export function operatorRoute(req, res, url) {
+  if (!operatorConfigured()) return sendJson(res, 404, { error: 'not_found' });
+  if (req.method !== 'GET') return sendJson(res, 405, { error: 'read_only' });
+  if (!operatorAuthorised(req, res)) return;
   try {
     const d = operatorOverview(url.searchParams);
     return url.pathname.startsWith('/api/')

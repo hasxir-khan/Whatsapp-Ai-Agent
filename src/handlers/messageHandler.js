@@ -22,6 +22,8 @@ import * as reasoningModule from '../services/reasoning.js';
 import * as keyChain from '../services/keyChain.js';
 import { agentsEnabled, routeToAgent, logAgentEvent, noteAgentSuccess, noteAgentFailure, noteAgentTokens } from '../services/agents.js';
 import { emergencyGuardEnabled, detectEmergency, emergencyReply, emergencyContact } from '../services/agentPacks.js';
+import { workerAccess } from '../services/billingLease.js';
+import { admit, handover } from '../services/billingMeter.js';
 import { detectOptOut, detectOptIn, recordOptOut, recordOptIn, optOutConfirmation } from '../services/growth.js';
 import {
   privacyEnabled as privacyToolsEnabled,
@@ -153,6 +155,16 @@ export async function handleIncoming(transport, rawIncoming, { now = null } = {}
     const info = privateInput ? { ...incoming, text: '', caption: '' } : incoming;
     const number = incoming.number;
 
+    const lease = workerAccess(clock());
+    if (lease) {
+      const customer = !incoming.fromMe && number !== config.owner.number && !isTeam(number);
+      const stop = customer && detectOptOut(info.text || info.caption || '');
+      if (!lease.canRun || (customer && !stop && (!admit('chat', 1, number, clock()) || (info.kind === 'video' && !admit('video', 1, '', clock()))))) {
+        if (stop) recordOptOut(number);
+        else if (customer) await handover(transport, jid, number, clock());
+        return;
+      }
+    }
     // ── the owner's own messages ───────────────────────────
     if (incoming.fromMe) {
       if (ownSentIds.has(msgId)) return; // our own send echoed back
