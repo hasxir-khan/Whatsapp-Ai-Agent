@@ -14,6 +14,7 @@
 // process is off), but it now survives flaky internet, reconnects and restarts
 // without eating client messages.
 
+import { isPrivateMedia } from './ephemeralMedia.js';
 import { config } from '../config/env.js';
 import {
   enqueueOutbox, dueOutbox, updateOutbox, outboxStats, pruneOutbox, logEvent, bumpUsage,
@@ -59,6 +60,7 @@ export async function sendReliable(sock, jid, payload) {
   try {
     return await sock.sendMessage(jid, payload);
   } catch (err) {
+    if (isPrivateMedia()) throw new Error('private_media_send_failed');
     if (!isRetryable(err)) throw err;
 
     const row = enqueueOutbox(jid, payload, { kind: kindOf(payload), error: err.message });

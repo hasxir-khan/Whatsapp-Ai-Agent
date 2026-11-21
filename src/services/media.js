@@ -173,10 +173,30 @@ export class MediaTooBigError extends Error {}
  * Download media with a size cap so a 500 MB video can't kill the process.
  * @returns {Promise<{buffer:Buffer, mimetype:string}>}
  */
-export async function downloadMedia(msg, info = describeMessage(msg)) {
+export async function downloadMedia(msg, info = describeMessage(msg), { maxBytes, timeoutMs } = {}) {
+  if (maxBytes) {
+    if (Number((info.content?.videoMessage || info.content?.audioMessage)?.fileLength) > maxBytes)
+      throw new MediaTooBigError('too_large');
+    const { downloadMediaMessage } = await baileys();
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs || 30000)]);
+    const stream = await downloadMediaMessage(msg, 'stream', { options: { signal } });
+    const abort = () => stream.destroy(new Error('download_timeout'));
+    signal.addEventListener('abort', abort, { once: true });
+    try {
+      signal.throwIfAborted();
+      return { buffer: await boundedMedia(stream, maxBytes), mimetype: info.mimetype };
+    } finally {
+      signal.removeEventListener('abort', abort);
+      stream.destroy();
+      controller.abort();
+    }
+  }
   const limit =
-    info.kind === 'video' ? config.vision.maxVideoBytes
-      : info.kind === 'image' ? config.vision.maxImageBytes
+    info.kind === 'video'
+      ? config.vision.maxVideoBytes
+      : info.kind === 'image'
+        ? config.vision.maxImageBytes
         : 25 * 1024 * 1024;
 
   const declared = info.content?.fileLength
@@ -200,7 +220,7 @@ export async function downloadMedia(msg, info = describeMessage(msg)) {
 
 // ── temp files ──────────────────────────────────────────────
 function ensureTmp() {
-  fs.mkdirSync(config.paths.tmp, { recursive: true });
+  fs.mkdirSync(config.paths.tmp, { recursive: true, mode: 0o700 });
   return config.paths.tmp;
 }
 
@@ -212,13 +232,13 @@ export function tempFile(ext = 'bin', prefix = 'wa') {
 
 export function writeTemp(buffer, ext = 'bin', prefix = 'wa') {
   const file = tempFile(ext, prefix);
-  fs.writeFileSync(file, buffer);
+  fs.writeFileSync(file, buffer, { mode: 0o600 });
   return file;
 }
 
 export function tempDir(prefix = 'job') {
   const dir = path.join(ensureTmp(), `${prefix}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 
@@ -268,3 +288,18 @@ export default {
   unwrapContent, extractText, describeMessage, downloadMedia,
   tempFile, writeTemp, tempDir, cleanupPath, extFromMime, sweepTemp, MediaTooBigError,
 };
+
+// Used only by the protected media path. Stop reading untrusted downloads
+// as soon as the limit is crossed, even if Content-Length was absent or false.
+export async function boundedMedia(stream, limit) {
+  if (!stream?.[Symbol.asyncIterator]) throw Error('no_media_stream');
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of stream) {
+    size += chunk.length;
+    if (size > limit) throw new MediaTooBigError('too_large');
+    chunks.push(chunk);
+  }
+  if (!size) throw Error('empty_media');
+  return Buffer.concat(chunks, size);
+}

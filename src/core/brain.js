@@ -8,6 +8,7 @@
 // Everything factual (prices, dates, links) comes from config or memory — the
 // model is only allowed to phrase it, never to invent it.
 
+import { isPrivateMedia } from '../services/ephemeralMedia.js';
 import { config } from '../config/env.js';
 import { brevityInstruction, maxSentences } from './brevity.js';
 import { touchInstruction } from './humanTouch.js';
@@ -418,7 +419,7 @@ export async function generateReply({
     knowledgeBlock = rag.block;
     if (rag.hits?.length) {
       console.log(`📚 knowledge: ${rag.hits.length} excerpt(s) via ${rag.method}`);
-    } else if (looksFactual(text)) {
+    } else if (!isPrivateMedia() && looksFactual(text)) {
       // A real question the knowledge base had nothing for. The analyst's
       // "asked but not answered" list is built from exactly these rows.
       logRagMiss(number, text);

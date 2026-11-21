@@ -26,6 +26,8 @@ if (has('--help') || has('-h')) {
 Golden chat eval
 
   npm run eval                          deterministic (recorded model, offline)
+  npm run eval -- --media               synthetic voice/video corpus, recorded providers
+  npm run eval -- --live --media        real media providers, all HTTP/Edge attempts capped
   npm run eval -- --live                real provider, budget-capped
   npm run eval -- --only <id>           one scenario by id substring
   npm run eval -- --category <name>     one category
@@ -48,6 +50,15 @@ const compareWith = typeof value('--compare') === 'string' ? value('--compare') 
 const out = typeof value('--out') === 'string' ? value('--out') : 'eval-report.json';
 const maxCalls = Number(value('--max-calls', process.env.EVAL_LIVE_MAX_CALLS || 60)) || 60;
 const colour = !has('--no-colour') && process.stdout.isTTY !== false;
+
+if (has('--media')) {
+  try {
+    const { runMedia } = await import('../src/eval/media.js');
+    const media = await runMedia({ live, only, maxCalls: Number(value('--max-calls', process.env.EVAL_LIVE_MAX_CALLS ?? 60)) });
+    fs.writeFileSync(out, JSON.stringify({media}, null, 2) + '\n');
+    process.exit(media.summary.fail ? 1 : 0);
+  } catch (err) { console.error(err.message); process.exit(3); }
+}
 
 if (has('--live')) {
   // Check the real environment *before* the harness replaces it.
@@ -112,6 +123,14 @@ if (live) {
   console.log(`  deterministic: ${outcome.meta.calls} recorded model turns, no network`);
 }
 
+// A fresh process keeps the media recorder/tenant config out of the chat suite.
+if (!live && !only && !category) {
+  const { spawnSync } = await import('node:child_process');
+  const mediaFile = `${evalDir}/media-result.json`;
+  const child = spawnSync(process.execPath, [process.argv[1], '--media', '--out', mediaFile], { stdio: 'inherit' });
+  if (fs.existsSync(mediaFile)) outcome.report.media = JSON.parse(fs.readFileSync(mediaFile, 'utf8')).media;
+  if (child.status !== 0) { report.writeReport(out, outcome.report); process.exit(child.status || 1); }
+}
 const outPath = report.writeReport(out, outcome.report);
 console.log(`  report → ${outPath}`);
 

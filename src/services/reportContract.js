@@ -52,6 +52,7 @@ export const enums = Object.fromEntries(
       'priceMismatch wrongLanguage midSentenceCuts forbiddenText doubleRepliesBlocked handoffs ownerReplies botHonesty',
     sourceMetric: 'inbound leads paid',
     funnel: 'leads quotes orders paid reviewed',
+    media: 'videos vision processed refused video_ms voice correct errors',
     vote: 'up down',
     goal: 'orders leads revenue bookings reviews',
     experiment: 'followup offer review_ask',
@@ -102,6 +103,7 @@ export const factTypes = {
   objection: [en('objection')],
   review: [en('vote')],
   impact: [en('impact')],
+  media: [en('media')],
   voice: [],
 };
 export function fact(row) {

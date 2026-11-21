@@ -9,6 +9,7 @@
 //   • scam patterns are filtered, but normal clients (links, caps, short
 //     messages) are never punished
 
+import { handleMediaTurn, mediaIngressGuard, resumeDeferredMedia, protectedVideo, protectedTurn } from './mediaTurn.js';
 import { config, isFriend, friendName, isTeam, teamMember, teamMembers } from '../config/env.js';
 import { normalizeBaileys } from '../transport/baileys.js';
 import { normalizeIncoming } from '../transport/base.js';
@@ -146,7 +147,10 @@ export async function handleIncoming(transport, rawIncoming, { now = null } = {}
       return;
     }
 
-    const info = incoming;
+    // A protected clip caption is transient too. Do not put it in deleted
+    // message recovery, quiet-hours payloads, source attribution or previews.
+    const privateInput = protectedTurn(incoming);
+    const info = privateInput ? { ...incoming, text: '', caption: '' } : incoming;
     const number = incoming.number;
 
     // ── the owner's own messages ───────────────────────────
@@ -185,7 +189,7 @@ export async function handleIncoming(transport, rawIncoming, { now = null } = {}
 
     // ── bookkeeping ────────────────────────────────────────
     // Only transports that can report a deletion are worth remembering.
-    if (transport.can?.('deletedMessages') !== false && incoming.raw) rememberMessage(incoming.raw);
+    if (!privateInput && transport.can?.('deletedMessages') !== false && incoming.raw) rememberMessage(incoming.raw);
 
     const existing = db.getContact(number);
     const friend = isFriend(number);
@@ -199,6 +203,8 @@ export async function handleIncoming(transport, rawIncoming, { now = null } = {}
 
     if (contact?.is_blocked) return;
     if (db.getSetting('bot_enabled', true) !== true) return;
+
+    if (privateInput && await mediaIngressGuard({ sock: transport, jid, number, contact, incoming, noteSent })) return;
 
     // ── "stop" means stop ──────────────────────────────────
     // Checked before the AI, before intake, before anything can decide to be
@@ -369,6 +375,7 @@ export async function handleIncoming(transport, rawIncoming, { now = null } = {}
         {
           jid,
           reason: 'quiet_hours',
+          ...(privateInput ? { mediaDeferred: true } : {}),
           text: info.text || '',
           kind: info.kind,
           caption: info.caption || '',
@@ -623,35 +630,41 @@ export async function drainBatches({ timeoutMs = 5000 } = {}) {
 }
 
 /** Send any quiet-hour messages that are now due. */
-export function startPendingFlusher(sock) {
-  const timer = setInterval(async () => {
-    if (isQuietNow()) return;
-    const due = db.duePending(new Date().toISOString());
-    for (const row of due) {
-      db.clearPending(row.number);
-      db.logEvent('pending_flushed', row.number, row.reason || 'due');
+export async function flushDuePending(sock) {
+  if (isQuietNow()) return;
+  const due = db.duePending(new Date().toISOString());
+  for (const row of due) {
+    db.clearPending(row.number);
+    db.logEvent('pending_flushed', row.number, row.reason || 'due');
 
-      const payload = row.payload || {};
-      const text = payload.text || (payload.kind && payload.kind !== 'text' ? `[${payload.kind} sent after hours]` : '');
-      if (!text) continue;
+    const payload = row.payload || {};
+    const text = payload.text || (payload.kind && payload.kind !== 'text' ? `[${payload.kind} sent after hours]` : '');
+    if (!text) continue;
 
-      const jid = payload.jid || `${row.number}@s.whatsapp.net`;
-      try {
-        await sendTyping(sock, jid, 'Morning! Sorry for the late reply — saw this after hours.', { delay: 700 });
-        enqueue(sock, jid, row.number, {
-          incoming: normalizeIncoming({
-            chat: jid,
-            number: row.number,
-            kind: 'text',
-            text,
-            caption: payload.caption || '',
-          }),
-        });
-      } catch (err) {
-        db.logEvent('pending_flush_error', row.number, err.message);
+    const jid = payload.jid || `${row.number}@s.whatsapp.net`;
+    try {
+      if (payload.mediaDeferred) {
+        await resumeDeferredMedia({ sock, jid, number: row.number, contact: db.getContact(row.number), noteSent });
+        continue;
       }
+      await sendTyping(sock, jid, 'Morning! Sorry for the late reply — saw this after hours.', { delay: 700 });
+      enqueue(sock, jid, row.number, {
+        incoming: normalizeIncoming({
+          chat: jid,
+          number: row.number,
+          kind: 'text',
+          text,
+          caption: payload.caption || '',
+        }),
+      });
+    } catch (err) {
+      db.logEvent('pending_flush_error', row.number, err.message);
     }
-  }, 60_000);
+  }
+}
+
+export function startPendingFlusher(sock) {
+  const timer = setInterval(() => flushDuePending(sock), 60_000);
   timer.unref?.();
   return timer;
 }
@@ -687,6 +700,7 @@ async function processBatch(sock, jid, number, items, clock = realClock) {
     session: timing.enabled
       ? createTypingSession(sock, jid, {
           timing,
+          processing: items.slice(0, 5).some((i) => protectedVideo(i.incoming)),
           messageId: items[items.length - 1]?.incoming?.id || null,
           // If this contact has written from a LID as well, that is the other
           // address a presence update can be tried on (`typing.strategy = d`).
@@ -783,6 +797,10 @@ async function runBatch(sock, jid, number, items, ctx) {
     });
 
   const channel = createReplyChannel({ chat: number, batch: batchId, transport: sock, jid, sendTyping, sendHuman: pacedSend });
+
+  if (items.slice(0, 5).some((i) => protectedTurn(i.incoming))) {
+    return handleMediaTurn({ sock, jid, number, items, contact, ctx, channel, noteSent });
+  }
 
   const parts = [];
   const problems = [];

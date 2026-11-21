@@ -1382,3 +1382,10 @@ export default {
   readPaymentsSnapshot,
   decisionCounters,
 };
+
+// Read-only bridge: neither the clip nor its interpretation is a proof of funds.
+// A typed confirmation/normal proof workflow is required after human review.
+export function clipNeedsPaymentReview(number, summary) {
+  return summary.want === 'review_payment' || summary.subject === 'payment' ||
+    (paymentReviewOn() && (pendingDecisionFor(number) || awaitingOrdersFor(number).length > 0));
+}

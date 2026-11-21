@@ -448,11 +448,11 @@ export class BaileysTransport extends Transport {
   }
 
   /** Download whatever a customer sent. */
-  async getMedia(incoming) {
+  async getMedia(incoming, options) {
     const raw = incoming?.raw;
     if (!raw) throw new Error('baileys: nothing to download');
     const info = describeMessage(raw);
-    return downloadMedia(raw, info);
+    return downloadMedia(raw, info, options);
   }
 
   /** Chat kind from a JID — used only to refuse groups early. */

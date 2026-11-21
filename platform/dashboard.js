@@ -210,6 +210,26 @@ export function dashboard(slug, name, q = new URLSearchParams(), { owner = false
       0,
       (plan.limits.voice_minutes || 0) - seconds([slug, b.today.slice(0, 7) + '-01', b.today]) / 60,
     );
+    const media = Object.fromEntries(
+      all(`SELECT a,SUM(n) n FROM r_facts WHERE metric='media' AND hour=-1 AND ${span} GROUP BY a`, p).map((r) => [
+        r.a,
+        r.n,
+      ])
+    );
+    metrics.videoEntitlement = plan.limits.videos_month;
+    metrics.monthlyVideos = st
+      ? scalar(`SELECT SUM(n) n FROM r_facts WHERE metric='media' AND a='videos' AND hour=-1 AND ${span}`, [
+          slug,
+          b.today.slice(0, 7) + '-01',
+          b.today,
+        ])
+      : null;
+    metrics.videosProcessed = coverage ? media.processed || 0 : null;
+    metrics.videosRefused = coverage ? media.refused || 0 : null;
+    metrics.mediaProviderErrors = coverage ? media.errors || 0 : null;
+    metrics.voiceReplyLanguage = media.voice ? Math.round((100 * (media.correct || 0)) / media.voice) : null;
+    const clips = (media.processed || 0) + (media.refused || 0);
+    metrics.videoProcessingMs = clips ? Math.round((media.video_ms || 0) / clips) : null;
     if (!coverage) metrics.voiceMinutes = metrics.messages = null;
     if (!st) metrics.voiceMinutesLeft = null;
     for (const [id, column] of Object.entries({

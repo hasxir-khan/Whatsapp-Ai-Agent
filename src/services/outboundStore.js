@@ -17,6 +17,7 @@
 //   • it is covered by `.export` (the contact gets it) and `.forget` (it goes
 //     with them), and by the general retention purge.
 
+import { isPrivateMedia } from './ephemeralMedia.js';
 import { run, all, get } from '../utils/db.js';
 import { config } from '../config/env.js';
 
@@ -68,6 +69,7 @@ export function toMessage(payload = {}) {
  * @returns {{stored:boolean, reason?:string, id?:string}}
  */
 export function storeOutbound({ id, jid = null, payload = {}, now = new Date() } = {}) {
+  if (isPrivateMedia()) return { stored: false, reason: 'private_media' };
   if (!outboundStoreEnabled()) return { stored: false, reason: 'disabled' };
   if (!id || !jid) return { stored: false, reason: 'missing_id_or_jid' };
 

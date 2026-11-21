@@ -23,12 +23,13 @@ export function sttEnabled() {
  * @param {string} [opts.filename]
  * @returns {Promise<{text:string, language:string, duration:number, model:string}|null>}
  */
-export async function transcribe(buffer, { mimetype = 'audio/ogg', language = config.stt.language, filename } = {}) {
+export async function transcribe(buffer, { mimetype = 'audio/ogg', language = config.stt.language, filename, gate } = {}) {
   if (!sttEnabled()) return null;
   if (!buffer?.length) return null;
 
   let tmp = null;
   let converted = null;
+  let rawInput = null;
 
   try {
     if (buffer.length > MAX_BYTES) {
@@ -37,10 +38,9 @@ export async function transcribe(buffer, { mimetype = 'audio/ogg', language = co
         logEvent('stt_too_large', null, buffer.length);
         return null;
       }
-      const raw = writeTemp(buffer, extFromMime(mimetype), 'stt');
-      converted = await extractAudioForStt(raw, `${raw}.mp3`);
-      cleanupPath(raw);
-      if (!converted) return null;
+      rawInput = writeTemp(buffer, extFromMime(mimetype), 'stt');
+      converted = `${rawInput}.mp3`;
+      if (!await extractAudioForStt(rawInput, converted)) return null;
       tmp = converted;
     } else {
       tmp = writeTemp(buffer, extFromMime(mimetype), 'stt');
@@ -49,8 +49,22 @@ export async function transcribe(buffer, { mimetype = 'audio/ogg', language = co
     const models = [config.stt.model, config.stt.fallbackModel].filter(Boolean);
 
     for (const model of models) {
-      const result = await callWhisper(tmp, model, language, filename);
-      mediaUsage('voice', 'groq', model, { error: result ? null : 'provider_error', estimated: !!result });
+      let result;
+      if (gate) {
+        try {
+          result = await gate.attempt('stt', 'groq', (signal) =>
+            callWhisper(tmp, model, language, 'speech.' + (converted ? 'mp3' : extFromMime(mimetype)), signal)
+          );
+        } catch (err) {
+          if (err.code !== 'provider_error') throw err;
+        }
+      } else result = await callWhisper(tmp, model, language, filename);
+      mediaUsage('voice', 'groq', model, {
+        error: result ? null : 'provider_error',
+        protectedCall: !!gate,
+        estimated: !!result,
+        output: gate && result ? Math.ceil(result.text.length / 4) : 0,
+      });
       if (result) {
         if (process.env.TENANT_DASHBOARD === '1' && result.duration)
           logEvent('report_voice_seconds', null, { seconds: result.duration });
@@ -60,16 +74,17 @@ export async function transcribe(buffer, { mimetype = 'audio/ogg', language = co
     }
     return null;
   } catch (err) {
-    logEvent('stt_error', null, err.message);
-    console.error('STT error:', err.message);
+    if (gate && err.code) throw err;
+    logEvent('stt_error', null, 'failed');
     return null;
   } finally {
+    cleanupPath(rawInput);
     cleanupPath(tmp);
     if (converted && converted !== tmp) cleanupPath(converted);
   }
 }
 
-async function callWhisper(filePath, model, language, filename) {
+async function callWhisper(filePath, model, language, filename, signal) {
   try {
     const { readFile } = await import('node:fs/promises');
     const bytes = await readFile(filePath);
@@ -85,13 +100,13 @@ async function callWhisper(filePath, model, language, filename) {
       method: 'POST',
       headers: { Authorization: `Bearer ${config.keys.groq}` },
       body: form,
-      signal: AbortSignal.timeout(120000),
+      signal: signal || AbortSignal.timeout(120000),
     });
 
     const raw = await res.text();
     if (!res.ok) {
       // Bad model / unsupported file → try the fallback model
-      logEvent('stt_http_error', null, `${res.status} ${raw.slice(0, 200)}`);
+      logEvent('stt_http_error', null, { status: res.status });
       return null;
     }
 
@@ -99,6 +114,7 @@ async function callWhisper(filePath, model, language, filename) {
     try {
       data = JSON.parse(raw);
     } catch {
+      if (signal) return null;
       return { text: raw.trim(), language: language || 'unknown', duration: 0 };
     }
 
@@ -109,9 +125,10 @@ async function callWhisper(filePath, model, language, filename) {
       text,
       language: data.language || language || 'unknown',
       duration: Number(data.duration) || 0,
+      ...(signal ? { confidence: whisperConfidence(data) } : {}),
     };
   } catch (err) {
-    logEvent('stt_request_error', null, err.message);
+    logEvent('stt_request_error', null, 'failed');
     return null;
   }
 }
@@ -123,3 +140,13 @@ export function looksMeaningful(text = '') {
 }
 
 export default { transcribe, sttEnabled, looksMeaningful };
+
+function whisperConfidence(data) {
+  if (typeof data.language_probability === 'number') return data.language_probability;
+  const segments = (Array.isArray(data.segments) ? data.segments : []).filter((s) => Number.isFinite(s.avg_logprob));
+  if (!segments.length) return null; // absence is not zero or a made-up score
+  return (
+    segments.reduce((n, s) => n + Math.min(1, Math.exp(s.avg_logprob)) * (1 - (s.no_speech_prob || 0)), 0) /
+    segments.length
+  );
+}

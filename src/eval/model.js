@@ -156,15 +156,10 @@ export class LiveModel {
     // The same function the bot's provider calls go through, kept on the
     // instance so a test can exercise the counter without a network.
     this.fetchImpl = async (url, opts = {}) => {
-      if (this.calls >= this.maxCalls) {
-        this.blocked += 1;
-        const err = new Error(`eval budget reached (${this.maxCalls} calls)`);
-        err.status = 429;
-        err.body = 'eval budget reached';
-        throw err;
-      }
-      this.calls += 1;
+      this.reserve();
       const res = await real(url, opts);
+      // Audio responses do not contain token JSON. Do not buffer a second copy.
+      if (res.headers?.get('content-type')?.startsWith('audio/')) return res;
       try {
         const clone = res.clone();
         const text = await clone.text();
@@ -178,6 +173,18 @@ export class LiveModel {
     };
     __setFetch(this.fetchImpl);
     return this;
+  }
+
+  // The very same allowance covers non-HTTP transports (Edge WebSocket).
+  reserve() {
+    if (this.calls >= this.maxCalls) {
+      this.blocked += 1;
+      const err = new Error(`eval budget reached (${this.maxCalls} calls)`);
+      err.status = 429;
+      err.body = 'eval budget reached';
+      throw err;
+    }
+    this.calls += 1;
   }
 
   reset() {

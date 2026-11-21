@@ -204,13 +204,13 @@ export async function sendHuman(
   sock,
   jid,
   text,
-  { incomingText = '', voice = null, session = null, receivedAt = null, chat = null, lang = 'en', shouldSend = null } = {}
+  { incomingText = '', voice = null, session = null, receivedAt = null, chat = null, lang = 'en', shouldSend = null, companionText = false, holdingManaged = false } = {}
 ) {
-  const bubbles = splitIntoBubbles(text);
+  const bubbles = companionText ? [String(text || '').trim()].filter(Boolean) : splitIntoBubbles(text);
   if (!bubbles.length) return [];
 
   const timing = replyTiming();
-  if (timing.enabled === false) return legacySendHuman(sock, jid, text, { incomingText, voice });
+  if (timing.enabled === false) return legacySendHuman(sock, jid, text, { incomingText, voice, companionText, shouldSend });
 
   const key = chat || String(jid || '').split('@')[0];
   const ownSession = session || createTypingSession(sock, jid, { voice: !!voice, timing });
@@ -223,7 +223,7 @@ export async function sendHuman(
   try {
     // A reply that took longer than 30 s has already cost the customer a wait;
     // one short line says "still here" without pretending nothing happened.
-    if (receivedAt && readyAt - receivedAt > timing.holdingAfterMs && !voice) {
+    if (!holdingManaged && receivedAt && readyAt - receivedAt > timing.holdingAfterMs && !voice) {
       await ownSession.stop({ paused: true });
       await sendTyping(sock, jid, holdingLine(lang), { delay: scaled(400, timing) });
       timeline.markHold(key);
@@ -248,7 +248,7 @@ export async function sendHuman(
 
     // Number-heavy replies (a quote, a price band) are never voice-only: a
     // price the customer cannot see is a price they will ask for again.
-    const numberHeavy = !!voice?.buffer && looksNumberHeavy(text);
+    const keepTextWithVoice = companionText ? !!voice?.payload?.audio : !!voice?.buffer && looksNumberHeavy(text);
 
     for (let i = 0; i < bubbles.length; i += 1) {
       const bubble = bubbles[i];
@@ -260,7 +260,7 @@ export async function sendHuman(
       }
       await ownSession.stop({ paused: true });
 
-      const voiceBubble = !!voice?.buffer && i === bubbles.length - 1 && !numberHeavy;
+      const voiceBubble = !!voice?.buffer && i === bubbles.length - 1 && !keepTextWithVoice;
       if (voiceBubble) {
         await setPresence(sock, jid, 'recording');
         await sleep(scaled(rand(500, 1100), timing));
@@ -283,11 +283,11 @@ export async function sendHuman(
 
     // Voice *and* text for a quote: the audio is a courtesy, the text is the
     // record the customer can scroll back to.
-    if (numberHeavy) {
+    if (keepTextWithVoice) {
       await setPresence(sock, jid, 'recording');
       await sleep(scaled(rand(500, 1100), timing));
       try {
-        sent.push(await sendReliable(sock, jid, voice.payload));
+        if (!companionText || !shouldSend || shouldSend()) sent.push(await sendReliable(sock, jid, voice.payload));
       } catch {
         /* the text already went out; the voice note was a courtesy */
       }
@@ -332,8 +332,8 @@ function markProviderDone(key, chat) {
 }
 
 /** The pre-timing behaviour, kept for `REPLY_TIMING=false`. */
-async function legacySendHuman(sock, jid, text, { incomingText = '', voice = null } = {}) {
-  const bubbles = splitIntoBubbles(text);
+async function legacySendHuman(sock, jid, text, { incomingText = '', voice = null, companionText = false, shouldSend = null } = {}) {
+  const bubbles = companionText ? [String(text || '').trim()].filter(Boolean) : splitIntoBubbles(text);
   if (!bubbles.length) return [];
 
   const sent = [];
@@ -346,6 +346,7 @@ async function legacySendHuman(sock, jid, text, { incomingText = '', voice = nul
       isVoice: !!voice,
     });
     await sleep(delay);
+    if (companionText && shouldSend && !shouldSend()) { await setPresence(sock, jid, 'paused'); return sent; }
 
     if (voice && i === bubbles.length - 1 && voice.buffer) {
       await setPresence(sock, jid, 'recording');
@@ -365,6 +366,9 @@ async function legacySendHuman(sock, jid, text, { incomingText = '', voice = nul
     if (i < bubbles.length - 1) await sleep(rand(600, 1500));
   }
 
+  if (companionText && voice?.payload?.audio && (!shouldSend || shouldSend())) {
+    try { sent.push(await sendReliable(sock, jid, voice.payload)); } catch { /* text already delivered */ }
+  }
   await setPresence(sock, jid, 'paused');
   return sent;
 }

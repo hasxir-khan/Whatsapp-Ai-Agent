@@ -1,5 +1,6 @@
 // Runs inside ONE tenant's worker. Materialise sufficient statistics, not a
 // mirror of its DB. Raw text used to categorise questions never leaves here.
+import { MEDIA_COUNTERS } from './mediaLimits.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tenantBudget, tenantSlug } from '../core/llm.js';
@@ -248,6 +249,8 @@ export function tenantDay(
   }
   // Historic STT counters were recorded per UTC date, not per call. Use local
   // timestamped seconds when instrumented; never shift a UTC day's total.
+  const mediaDay = get('SELECT * FROM media_daily WHERE tenant=? AND day=?', [config.tenant.slug, day]);
+  if (mediaDay) for (const key of MEDIA_COUNTERS) if (mediaDay[key]) add('media', -1, key, '', mediaDay[key]);
   for (const r of all(`SELECT created_at,detail FROM events WHERE type='report_voice_seconds' AND ${span}`, p))
     add('voice', hour(r.created_at), '', '', 1, json(r.detail).seconds);
   for (const e of all(

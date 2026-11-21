@@ -73,6 +73,8 @@ function hydrate(row) {
   } catch {
     features = [];
   }
+  // Older/customised rows keep their overrides. Unknown plans grant no clips.
+  limits.videos_month ??= PLAN_SEEDS.find((seed) => seed.id === row.id)?.limits.videos_month ?? 0;
   limits.dashboard_days = retention({ id: row.id, limits });
   return { ...row, limits, features, trial_days: Number(row.trial_days) || 0, price: Number(row.price) || 0 };
 }
@@ -112,6 +114,7 @@ export function applyEntitlements(slug, planId = null) {
     TENANT_MAX_CONVERSATIONS: String(plan.limits[CONVERSATION_LIMIT_KEY] || 0),
     TENANT_MAX_AGENTS: String(plan.limits.agents || 0),
     TENANT_MAX_NUMBERS: String(plan.limits.numbers || 0),
+    TENANT_VIDEOS_MONTH: String(plan.limits.videos_month || 0),
     TENANT_VOICE_MINUTES: String(plan.limits.voice_minutes || 0),
   };
   // No voice allowance means no voice replies: an existing switch, not a new

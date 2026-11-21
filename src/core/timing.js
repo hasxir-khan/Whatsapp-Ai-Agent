@@ -220,7 +220,7 @@ export function planReplyDelay({ text = '', voice = false, receivedAt, readyAt, 
 export function createTypingSession(
   sock,
   jid,
-  { voice = false, timing = replyTiming(), setPresence = null, messageId = null, altJid = null, strategy = null } = {}
+  { voice = false, timing = replyTiming(), setPresence = null, messageId = null, altJid = null, strategy = null, processing = false } = {}
 ) {
   // (strategy = null means "use the owner's stored choice".)
   // Which of the four shapes the owner saw working in `.typing-test`. The default
@@ -287,13 +287,14 @@ export function createTypingSession(
     ping();
   }, timing.refreshMs);
   timer.unref?.();
-  cap = setTimeout(() => {
-    // Out of patience: stop claiming to type. The reply, when it comes, is sent
-    // immediately and the caller decides whether an apology line is warranted.
-    clearInterval(timer);
-    timer = null;
-  }, timing.hardCapMs);
-  cap.unref?.();
+  if (!processing)
+    cap = setTimeout(() => {
+      // Out of patience: stop claiming to type. The reply, when it comes, is sent
+      // immediately and the caller decides whether an apology line is warranted.
+      clearInterval(timer);
+      timer = null;
+    }, timing.hardCapMs);
+  cap?.unref?.();
 
   return {
     startedAt,
@@ -457,3 +458,15 @@ export default {
   HOLDING_LINES,
   scaled,
 };
+
+// Exactly one in-flight holding line. The caller cancels (and joins) it
+// before delivery, so a slow send cannot overtake the final answer.
+export function startMediaHolding({ receivedAt, timing, send }) {
+  let promise, timer;
+  if (timing.enabled && timing.holdingAfterMs < 2147483647) {
+    timer = setTimeout(() => { promise = Promise.resolve().then(send).catch(() => {}); },
+      Math.max(0, receivedAt + timing.holdingAfterMs - Date.now()));
+    timer.unref?.();
+  }
+  return async () => { clearTimeout(timer); await promise; };
+}

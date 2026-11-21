@@ -324,3 +324,30 @@ export function looksLikeBrief(text = '') {
 }
 
 export default { extractText, summarizeDocument, extractProjectBrief, looksLikeBrief };
+
+// A clip is not an invoice or an instruction. Confirm a tentative reading;
+// do not send the detector's prose (which can contain names or screen text).
+export function clipConfirmation(summary, { intakeActive = false } = {}) {
+  if (summary.want === 'directions' || summary.subject === 'shop') return 'directions';
+  if (summary.want === 'availability') return 'availability';
+  if (intakeActive) return 'reference';
+  if (summary.subject === 'product') return 'product';
+  return 'next';
+}
+
+// Carry a concrete visible detail into the confirmation when we can express
+// it safely. Never echo arbitrary frame text (names, numbers, imperatives) or
+// infer facts about a person. Other objects still get the subject question.
+const OBJECTS = [
+  ['lamp', 'لیمپ', 'lamp', 'مصباح'], ['box', 'ڈبہ', 'dabba', 'صندوق'], ['shirt', 'قمیض', 'qameez', 'قميص'],
+  ['bottle', 'بوتل', 'botal', 'زجاجة'], ['screen', 'اسکرین', 'screen', 'شاشة'], ['entrance', 'دروازہ', 'darwaza', 'مدخل'],
+  ['bag', 'بیگ', 'bag', 'حقيبة'], ['shoe', 'جوتا', 'joota', 'حذاء'], ['chair', 'کرسی', 'kursi', 'كرسي'],
+];
+export function visibleDetail(summary, code) {
+  if (!summary?.shown || summary.sensitive || summary.injection || summary.unclear) return '';
+  const lang = ['en','ur','roman-ur','ar'].indexOf(code);
+  if (lang < 0) return '';
+  const noun = OBJECTS.find(([name]) => new RegExp(`\\b${name}\\b`,'i').test(summary.shown));
+  if (!noun) return '';
+  return [`I can see the ${noun[0]}.`, `ویڈیو میں ${noun[1]} نظر آ رہا ہے۔`, `Video mein ${noun[2]} nazar aa raha hai.`, `يظهر في المقطع ${noun[3]}.`][lang];
+}

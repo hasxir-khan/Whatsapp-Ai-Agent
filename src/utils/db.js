@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS contacts (
   last_seen         TEXT
 );
 
+-- Aggregate-only admission ledger. No chat, file path or media content.
+CREATE TABLE IF NOT EXISTS media_daily (
+  tenant TEXT NOT NULL, day TEXT NOT NULL,
+  videos INTEGER DEFAULT 0, vision INTEGER DEFAULT 0, processed INTEGER DEFAULT 0,
+  refused INTEGER DEFAULT 0, video_ms INTEGER DEFAULT 0, voice INTEGER DEFAULT 0,
+  correct INTEGER DEFAULT 0, errors INTEGER DEFAULT 0, PRIMARY KEY(tenant,day)
+);
 CREATE TABLE IF NOT EXISTS messages (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   number      TEXT,

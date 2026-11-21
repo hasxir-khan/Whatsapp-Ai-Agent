@@ -2003,6 +2003,57 @@ Force one register with `bot.formality` if you prefer.
 
 ---
 
+## Voice and video
+
+Two independent switches in the tenant's `owner.json` opt into the protected media paths. **Both default to `false`**: existing tenants keep their previous Whisper, native-video and voice-reply behaviour. To enable both for a Pakistani shop, merge these fields into its profile:
+
+```json
+{
+  "features": { "voiceLanguagePolicy": true, "videoUnderstanding": true },
+  "business": {
+    "country": "PK",
+    "languages": ["ur", "en"],
+    "voice": {
+      "textScript": "urdu",
+      "voiceByLanguage": { "ur": "ur-PK-UzmaNeural", "en": "en-US-AriaNeural" }
+    },
+    "video": { "ownerThumbnail": false }
+  }
+}
+```
+
+**Voice notes.** `business.languages` is an allowlist, not a prompt suggestion. With no usable language the assistant asks the owner rather than guessing. Conversation history wins over the words in the note; the acoustic label comes last. In a Pakistani business, Hindi/Urdu speech maps to Urdu if allowed. Punjabi, Saraiki, Pashto and Sindhi map to Urdu unless individually enabled; Arabic is never enabled by inference. Mixed English/Urdu uses the dominant words. A note under three seconds, repeated syllables, non-language noise or weak confidence cannot change the stored language. The customer may get one short clarification instead of an invented answer.
+
+For Urdu text, the customer's recent **writing**, not the transcriber's choice of alphabet, sets the script. With voice only, `business.voice.textScript` selects `urdu` or `roman`. With `VOICE_REPLY_MODE=match_voice`, a mapped voice and ffmpeg, the customer gets a short text **and** an Opus voice note, capped at `TTS_MAX_SECONDS` (default 20). A Roman Urdu companion stays in Latin script; the Urdu voice receives Urdu script. The protected path uses `business.voice.voiceByLanguage` or the existing `bot.voice.voiceByLanguage`; a map entry may also specify provider voices, e.g. `"en": {"edge":"en-US-AriaNeural","groq":"troy"}`. Groq speech is limited to English/Arabic. An unavailable voice, failed synthesis or failed conversion leaves the text, not a voice in a different language. Edge is unofficial.
+
+**Clips.** The worker bounds the download, checks the actual container, streams and duration with ffmpeg, and sends **extracted audio** to Whisper and **downscaled scene frames** to the configured vision provider. It does not upload the original video to Gemini Files. A silent clip can use frames alone; an audio-only container can use speech alone. Over-limit → ask for a shorter clip or voice note; unreadable → ask to resend; unavailable/busy/quota → ask for a description. With reply timing enabled, the indicator refreshes during processing; `HOLDING_AFTER_MS` allows one holding line before the answer. Transport support still determines what a phone displays.
+
+Speech and screen text are untrusted evidence. The internal reading separates what was said, what was shown, the apparent request and what is unclear. A normal reply confirms one detail. Complaints, unsafe or uncertain readings, payment review and clinic/regulated profiles go to a person. The owner gets a short summary; a thumbnail is sent **only** with `business.video.ownerThumbnail: true`. A clip is not a price, diagnosis, identity check or proof of payment. Intake can ask if it is a reference; the worker does not turn its contents into intake facts or mark an order paid.
+
+| Protected-path setting | Default | What it limits |
+|---|---:|---|
+| `MEDIA_VIDEO_MB` / `MEDIA_VIDEO_SECONDS` | 25 MiB / 60 s | Incoming clip. A declaration may reject early, never admit by itself. |
+| `MEDIA_VIDEO_FRAMES` | 6 | First frame plus scene changes, at most 12; ≤480 px on either side. Static footage need not consume six frames. |
+| `MEDIA_PROVIDER_TIMEOUT_MS` | 20000 | Protected downloads and media-provider attempts. Three recent failures open the tenant/provider/operation breaker for five minutes. |
+| `MEDIA_VIDEOS_DAY` / `MEDIA_VIDEOS_MONTH` | 10 / 120 | Validated admissions per tenant, not just successful interpretations. One clip runs per tenant worker at a time. |
+| `MEDIA_VISION_CALLS_DAY` / `MEDIA_VISION_CALLS_MONTH` | 30 / 300 | Shared still-image/frame **provider attempts**, including model fallbacks, when video understanding is on. |
+
+Limits use the business calendar; **zero means no allowance** for day/month quotas. Managed workers also enforce the plan's monthly `videos_month` entitlement (free/starter/growth: **0/30/120**; the lower safety cap wins). Restart the tenant worker after a plan or environment change. On exhaustion, a fixed owner alert is sent or queued once per quota period; an undeliverable notice can be tried again. `.media` shows month-to-date results. **Dashboard → Usage → Voice and video** shows the entitlement and admitted clips this month alongside the selected dates' processed/refused totals, average processing time, provider errors and correct-language reply percentage. The percentage checks **delivered text for voice inputs**, including text-only fallback; it is not human-rated speech accuracy. No denominator is shown as `—`. Token counts use provider usage when supplied; otherwise frame inputs are estimated at 256 tokens/frame and text at about 4 characters/token. These are not prices.
+
+**Privacy boundary.** Use a private, writable `TMP_DIR`. The worker removes its clip workspace (original, extracted audio, frames) in `finally`; the existing boot/30-minute sweep catches leftovers older than one hour. Protected contents are not chat memory, deleted-message recovery, retry bodies, or exportable media. Deferred quiet-hours clips keep only a marker and ask for a resend. When an owner summary cannot be delivered, a retry can carry a **chat pointer**, never that summary or frame. Local diagnostics retain language/decision codes and numeric or categorical metadata. This does **not** delete WhatsApp messages, copies received by the owner, or data subject to the chosen providers' retention policies.
+
+```sh
+npm run doctor -- media                         # ffmpeg, STT, vision key, per-language TTS mapping
+npm run eval                                    # existing chat suite + recorded media suite, offline
+npm run eval -- --media                         # only the ten voice and eight video cases
+npm run eval -- --media --only short-haan        # one case, optional --out <file>
+npm run eval -- --live --media --max-calls 40    # opt-in; sends synthetic fixtures to real providers
+```
+
+Live media needs working ffmpeg, a Groq STT key and a configured vision provider for visual cases. Its cap is shared across actual HTTP attempts and Edge WebSocket handshakes, not a per-case limit or a guarantee about price. The report scores language (mismatch **fails**), transcript quality, gist and latency per case. `—` for transcript quality means no transcription was attempted. [Fixture provenance and regeneration](test/fixtures/media/README.md) explains exactly what is replayed. Offline success does not establish dialect accuracy, live quota availability, customer-perceived latency, or WhatsApp playback.
+
+---
+
 ## Missed calls
 
 **Honest version:** WhatsApp's Web protocol lets a bot *see* calls but **not carry the audio** — and the Cloud API transport in this project does not carry call audio either. So the assistant does the closest useful thing: the missed call becomes a message while the caller is still holding the phone.
@@ -2436,7 +2487,7 @@ it is a placeholder, not a working mailbox).
 | "Connection closed (401)" | Logged out — delete the session folder and re-link |
 | Replies but no images described | `npm run doctor -- gemini`; check the key, then `GEMINI_VISION_MODEL` |
 | "Gemini rejected the API key" | Revoked or restricted — mint a fresh `AQ.…` key |
-| Voice notes not understood | `GROQ_API_KEY` missing, or the note exceeds `MAX_AUDIO_SECONDS` |
+| Voice notes not understood | Check Groq STT, the download size and recording clarity. `MAX_AUDIO_SECONDS` is not a probed voice-input limit; see [Voice and video](#voice-and-video). |
 | Voice reply arrives as a file | No ffmpeg — install it |
 | `.status` shows outbox queued | Normal during a dropout; it flushes on reconnect. Stuck? Check the number isn't logged out |
 | Two users disconnect each other | They share a WhatsApp number — one number per user |
@@ -4109,6 +4160,13 @@ These are pseudonyms, not anonymous records. Protect `platform.db` and its backu
 | Estimated calls | Attempts whose usage is estimated or not supplied by the provider. Zero tokens may mean unreported. |
 | Provider errors | Recorded failed provider attempts, not necessarily failed customer conversations. |
 | Messages | Stored user, assistant and owner message rows in selected dates. |
+| Monthly video entitlement | Plan maximum admitted videos per business month; worker day/month safety caps may be lower. Zero means no allowance. |
+| Videos admitted this month | Clips admitted after validation this business month, including provider failures. |
+| Videos processed | Clips with an observation or transcript, including owner reviews. |
+| Videos refused | Unreadable, over-limit, busy, quota-blocked or unavailable clips without a result. |
+| Media provider errors | Failed protected STT, TTS and frame-vision attempts, including attempts followed by a successful fallback. |
+| Correct-language voice replies (%) | Delivered voice-input replies matching the policy language/script by automatic text check, not human-rated acoustic accuracy. No sample is shown as a dash. |
+| Average video processing (ms) | Elapsed download, validation, interpretation and cleanup time divided by processed plus refused clips. Excludes customer reply pacing. |
 | Voice minutes | Transcribed seconds reported by speech-to-text / 60, since instrumentation. Not a TTS duration estimate. |
 | Voice allowance left | Monthly plan minutes less measured transcribed minutes this business month, floored at zero. |
 | Review queue now | Count of local review drafts awaiting approval. Notes and drafts never leave the worker. |

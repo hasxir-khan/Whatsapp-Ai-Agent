@@ -435,6 +435,7 @@ export async function deliverKeysAtStart(slug, { start = false, linkOnly = false
   const fn = start ? keyHooks.startTenant || adminHooks.start : keyHooks.restartTenant || adminHooks.restart;
   try {
     const res = await fn(slug, { isolated: true, extraEnv: { ...built.env, PAIRING_NUMBER: pairingNumber,
+      TENANT_VIDEOS_MONTH: String(planForTenant(slug)?.plan?.limits?.videos_month || 0),
       TENANT_METER_KEY: linkOnly ? '' : meterKeyForTenant(slug).toString('hex'),
       TENANT_DASHBOARD: dashboardEnabled() && !linkOnly ? '1' : '0', TENANT_REPORT_DAYS: String(retention(planForTenant(slug)?.plan)),
       TENANT_WORKER_MODE: linkOnly ? 'link' : 'live' } });

@@ -20,6 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { quotaNotice } from './ephemeralMedia.js';
 import { config } from '../config/env.js';
 import { botState } from '../state.js';
 import { featureOn } from './profile.js';
@@ -565,3 +566,21 @@ export default {
   recentIncidents,
   openIncidents,
 };
+
+// Media admission is enforced even when the periodic health monitor is off.
+// Persist the alert receipt per quota window so retries/restarts don't page
+// the owner on every incoming clip. Only a fixed reason code can leave here.
+export async function notifyMediaQuota(code, send = sendOwner, now = new Date()) {
+  const text = quotaNotice(code);
+  if (!text) return false;
+  const { localDateString } = await import('./reportCalendar.js');
+  const day = localDateString(now, config.owner.profile?.business?.timezone || config.timezone);
+  const { getSetting, setSetting } = await import('../utils/db.js');
+  const key = `media_quota_alert:${code}`, period = code.endsWith('month') ? day.slice(0,7) : day;
+  if (getSetting(key) === period) return false;
+  setSetting(key, period);
+  try { if (await send(text) === false) throw Error('not_sent'); }
+  catch { setSetting(key, null); return false; }
+  logEvent('media_quota_alert', null, { code });
+  return true;
+}

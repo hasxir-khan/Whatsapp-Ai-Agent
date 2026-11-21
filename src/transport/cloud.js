@@ -11,6 +11,8 @@
 //     *customer* opens. Outside it, only an approved template goes through.
 //     Anything else is held and the owner is told — never dropped silently.
 
+import { boundedMedia, MediaTooBigError } from '../services/media.js';
+import { isPrivateMedia } from '../services/ephemeralMedia.js';
 import crypto from 'node:crypto';
 import { config } from '../config/env.js';
 import * as db from '../utils/db.js';
@@ -376,6 +378,7 @@ export class CloudTransport extends Transport {
     const number = jidToNumber(jid);
     if (!number) throw new TransportError(`cloud: no phone number in "${jid}"`, { code: 'bad_jid', permanent: true });
 
+    if (isPrivateMedia() && !this.windowOpen(number)) throw new TransportError('outside_window', { permanent: true });
     const message = await this.toCloudMessage(number, payload);
 
     if (this.windowOpen(number)) {
@@ -430,6 +433,8 @@ export class CloudTransport extends Transport {
    * owner. Nothing is ever silently dropped.
    */
   async outsideWindow(number, jid, payload, message) {
+    // The window can expire while toCloudMessage uploads a thumbnail.
+    if (isPrivateMedia()) throw new TransportError('outside_window', { permanent: true });
     const template = this.templateMessage(payload);
     if (template) {
       const sent = await this.postMessage(number, template, { kind: 'template' });
@@ -497,7 +502,7 @@ export class CloudTransport extends Transport {
   }
 
   /** The actual Graph API call, with the token kept out of every log line. */
-  async graph(path, { method = 'GET', body = null, raw = null, contentType = 'application/json' } = {}) {
+  async graph(path, { method = 'GET', body = null, raw = null, contentType = 'application/json', signal } = {}) {
     if (!this.token) throw new TransportError('cloud: CLOUD_TOKEN missing', { code: 'no_token', permanent: true });
     const doFetch = this.fetchImpl || globalThis.fetch;
     const url = `${GRAPH_BASE}/${this.apiVersion}/${String(path).replace(/^\//, '')}`;
@@ -507,7 +512,7 @@ export class CloudTransport extends Transport {
 
     let res;
     try {
-      res = await doFetch(url, { method, headers, body: raw || (body ? JSON.stringify(body) : undefined) });
+      res = await doFetch(url, { method, headers, signal: signal || (isPrivateMedia() ? AbortSignal.timeout(config.media.timeoutMs) : undefined), body: raw || (body ? JSON.stringify(body) : undefined) });
     } catch (err) {
       // Network trouble is retryable — the outbox will pick it up.
       throw new TransportError(`cloud: network error (${err.message})`, { code: 'network', status: 503 });
@@ -569,17 +574,23 @@ export class CloudTransport extends Transport {
   }
 
   /** Two-step Graph download: metadata → file URL → bytes. */
-  async getMedia(incoming) {
+  async getMedia(incoming, { maxBytes, timeoutMs = 30000 } = {}) {
     const ref = incoming?.mediaRef;
     if (!ref?.mediaId) throw new TransportError('cloud: nothing to download', { code: 'no_media', permanent: true });
 
-    const meta = await this.graph(ref.mediaId, { method: 'GET' });
+    const signal = maxBytes ? AbortSignal.timeout(timeoutMs) : undefined;
+    const meta = await this.graph(ref.mediaId, { method: 'GET', signal });
+    if (maxBytes && Number(meta?.file_size) > maxBytes) throw new MediaTooBigError('too_large');
     if (!meta?.url) throw new TransportError('cloud: media url missing', { code: 'no_media_url' });
 
     const doFetch = this.fetchImpl || globalThis.fetch;
-    const res = await doFetch(meta.url, { headers: { Authorization: `Bearer ${this.token}` } });
+    const res = await doFetch(meta.url, { signal, headers: { Authorization: `Bearer ${this.token}` } });
     if (!res.ok) throw new TransportError(`cloud: media download failed (${res.status})`, { status: res.status });
 
+    if (maxBytes) {
+      if (Number(res.headers?.get('content-length')) > maxBytes) { await res.body?.cancel(); throw new MediaTooBigError('too_large'); }
+      return { buffer: await boundedMedia(res.body, maxBytes), mimetype: meta.mime_type || ref.mimetype };
+    }
     const arrayBuffer = await res.arrayBuffer();
     return {
       buffer: Buffer.from(arrayBuffer),

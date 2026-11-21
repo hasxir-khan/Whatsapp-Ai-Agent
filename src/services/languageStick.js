@@ -150,3 +150,15 @@ export function _resetForTests() {
 }
 
 export default { dominantLanguage, replyLanguage, languageLockInstruction, MIN_WORDS };
+
+// A spoken language and a writing system are separate decisions. In
+// particular, a Latin transcript is not evidence that a customer *writes*
+// Roman Urdu. Only a written message gets a vote on that preference.
+export function writtenUrduStyle(number, current = '') {
+  const rows = number ? db.getMessages(number, 32) : [];
+  for (const text of [current, ...rows.reverse().filter(r => r.role === 'user' && r.kind === 'text').map(r => r.content)]) {
+    const code = detectLanguage(text).code;
+    if (code === 'ur' || code === 'roman-ur') return code;
+  }
+  return null;
+}

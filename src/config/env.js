@@ -397,6 +397,18 @@ export const config = {
     videoFrames: toInt(process.env.VIDEO_FRAMES, 6),
   },
 
+  // Opt-in path only; the legacy native-video limits remain unchanged.
+  media: {
+    maxBytes: Math.max(1, toInt(process.env.MEDIA_VIDEO_MB, 25)) * 1024 * 1024,
+    maxSeconds: Math.max(1, toInt(process.env.MEDIA_VIDEO_SECONDS, 60)),
+    frames: Math.min(12, Math.max(1, toInt(process.env.MEDIA_VIDEO_FRAMES, 6))),
+    timeoutMs: Math.max(100, toInt(process.env.MEDIA_PROVIDER_TIMEOUT_MS, 20000)),
+    videosDay: Math.max(0, toInt(process.env.MEDIA_VIDEOS_DAY, 10)),
+    videosMonth: Math.max(0, toInt(process.env.MEDIA_VIDEOS_MONTH, 120)),
+    visionDay: Math.max(0, toInt(process.env.MEDIA_VISION_CALLS_DAY, 30)),
+    visionMonth: Math.max(0, toInt(process.env.MEDIA_VISION_CALLS_MONTH, 300)),
+  },
+
   stt: {
     enabled: toBool(process.env.STT_ENABLED, true),
     model: process.env.WHISPER_MODEL || 'whisper-large-v3-turbo',

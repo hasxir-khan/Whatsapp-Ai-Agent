@@ -148,12 +148,28 @@ export function reportPage({ meta: m, metrics, tables }, query) {
           ),
         )
         .join('')}</nav>`;
-  const metricsHtml = Object.entries(metrics)
-    .map(
-      ([k, v]) =>
-        `<article class="metric"><div>${esc(definitions[k]?.[0] || human(k))} ${help(k)}</div><strong>${esc((k === 'quotaLeft' && metrics.quotaLimit === 0) || (k === 'callsLeft' && m.callBudgetUnlimited) ? 'Unlimited' : show(v))}</strong>${k === 'quotaLeft' && metrics.quotaLimit > 0 ? `<progress aria-label="Monthly conversation usage" max="${metrics.quotaLimit}" value="${metrics.monthlyConversations}"></progress>` : ''}${['botOrders', 'botBookings', 'botRevenue'].includes(k) ? '<small>Estimated attribution</small>' : ''}</article>`,
-    )
-    .join('');
+  const mediaKeys = new Set([
+    'videoEntitlement',
+    'monthlyVideos',
+    'videosProcessed',
+    'videosRefused',
+    'voiceReplyLanguage',
+    'videoProcessingMs',
+    'mediaProviderErrors',
+  ]);
+  const metricCards = (media = false) =>
+    Object.entries(metrics)
+      .filter(([k]) => mediaKeys.has(k) === media)
+      .map(
+        ([k, v]) =>
+          `<article class="metric"><div>${esc(definitions[k]?.[0] || human(k))} ${help(k)}</div><strong>${esc((k === 'quotaLeft' && metrics.quotaLimit === 0) || (k === 'callsLeft' && m.callBudgetUnlimited) ? 'Unlimited' : show(v))}</strong>${k === 'quotaLeft' && metrics.quotaLimit > 0 ? `<progress aria-label="Monthly conversation usage" max="${metrics.quotaLimit}" value="${metrics.monthlyConversations}"></progress>` : ''}${['botOrders', 'botBookings', 'botRevenue'].includes(k) ? '<small>Estimated attribution</small>' : ''}</article>`
+      )
+      .join('');
+  const metricsHtml = metricCards();
+  const mediaPanel =
+    name === 'usage'
+      ? `<section aria-label="Media intelligence"><h2>Voice and video</h2><div class="metrics">${metricCards(true)}</div></section>`
+      : '';
   const filterForm = filters
     ? `<details class="panel" ${filters.some(([k]) => query.has(k)) ? 'open' : ''}><summary>Filter ${name === 'agents' ? 'activity' : name}</summary><form class="filters">${hidden(rangeKeys)}${filters.map(([k, l]) => field(k, l, query.get(k) || '')).join('')}<button>Apply filters</button></form></details>`
     : '';
@@ -190,6 +206,6 @@ export function reportPage({ meta: m, metrics, tables }, query) {
     title: titles[name] + ' · Assistant reports',
     head: '<link rel="stylesheet" href="/platform/reports.css">',
     script: op ? '' : '<script type="module" src="/platform/reports.js"></script>',
-    body: `<main class="reports" ${op ? '' : `data-slug="${esc(m.slug)}"`}><header><div class="kicker">${op ? 'Platform / operations' : 'Assistant / reports'}</div>${op ? '' : `<a href="/platform/app">Back to assistants</a>`}</header>${navigation}<h1>${titles[name]}</h1><p class="lede">${subtitles[name]}</p>${ranges}<p class="stamp">${note}${['overview', 'usage'].includes(name) ? `<br>Usage ledger: ${m.meterUpdated ? `updated ${Math.max(0, Math.floor((Date.now() - Date.parse(m.meterUpdated)) / 60000))} min ago` : 'awaiting usage import'}` : ''}</p>${filterForm}<div class="metrics">${metricsHtml}</div>${Object.entries(tables).map(section).join('')}${actions}<p id="notice" role="status"></p><details id="glossary" class="panel" ${op ? 'open' : ''}><summary>Metric definitions</summary><dl>${[...defIds].map((id) => `<dt id="def-${esc(id)}">${esc(definitions[id]?.[0] || id)}</dt><dd>${esc(definitions[id]?.[1] || '')}</dd>`).join('')}</dl></details></main>`,
+    body: `<main class="reports" ${op ? '' : `data-slug="${esc(m.slug)}"`}><header><div class="kicker">${op ? 'Platform / operations' : 'Assistant / reports'}</div>${op ? '' : `<a href="/platform/app">Back to assistants</a>`}</header>${navigation}<h1>${titles[name]}</h1><p class="lede">${subtitles[name]}</p>${ranges}<p class="stamp">${note}${['overview', 'usage'].includes(name) ? `<br>Usage ledger: ${m.meterUpdated ? `updated ${Math.max(0, Math.floor((Date.now() - Date.parse(m.meterUpdated)) / 60000))} min ago` : 'awaiting usage import'}` : ''}</p>${filterForm}<div class="metrics">${metricsHtml}</div>${mediaPanel}${Object.entries(tables).map(section).join('')}${actions}<p id="notice" role="status"></p><details id="glossary" class="panel" ${op ? 'open' : ''}><summary>Metric definitions</summary><dl>${[...defIds].map((id) => `<dt id="def-${esc(id)}">${esc(definitions[id]?.[0] || id)}</dt><dd>${esc(definitions[id]?.[1] || '')}</dd>`).join('')}</dl></details></main>`,
   });
 }

@@ -93,6 +93,13 @@ export const definitions = {
   ],
   errors: ['Provider errors', 'Recorded failed provider attempts, not necessarily failed customer conversations.'],
   messages: ['Messages', 'Stored user, assistant and owner message rows in selected dates.'],
+  videoEntitlement: ['Monthly video entitlement', 'Plan maximum admitted videos per business month; worker day/month safety caps may be lower. Zero means no allowance.'],
+  monthlyVideos: ['Videos admitted this month', 'Clips admitted after validation this business month, including provider failures.'],
+  videosProcessed: ['Videos processed', 'Clips with an observation or transcript, including owner reviews.'],
+  videosRefused: ['Videos refused', 'Unreadable, over-limit, busy, quota-blocked or unavailable clips without a result.'],
+  mediaProviderErrors: ['Media provider errors', 'Failed protected STT, TTS and frame-vision attempts, including attempts followed by a successful fallback.'],
+  voiceReplyLanguage: ['Correct-language voice replies (%)', 'Delivered voice-input replies matching the policy language/script by automatic text check, not human-rated acoustic accuracy. No sample is shown as a dash.'],
+  videoProcessingMs: ['Average video processing (ms)', 'Elapsed download, validation, interpretation and cleanup time divided by processed plus refused clips. Excludes customer reply pacing.'],
   voiceMinutes: [
     'Voice minutes',
     'Transcribed seconds reported by speech-to-text / 60, since instrumentation. Not a TTS duration estimate.',

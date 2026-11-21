@@ -646,6 +646,8 @@
     "languages": [
       "en"
     ],
+    "voice": { "textScript": "urdu" },
+    "video": { "ownerThumbnail": false },
     "hours": "",
     "closed": "",
     "delivery": "",
@@ -886,7 +888,9 @@
     "//marketing": "the marketing team is owner-facing drafts: .marketing to see it",
     "//brain": "the business brain reads your own numbers and proposes; it never sends on its own: .brain to see it",
     "ownerDecisions": false,
-    "paymentReview": false
+    "paymentReview": false,
+    "voiceLanguagePolicy": false,
+    "videoUnderstanding": false
   },
   "_brainHelp": "EXAMPLE SECTION — the business brain reads this. minutesPerConversation feeds the 'time saved' figure. thinDataConversations is the point below which it says 'not enough data'. dailyReasoningCalls caps how many reasoning-model calls one tenant may make per day. autoRun lists action types the brain may run without asking (leave empty unless you mean it).",
   "brain": {

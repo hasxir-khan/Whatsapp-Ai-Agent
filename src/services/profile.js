@@ -76,6 +76,8 @@ export const FEATURE_KEYS = [
   // phase 8 — owner decisions + payment review (off by default)
   'ownerDecisions',
   'paymentReview',
+  'voiceLanguagePolicy',
+  'videoUnderstanding',
 ];
 
 export const FEATURE_LABELS = {
@@ -120,6 +122,8 @@ export const FEATURE_LABELS = {
   reasoning: 'Reasoning router: complex turns get plan → act → verify before answering',
   conversationControl: 'Conversation Control: a decision per message (reply, clarify, redirect, handover, react, ignore), scope and off-topic rules, abuse boundaries, owner-defined intake fields and a written brief',
   ownerDecisions: 'Human decision requests (payments, discounts, refunds): the owner answers, the AI never does',
+  voiceLanguagePolicy: 'Allowlisted spoken language and matching voice replies',
+  videoUnderstanding: 'Private, bounded video observations and owner review',
   paymentReview: 'Read payment proofs, run deterministic checks, and put a short card in front of the owner',
 };
 

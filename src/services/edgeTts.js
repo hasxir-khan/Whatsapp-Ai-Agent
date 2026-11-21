@@ -61,13 +61,15 @@ function buildSsml(text, voice, { rate = 0, pitch = 0, volume = 0 } = {}) {
  * @param {string} opts.voice e.g. 'en-US-AriaNeural'
  * @returns {Promise<Buffer>} MP3 audio
  */
-export function synthesizeEdge(text, { voice = 'en-US-AriaNeural', rate = 0, pitch = 0, volume = 0, timeoutMs = 30000 } = {}) {
+export function synthesizeEdge(text, { voice = 'en-US-AriaNeural', rate = 0, pitch = 0, volume = 0, timeoutMs = 30000, signal, beforeRequest } = {}) {
   let lastError = null;
 
   return (async () => {
     for (const base of WSS_ENDPOINTS) {
+      signal?.throwIfAborted();
+      beforeRequest?.();
       try {
-        return await synthesizeOnce(text, { voice, rate, pitch, volume, timeoutMs, base });
+        return await synthesizeOnce(text, { voice, rate, pitch, volume, timeoutMs, base, signal });
       } catch (err) {
         lastError = err;
         // A rejected handshake on the first host usually means try the next one
@@ -78,7 +80,7 @@ export function synthesizeEdge(text, { voice = 'en-US-AriaNeural', rate = 0, pit
   })();
 }
 
-function synthesizeOnce(text, { voice, rate, pitch, volume, timeoutMs, base }) {
+function synthesizeOnce(text, { voice, rate, pitch, volume, timeoutMs, base, signal }) {
   return new Promise((resolve, reject) => {
     const connectionId = uuidNoDash();
     const requestId = uuidNoDash();
@@ -96,6 +98,7 @@ function synthesizeOnce(text, { voice, rate, pitch, volume, timeoutMs, base }) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
       try {
         ws?.close();
       } catch {
@@ -105,7 +108,9 @@ function synthesizeOnce(text, { voice, rate, pitch, volume, timeoutMs, base }) {
       else resolve(value);
     };
 
-    const timer = setTimeout(() => finish(new Error('edge-tts timeout')), timeoutMs);
+    const abort = () => finish(new Error('edge-tts timeout'));
+    const timer = setTimeout(abort, timeoutMs);
+    signal?.addEventListener('abort', abort, { once: true });
 
     try {
       ws = new WebSocket(url, {

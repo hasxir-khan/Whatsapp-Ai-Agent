@@ -42,11 +42,11 @@ function speechChunk(text, maxChars) {
   return (lastStop > maxChars * 0.5 ? cut.slice(0, lastStop + 1) : cut).trim();
 }
 
-async function groqSpeech(text) {
+async function groqSpeech(text, options = {}) {
   if (!config.keys.groq) return null;
-  const isArabic = /[\u0600-\u06FF]/.test(text);
+  const isArabic = options.code ? options.code === 'ar' : /[\u0600-\u06FF]/.test(text);
   const model = isArabic ? 'canopylabs/orpheus-arabic-saudi' : config.tts.groqModelEnglish;
-  const voice = isArabic ? 'fahad' : config.tts.groqVoice;
+  const voice = options.voice || (isArabic ? 'fahad' : config.tts.groqVoice);
 
   const res = await fetch('https://api.groq.com/openai/v1/audio/speech', {
     method: 'POST',
@@ -60,18 +60,38 @@ async function groqSpeech(text) {
       input: text.slice(0, 195), // Orpheus caps at 200 characters
       response_format: 'wav',
     }),
-    signal: AbortSignal.timeout(45000),
+    signal: options.signal || AbortSignal.timeout(45000),
   });
 
   if (!res.ok) {
-    const raw = await res.text();
-    mediaUsage('voice', 'groq', model, { error: 'provider_error' });
-    logEvent('tts_groq_error', null, `${res.status} ${raw.slice(0, 160)}`);
+    await res.body?.cancel();
+    if (!options.signal) mediaUsage('voice', 'groq', model, { error: 'provider_error' });
+    logEvent('tts_groq_error', null, { status: res.status });
     return null;
   }
   const buffer = Buffer.from(await res.arrayBuffer());
-  if (buffer.length <= 1000) mediaUsage('voice', 'groq', model, { error: 'provider_error' });
+  if (!options.signal && buffer.length <= 1000) mediaUsage('voice', 'groq', model, { error: 'provider_error' });
   return buffer.length > 1000 ? { buffer, ext: 'wav', provider: 'groq', model } : null;
+}
+
+// Swappable adapters share one contract: text + a language-bound voice → audio.
+export const speechProviders = {
+  edge: async (text, options) => {
+    const buffer = await synthesizeEdge(text, options);
+    return buffer?.length > 1000 ? { buffer, ext: 'mp3', provider: 'edge', model: options.voice } : null;
+  },
+  groq: groqSpeech,
+};
+export function configuredVoice(provider, language, business = config.owner.profile?.business || {}) {
+  const map = business.voice?.voiceByLanguage ?? voiceMap();
+  const setting = map?.[language];
+  if (provider === 'edge') {
+    const v = typeof setting === 'string' ? setting : setting?.edge;
+    return typeof v === 'string' && /^[a-z]{2,3}-[A-Za-z0-9-]+$/.test(v) && v.split('-')[0] === language ? v : null;
+  }
+  if (provider === 'groq' && config.keys.groq && ['en','ar'].includes(language))
+    return setting?.groq ?? (language === 'ar' ? 'fahad' : config.tts.groqVoice);
+  return null;
 }
 
 /**
@@ -80,7 +100,7 @@ async function groqSpeech(text) {
  * @param {{langInfo?:object, number?:string}} opts
  * @returns {Promise<{buffer:Buffer, ext:string, provider:string, model?:string}|null>}
  */
-export async function synthesize(text, { langInfo } = {}) {
+export async function synthesize(text, { langInfo, policy, gate, providers = speechProviders } = {}) {
   if (!text || !ttsEnabled()) return null;
 
   const chunk = speechChunk(text, config.tts.maxChars);
@@ -92,6 +112,16 @@ export async function synthesize(text, { langInfo } = {}) {
 
   for (const provider of config.tts.providers) {
     try {
+      if (policy) {
+        const voice = configuredVoice(provider, policy.language);
+        if (!voice || !providers[provider]) continue;
+        const call = signal => providers[provider](chunk, { voice, code: policy.language, signal, timeoutMs: gate.timeoutMs });
+        const made = await gate.attempt('tts', provider, call);
+        if (!made?.buffer?.length) continue;
+        bumpUsage('tts_chars', chunk.length);
+        mediaUsage('voice', provider, made.model || voice, { input: Math.ceil(chunk.length / 4), estimated: true, protectedCall:true });
+        return made;
+      }
       if (provider === 'edge') {
         const voice = config.tts.edgeVoice || voiceForLanguage(langInfo, voiceMap());
         const buffer = await synthesizeEdge(chunk, { voice });
@@ -114,8 +144,9 @@ export async function synthesize(text, { langInfo } = {}) {
         }
       }
     } catch (err) {
-      mediaUsage('voice', provider, null, { error: 'provider_error' });
-      logEvent('tts_error', null, `${provider}: ${err.message}`);
+      if (policy && err.code === 'breaker') continue;
+      mediaUsage('voice', provider, null, { error: 'provider_error', protectedCall:!!policy });
+      logEvent('tts_error', null, { provider, code: 'failed' });
     }
   }
 
@@ -158,16 +189,19 @@ export function speechTextFor(text, { maxSeconds = config.tts.maxSeconds, langIn
 }
 
 /** Estimate for a language, if the caller has one. */
-export async function buildVoiceNote(text, { langInfo } = {}) {
-  const audio = await synthesize(text, { langInfo });
+export async function buildVoiceNote(text, options = {}) {
+  const { policy } = options;
+  const cap = Math.max(1, config.tts.maxSeconds);
+  if (policy && !hasFfmpeg()) return null; // cannot enforce a hard playback cap
+  const audio = await synthesize(text, options);
   if (!audio) return null;
 
   if (hasFfmpeg()) {
     const input = tempFile(audio.ext, 'tts');
     const output = tempFile('ogg', 'tts');
     try {
-      fs.writeFileSync(input, audio.buffer);
-      await toOggOpus(input, output);
+      fs.writeFileSync(input, audio.buffer, { mode: 0o600 });
+      await toOggOpus(input, output, { maxSeconds: policy ? cap : null });
       if (fs.existsSync(output)) {
         const buffer = fs.readFileSync(output);
         return {
@@ -176,18 +210,19 @@ export async function buildVoiceNote(text, { langInfo } = {}) {
             audio: buffer,
             mimetype: 'audio/ogg; codecs=opus',
             ptt: true,
-            seconds: estimateSeconds(text),
+            seconds: policy ? Math.min(cap, estimateSeconds(text)) : estimateSeconds(text),
           },
         };
       }
     } catch (err) {
-      logEvent('tts_convert_error', null, err.message);
+      logEvent('tts_convert_error', null, 'failed');
     } finally {
       cleanupPath(input);
       cleanupPath(output);
     }
   }
 
+  if (policy) return null;
   // No ffmpeg: send as a playable audio file (WhatsApp shows a player, not PTT)
   return {
     provider: audio.provider,

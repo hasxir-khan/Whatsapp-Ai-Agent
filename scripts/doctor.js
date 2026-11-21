@@ -545,8 +545,26 @@ async function checkMedia() {
   if (sttEnabled()) ok('voice-note transcription ready');
   else bad('voice-note transcription unavailable (needs GROQ_API_KEY)');
 
-  const { ttsEnabled, ttsStatus } = await import('../src/services/tts.js');
-  if (ttsEnabled()) ok(`voice replies: ${ttsStatus().mode} via ${ttsStatus().providers.join(', ')}`);
+  const { allowedSpeech } = await import('../src/services/voicePolicy.js');
+  const { configuredVoice, ttsEnabled } = await import('../src/services/tts.js');
+  if (featureOn('voiceLanguagePolicy') || featureOn('videoUnderstanding')) {
+    const missing = (msg) => {
+      bad(msg);
+      problems.push(msg);
+    };
+    const b = config.owner.profile.business;
+    if (!allowedSpeech(b).length)
+      missing('business.languages has no supported language — media replies require an allowlist');
+    if (!hasFfmpeg()) missing('protected video and capped voice replies require ffmpeg');
+    if (featureOn('videoUnderstanding') && !visionEnabled())
+      missing('missing vision key — configure a frame vision provider');
+    if (featureOn('voiceLanguagePolicy'))
+      for (const code of allowedSpeech(b)) {
+        if (!config.tts.providers.some((p) => configuredVoice(p, code)))
+          warn(`missing TTS voice for ${code} — text only`);
+      }
+  }
+  if (ttsEnabled()) ok(`voice replies: ${config.tts.mode} via ${config.tts.providers.join(', ')}`);
   else warn('voice replies disabled (VOICE_REPLY_MODE=off)');
 }
 

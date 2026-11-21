@@ -48,6 +48,7 @@ import {
 
 const HELP = `*Bot commands*
 
+.media – voice and video scorecard
 .chats – latest conversations
 .leads [status] – pipeline
 .lead 92300… – full dossier on one client
@@ -232,7 +233,7 @@ const COMMAND_PERMISSION = {
 };
 
 const OWNER_ONLY = new Set([
-  'export', 'sync', 'ai', 'voice', 'block', 'unblock', 'set', 'addservice', 'addfaq',
+  'export', 'sync', 'ai', 'voice', 'media', 'block', 'unblock', 'set', 'addservice', 'addfaq',
   'features', 'knowledge', 'tools', 'intents', 'growth', 'optouts', 'bookings', 'cancel', 'approve', 'skip',
   'done', 'paid', 'referrals', 'content', 'campaign', 'invoice', 'rules', 'approve-rule', 'reject-rule',
   'inbox', 'link', 'links', 'qr', 'poster',
@@ -834,6 +835,11 @@ export async function handleOwnerCommand(sock, chatJid, text, from = config.owne
       return { handled: true, reply: R.reviewText({ limit: 5 }) };
     }
 
+    case 'media': {
+      if (!featureOn('voiceLanguagePolicy') && !featureOn('videoUnderstanding')) return { handled: true, reply: 'Media intelligence is off.' };
+      const { mediaScorecard } = await import('../services/mediaLimits.js');
+      return { handled: true, reply: mediaScorecard(undefined, nowDate) };
+    }
     case 'usage': {
       const u = getUsage();
       return {

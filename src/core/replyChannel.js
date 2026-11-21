@@ -10,6 +10,7 @@
 // sent for this batch. Everything that talks to a customer goes through it, and
 // the second caller is logged instead of sent.
 
+import { isPrivateMedia } from '../services/ephemeralMedia.js';
 import * as db from '../utils/db.js';
 
 const answered = new Map(); // chat -> { batch, at }
@@ -66,12 +67,12 @@ export function createReplyChannel({
   const deliver = async (text, opts = {}) => {
     if (!text) return null;
     if (used) {
-      blocked.push({ text: String(text).slice(0, 120), at: Date.now() });
+      blocked.push({ ...(isPrivateMedia() ? {} : { text: String(text).slice(0, 120) }), at: Date.now() });
       try {
         db.logEvent('duplicate_reply_blocked', chat || null, {
           label,
           batch: batch || null,
-          preview: String(text).slice(0, 80),
+          ...(isPrivateMedia() ? {} : { preview: String(text).slice(0, 80) }),
         });
       } catch {
         /* logging must not throw */

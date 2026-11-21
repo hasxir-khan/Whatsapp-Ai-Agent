@@ -233,11 +233,12 @@ function scoreWords(tokens, code) {
 const topEntry = (scores) =>
   Object.entries(scores).sort((a, b) => b[1] - a[1])[0] || null;
 
+export { info as languageInfo };
 function info(code, script, confidence, detectedBy) {
   return {
     code,
-    label: LABELS[code] || code,
-    locale: LOCALES[code] || 'en-US',
+    label: code === 'skr' ? 'Saraiki' : LABELS[code] || code,
+    locale: code === 'skr' ? 'skr-PK' : LOCALES[code] || 'en-US',
     rtl: RTL_CODES.has(code),
     script,
     confidence,
@@ -528,3 +529,13 @@ export default {
   fromWhisperLanguage,
   SUPPORTED_LANGUAGES,
 };
+
+// Only exact known labels/codes are accepted. Never put a provider-supplied
+// string into a prompt, a status field, or an Edge voice identifier.
+export function languageCode(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (['saraiki', 'seraiki', 'skr'].includes(raw)) return 'skr';
+  if (['roman urdu', 'roman-urdu', 'roman-ur', 'ur-latn'].includes(raw)) return 'roman-ur';
+  const code = Object.keys(LABELS).find(k => k === raw || LABELS[k].toLowerCase() === raw);
+  return code || (Object.hasOwn(FRANC_MAP, raw) && FRANC_MAP[raw]) || (/^[a-z]{2}-[a-z]{2}$/.test(raw) && Object.hasOwn(LABELS,raw.slice(0, 2)) ? raw.slice(0, 2) : 'unknown');
+}
